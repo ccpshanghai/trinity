@@ -51,6 +51,13 @@ endif()
 
 project(carbon-trinity VERSION 1.0.0)
 
+if(APPLE)
+    # S4: the AL's shared source list carries the metal .mm files, so the vulkan
+    # target needs OBJCXX; enabled at top level because enable_language() inside
+    # trinityal/ leaves CMAKE_OBJCXX_COMPILE_OBJECT unset at generate time.
+    enable_language(OBJCXX)
+endif()
+
 if (BUILD_FOR_PYTHON_2)
     if(NOT DEFINED ENV{CCP_EVE_PERFORCE_BRANCH_PATH})
         message(FATAL_ERROR "Missing required environment variable CCP_EVE_PERFORCE_BRANCH_PATH")

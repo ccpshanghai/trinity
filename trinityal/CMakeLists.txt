@@ -545,10 +545,18 @@ elseif(APPLE)
     if(BUILD_VULKAN)
         find_package(VulkanHeaders CONFIG)
         find_package(VulkanMemoryAllocator CONFIG REQUIRED)
+        enable_language(OBJCXX)
         ccp_add_library(TrinityAL_vulkan STATIC)
         target_compile_definitions(TrinityAL_vulkan PUBLIC TRINITY_PLATFORM=TRINITY_VULKAN)
         set_shared_trinityal_properties(vulkan)
         target_link_libraries(TrinityAL_vulkan PUBLIC Vulkan::Headers GPUOpen::VulkanMemoryAllocator)
+        # The shared source list contains the metal target's .mm files; the PCH must be
+        # built in ObjC++ mode or every .mm TU dies on "Objective-C was disabled in
+        # precompiled file". Same block the metal target uses, for the same reason.
+        set(_CPP_SOURCES ${_SOURCES})
+        list(FILTER _CPP_SOURCES INCLUDE REGEX "\.cpp")
+        set_source_files_properties(${_CPP_SOURCES} PROPERTIES LANGUAGE OBJCXX)
+        target_compile_options(TrinityAL_vulkan PRIVATE "-fobjc-arc")
     endif()
 else()
     message(FATAL_ERROR "Unsupported trinity platform, only stub would be available!")
