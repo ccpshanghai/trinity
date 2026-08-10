@@ -20,6 +20,7 @@ else()
         option(BUILD_DX12 "Build dx12." OFF)
     elseif(APPLE)
         option(BUILD_METAL "Build Metal." OFF)
+        option(BUILD_VULKAN "Build Vulkan." OFF)
     endif()
 
     if (BUILD_DX11)
