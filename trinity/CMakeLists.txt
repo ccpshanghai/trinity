@@ -2071,6 +2071,29 @@ elseif(APPLE)
                 INSTALL_RPATH "@executable_path/."
         )
     endif()
+
+    if(BUILD_VULKAN)
+        set(TRINITY_VULKAN_TARGET_NAME trinity_vulkan)
+
+        ccp_add_library(${TRINITY_VULKAN_TARGET_NAME} SHARED)
+        target_compile_definitions(${TRINITY_VULKAN_TARGET_NAME}
+            PRIVATE
+                TRINITY_PLATFORM=TRINITY_VULKAN
+                TRINITYNAME=_trinity_vulkan
+        )
+        set_shared_trinity_properties(${TRINITY_VULKAN_TARGET_NAME})
+        target_link_libraries(${TRINITY_VULKAN_TARGET_NAME}
+            PRIVATE
+                TrinityAL_vulkan
+        )
+        set_target_properties(${TRINITY_VULKAN_TARGET_NAME}
+            PROPERTIES
+                PREFIX ""
+                SUFFIX ".so"
+                BUILD_WITH_INSTALL_RPATH TRUE
+                INSTALL_RPATH "@executable_path/."
+        )
+    endif()
 else()
     message(FATAL_ERROR "Unsupported trinity platform, only stub would be available!")
 endif()
