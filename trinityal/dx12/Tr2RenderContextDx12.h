@@ -275,6 +275,30 @@ public:
 	// extends the interface to support ray tracing and render passes
 	CComPtr<ID3D12GraphicsCommandList4> m_commandList4;
 
+	// Returns the currently-open native command list as an integer, or 0 when none
+	// is open.
+	//
+	// Exists so an immediate-mode UI (ImGui) can record into Trinity's frame from
+	// Python. Trinity ships as a CPython extension module whose only export is
+	// PyInit__trinity_dx12, so a C++ UI layer cannot link against it at all; the
+	// handle has to travel out through Python and back in.
+	//
+	// uint64_t rather than void*, because Blue marshals only the sized integer
+	// types (BlueExposureTypeSignature.h). Declared here on Tr2RenderContextAL
+	// rather than on a Blue class so that both Tr2RenderContext and
+	// Tr2PrimaryRenderContext inherit it, in every backend configuration, with no
+	// per-configuration shim.
+	//
+	// Valid only between the frame's begin and end. Callers must treat 0 as
+	// "not now" rather than as an error.
+	//
+	// Not virtual: backend selection here is by file, not by dispatch — each
+	// backend header declares its own Tr2RenderContextAL and exactly one compiles.
+	uint64_t GetNativeCommandList() const
+	{
+		return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( m_commandList.p ) );
+	}
+
 	Tr2PrimaryRenderContextAL* m_ownerDevice;
 	bool m_dirtyPso;
 

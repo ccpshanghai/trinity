@@ -344,6 +344,14 @@ protected:
 	Tr2UpscalingTechniqueAL* m_upscalingTechnique;
 
 public:
+	// See the DX12 backend for what this is for. There is no DX12 command list
+	// here; Metal's equivalent (MTLRenderCommandEncoder) arrives with M3, and 0 is
+	// the documented "not now" value until then.
+	uint64_t GetNativeCommandList() const
+	{
+		return 0;
+	}
+
 	void CheckDrawResources();
 
 	MTLIndexType m_metalIndexType;
