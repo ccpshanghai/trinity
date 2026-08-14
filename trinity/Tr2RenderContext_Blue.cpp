@@ -368,9 +368,11 @@ const Be::ClassInfo* Tr2PrimaryRenderContext::ExposeToBlue()
 			GetNativeSrvHeap,
 			"Returns the shader-visible SRV/UAV descriptor heap as an integer, 0 off DX12.\n"
 			"\n"
-			"This is the heap Trinity itself binds, so a hosted UI can put its font\n"
-			"descriptor alongside Trinity's own rather than binding a second heap in the\n"
-			"middle of the frame." )
+			"This is the heap Trinity binds, exposed so a hosted UI can put that binding\n"
+			"back after it has drawn — not a heap to draw out of. The host brings its own\n"
+			"SRV heap for ImGui's font descriptor and binds it before drawing, and\n"
+			"SetDescriptorHeaps replaces the whole binding rather than adding to it, so\n"
+			"Trinity's heaps have to be restored afterwards. See GetNativeSamplerHeap." )
 
 		MAP_METHOD_AND_WRAP(
 			"GetNativeCommandQueue",
