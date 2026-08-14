@@ -9,7 +9,7 @@
       "kind": "git",
       "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
       "reference": "m2-python-313",
-      "baseline": "445f1004ae2e4fae87e92ae0fbef783092b39304",
+      "baseline": "2a1ebed268d7d6a1afaa39f8699a90d4b9136f7e",
       "packages": [
         "python3",
         "carbon-*",
