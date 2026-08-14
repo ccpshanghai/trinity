@@ -4,4 +4,4 @@
 [submodule "vendor/github.com/carbonengine/vcpkg-registry"]
 	path = vendor/github.com/carbonengine/vcpkg-registry
 	url = git@github.com:ccpshanghai/vcpkg-registry.git
-	branch = m1-foundation
+	branch = mobile-exp
