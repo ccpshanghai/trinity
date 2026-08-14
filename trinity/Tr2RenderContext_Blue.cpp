@@ -340,16 +340,20 @@ const Be::ClassInfo* Tr2PrimaryRenderContext::ExposeToBlue()
 		MAP_METHOD_AND_WRAP(
 			"GetNativeCommandList",
 			GetNativeCommandList,
-			"Returns the open native command list as an integer, or 0 if none is open.\n"
+			"Returns this context's native command list as an integer.\n"
 			"\n"
 			"For hosting an immediate-mode UI (ImGui) inside Trinity's frame from\n"
 			"Python: the renderer ships as a CPython extension module with no C++\n"
 			"exports, so a C++ UI layer cannot link against it and the handle has to\n"
-			"cross through Python. Valid only while a frame is open — read it from\n"
-			"inside a TriStepPythonCB callback, not from application code, and treat\n"
-			"0 as 'not now' rather than as an error.\n"
+			"cross through Python.\n"
 			"\n"
-			"0 on every backend other than DX12." )
+			"This is NOT a liveness check. The DX12 backend allocates its command list\n"
+			"once and reuses it, so the value is non-zero outside the frame too —\n"
+			"measured identical before, during and after a pump. Record into it only\n"
+			"from inside a TriStepPythonCB callback, and gate on being there rather\n"
+			"than on this value.\n"
+			"\n"
+			"0 on every backend other than DX12, which is the one thing zero does mean." )
 
 	EXPOSURE_END()
 }

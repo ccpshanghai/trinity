@@ -275,8 +275,12 @@ public:
 	// extends the interface to support ray tracing and render passes
 	CComPtr<ID3D12GraphicsCommandList4> m_commandList4;
 
-	// Returns the currently-open native command list as an integer, or 0 when none
-	// is open.
+	// Returns this context's native command list as an integer.
+	//
+	// NOT a liveness check. m_commandList is allocated once and reused across frames, so
+	// this is non-zero outside the frame as well — measured identical before, during and
+	// after a pump. Callers must gate on *where* they are (inside a render step) and never
+	// on this value. Zero means only "not a DX12 backend".
 	//
 	// Exists so an immediate-mode UI (ImGui) can record into Trinity's frame from
 	// Python. Trinity ships as a CPython extension module whose only export is
@@ -289,8 +293,8 @@ public:
 	// Tr2PrimaryRenderContext inherit it, in every backend configuration, with no
 	// per-configuration shim.
 	//
-	// Valid only between the frame's begin and end. Callers must treat 0 as
-	// "not now" rather than as an error.
+	// Only meaningful to *record into* while a frame is open, which in practice means from
+	// inside a TriStepPythonCB callback. Nothing here can enforce that.
 	//
 	// Not virtual: backend selection here is by file, not by dispatch — each
 	// backend header declares its own Tr2RenderContextAL and exactly one compiles.
