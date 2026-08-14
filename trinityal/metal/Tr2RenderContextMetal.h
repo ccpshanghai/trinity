@@ -352,6 +352,27 @@ public:
 		return 0;
 	}
 
+	// See the DX12 backend. No DX12 device or descriptor heap here.
+	uint64_t GetNativeDevice() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeSrvHeap() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeCommandQueue() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeSamplerHeap() const
+	{
+		return 0;
+	}
+
 	void CheckDrawResources();
 
 	MTLIndexType m_metalIndexType;

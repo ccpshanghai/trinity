@@ -355,6 +355,40 @@ const Be::ClassInfo* Tr2PrimaryRenderContext::ExposeToBlue()
 			"\n"
 			"0 on every backend other than DX12, which is the one thing zero does mean." )
 
+		MAP_METHOD_AND_WRAP(
+			"GetNativeDevice",
+			GetNativeDevice,
+			"Returns the ID3D12Device as an integer, or 0 off DX12.\n"
+			"\n"
+			"Needed by ImGui's DX12 backend at init, and by the same route as the command\n"
+			"list: there is no C++ path off this engine." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeSrvHeap",
+			GetNativeSrvHeap,
+			"Returns the shader-visible SRV/UAV descriptor heap as an integer, 0 off DX12.\n"
+			"\n"
+			"This is the heap Trinity itself binds, so a hosted UI can put its font\n"
+			"descriptor alongside Trinity's own rather than binding a second heap in the\n"
+			"middle of the frame." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeCommandQueue",
+			GetNativeCommandQueue,
+			"Returns the direct ID3D12CommandQueue as an integer, or 0 off DX12.\n"
+			"\n"
+			"ImGui's DX12 backend uploads its font texture through a command queue at\n"
+			"init; without one that upload has nowhere to go." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeSamplerHeap",
+			GetNativeSamplerHeap,
+			"Returns the shader-visible sampler descriptor heap as an integer, 0 off DX12.\n"
+			"\n"
+			"Needed to put the binding back after a hosted UI has drawn:\n"
+			"SetDescriptorHeaps replaces the whole binding rather than adding to it, so\n"
+			"restoring only the SRV heap leaves later draws without samplers." )
+
 	EXPOSURE_END()
 }
 

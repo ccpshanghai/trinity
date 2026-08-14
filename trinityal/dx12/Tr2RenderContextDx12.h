@@ -303,6 +303,11 @@ public:
 		return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( m_commandList.p ) );
 	}
 
+	// GetNativeDevice and GetNativeSrvHeap live on Tr2PrimaryRenderContextAL rather than
+	// here: that is where m_device and GetGlobalSrvUavHeap are, and at this point in the
+	// header Tr2PrimaryRenderContextAL is only forward-declared, so an inline body could
+	// not dereference m_ownerDevice.
+
 	Tr2PrimaryRenderContextAL* m_ownerDevice;
 	bool m_dirtyPso;
 
