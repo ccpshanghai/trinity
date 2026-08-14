@@ -8,7 +8,7 @@
     {
       "kind": "git",
       "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
-      "reference": "mobile-exp",
+      "reference": "m1-foundation",
       "baseline": "9341d42c06822551922f4917d7cb5ad7c725680e",
       "packages": [
         "python3",
