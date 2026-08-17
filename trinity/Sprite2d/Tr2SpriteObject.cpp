@@ -132,7 +132,30 @@ PyObject* Tr2SpriteObjectBase::GetAssociatedObject() const
 {
 	if( m_associatedObject )
 	{
-		return PyWeakref_GetObject( m_associatedObject );
+		// PyWeakref_GetObject is deprecated in 3.13 and removed in 3.15. trinity builds
+		// with CMAKE_COMPILE_WARNING_AS_ERROR (CMakePresets.json:14), so its C4996 is a
+		// hard error here rather than a warning.
+		//
+		// PyWeakref_GetRef is the 3.13 replacement, but it hands back a *strong*
+		// reference where PyWeakref_GetObject handed back a borrowed one - and this
+		// getter's contract is borrowed: blueexposure increfs whatever a MAP_PROPERTY
+		// getter returns (BlueWrapReturnValueImpl( args, PyObject* ), Py_XINCREF, in
+		// BlueWrapReturnValuePython.h). So drop the strong reference before returning,
+		// to leave the refcount exactly as it was before this change. That is safe: a
+		// return of 1 means the referent is alive, and a weak reference never keeps its
+		// referent alive, so at least one other strong reference outlives the one here.
+		PyObject* referent = nullptr;
+		if( PyWeakref_GetRef( m_associatedObject, &referent ) == 1 )
+		{
+			Py_DECREF( referent );
+			return referent;
+		}
+
+		// 0: the referent has already been collected. -1: m_associatedObject is not a
+		// weak reference, which SetAssociatedObject below makes impossible. Both fall
+		// through to None, which is what PyWeakref_GetObject yielded for a dead
+		// referent; clear any error so it is not left set for an unrelated caller.
+		PyErr_Clear();
 	}
 
 	Py_RETURN_NONE;
