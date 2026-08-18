@@ -202,7 +202,10 @@ namespace TrinityALImpl
 			CreateBuffer( stagingBuffer, stagingMemory, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, renderContext );
 
 			void *data;
-			Vk2Al( vkMapMemory( renderContext.m_device, stagingMemory, 0, size, 0, &data ) );
+			// VK_WHOLE_SIZE, not size: the flush below runs to the end of the mapping, and
+			// VUID-VkMappedMemoryRange-size-01389 wants that end either atom-aligned or at the
+			// end of the allocation, which vkGetBufferMemoryRequirements rounded up.
+			Vk2Al( vkMapMemory( renderContext.m_device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &data ) );
 
 			for( size_t i = 0; i < copyInfo.size(); ++i )
 			{

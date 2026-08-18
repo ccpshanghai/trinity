@@ -48,18 +48,12 @@ namespace TrinityALImpl
 
 		if( initialData )
 		{
+			// No flush: CreateBuffer above asks for HOST_VISIBLE | HOST_COHERENT, so the
+			// write is already visible to the device. The flush that used to be here was
+			// illegal as well -- see the note in Unlock.
 			void* mapped;
 			CR_RETURN_HR( Vk2Al( vkMapMemory( renderContext.m_device, memory, 0, size, 0, &mapped ) ) );
 			memcpy( mapped, initialData, size );
-
-			VkMappedMemoryRange flushRange = {
-				VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
-				nullptr,
-				memory,
-				0,
-				VK_WHOLE_SIZE
-			};
-			vkFlushMappedMemoryRanges( renderContext.m_device, 1, &flushRange );
 			vkUnmapMemory( renderContext.m_device, memory );
 		}
 
@@ -89,14 +83,15 @@ namespace TrinityALImpl
 		{
 			return E_INVALIDCALL;
 		}
-		VkMappedMemoryRange flushRange = {
-			VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
-			nullptr,
-			m_memory,
-			0,
-			VK_WHOLE_SIZE
-		};
-		vkFlushMappedMemoryRanges( m_owner->m_device, 1, &flushRange );
+		// No flush: Create allocates this memory HOST_VISIBLE | HOST_COHERENT, which is
+		// the same reason none of Tr2BufferALVulkan's host-visible paths flush either.
+		//
+		// VK_WHOLE_SIZE in a VkMappedMemoryRange is not an exemption from the
+		// nonCoherentAtomSize rule. It runs to the end of the current *mapping*, and
+		// VUID-VkMappedMemoryRange-size-01389 requires that end to be either a multiple of
+		// nonCoherentAtomSize or the end of the memory object. vkGetBufferMemoryRequirements
+		// rounds the allocation up -- a 16-byte uniform buffer gets 64 bytes here -- so a
+		// mapping of [0, size) ends inside the allocation and satisfies neither.
 		vkUnmapMemory( m_owner->m_device, m_memory );
 		return S_OK;
 	}

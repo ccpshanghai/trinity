@@ -140,7 +140,9 @@ namespace TrinityALImpl
 
 
 			void *mapped;
-			CR_RETURN_HR( Vk2Al( vkMapMemory( renderContext.m_device, stagingMemory, 0, size, 0, &mapped ) ) );
+			// VK_WHOLE_SIZE rather than size, so the mapping ends where the allocation ends.
+			// See the note on the identical flush in Update.
+			CR_RETURN_HR( Vk2Al( vkMapMemory( renderContext.m_device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &mapped ) ) );
 			memcpy( mapped, initialData, size );
 
 			VkMappedMemoryRange flushRange = {
@@ -405,13 +407,19 @@ namespace TrinityALImpl
 		} );
 
 		void* mapped = nullptr;
-		CR_RETURN_HR( Vk2Al( vkMapMemory( m_owner->m_device, stagingMemory, 0, size, 0, &mapped ) ) );
+		CR_RETURN_HR( Vk2Al( vkMapMemory( m_owner->m_device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &mapped ) ) );
 		memcpy( mapped, data, size );
 
 		// This one does need a flush: the staging allocation asked for HOST_VISIBLE only,
-		// so it may be non-coherent. VK_WHOLE_SIZE is the range shape that is exempt from
-		// the nonCoherentAtomSize rule, which is why it is spelled that way rather than
-		// as 0/size.
+		// so it may be non-coherent.
+		//
+		// VK_WHOLE_SIZE is NOT exempt from the nonCoherentAtomSize rule. An earlier version
+		// of this comment claimed it was, and that belief is what put
+		// VUID-VkMappedMemoryRange-size-01389 in four separate places. VK_WHOLE_SIZE runs to
+		// the end of the current *mapping*, and the VUID requires that end to be atom-aligned
+		// or at the end of the memory object. That is why the vkMapMemory above is
+		// VK_WHOLE_SIZE too: the allocation is whatever vkGetBufferMemoryRequirements rounded
+		// `size` up to, so mapping [0, size) would end short of it.
 		VkMappedMemoryRange flushRange = {
 			VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
 			nullptr,
