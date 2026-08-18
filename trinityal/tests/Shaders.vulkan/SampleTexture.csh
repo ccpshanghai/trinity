@@ -1,4 +1,4 @@
-// Copyright © 2023 CCP ehf.
+// Copyright © 2026 CCP ehf.
 
 Texture2D<float> tex: register(t0, space1);
 SamplerState sampl: register(s0, space1);

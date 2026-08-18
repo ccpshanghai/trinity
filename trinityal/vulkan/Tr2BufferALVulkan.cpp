@@ -1,8 +1,4 @@
-////////////////////////////////////////////////////////////
-//
-//    Created:   April 2019
-//    Copyright: CCP 2019
-//
+// Copyright © 2026 CCP ehf.
 
 #include "StdAfx.h"
 

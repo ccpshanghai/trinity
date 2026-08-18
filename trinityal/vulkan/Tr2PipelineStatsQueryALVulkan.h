@@ -1,3 +1,5 @@
+// Copyright © 2026 CCP ehf.
+
 #pragma once
 
 #if TRINITY_PLATFORM == TRINITY_VULKAN

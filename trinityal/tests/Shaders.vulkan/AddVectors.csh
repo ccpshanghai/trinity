@@ -1,4 +1,4 @@
-// Copyright © 2023 CCP ehf.
+// Copyright © 2026 CCP ehf.
 
 Buffer<float4> arg1: register(t0, space1);
 Buffer<float4> arg2: register(t1, space1);
