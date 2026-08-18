@@ -45,6 +45,10 @@ namespace TrinityALImpl
 		VkBufferView m_bufferView;
 		Tr2PrimaryRenderContextAL* m_owner;
 		Tr2BufferDescriptionAL m_desc;
+		// The host pointer while a Map* is outstanding, null otherwise. The unmaps key
+		// off this rather than off IsValid(), because the AL's tests call Unmap after a
+		// Map that failed, and vkUnmapMemory on unmapped memory is undefined behaviour.
+		void* m_mapped;
 
 		friend class Tr2RenderContextAL;
 		friend class Tr2ResourceSetAL;
