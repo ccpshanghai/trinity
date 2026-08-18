@@ -290,6 +290,31 @@ namespace TrinityALImpl
 		{
 			return E_INVALIDCALL;
 		}
+
+		// The GPU may still owe us this buffer's contents -- a compute shader that wrote
+		// it through a UAV, or Create's own staging copy, is only recorded, not run.
+		// Make those writes available to the host, then submit and wait. Without the
+		// wait the map returns memory the GPU has not touched yet, which is what made
+		// every Compute test read back zeros while reporting S_OK.
+		VkBufferMemoryBarrier barrier = {
+			VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+			nullptr,
+			VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+			VK_ACCESS_HOST_READ_BIT,
+			VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED,
+			m_buffer,
+			0,
+			VK_WHOLE_SIZE
+		};
+		vkCmdPipelineBarrier(
+			m_owner->m_commandBuffer,
+			VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+			VK_PIPELINE_STAGE_HOST_BIT,
+			0, 0, nullptr, 1, &barrier, 0, nullptr );
+
+		FORWARD_HR( m_owner->FlushAndSyncVulkan() );
+
 		// No vkInvalidateMappedMemoryRanges: the allocation is HOST_COHERENT.
 		void* mapped = nullptr;
 		CR_RETURN_HR( Vk2Al( vkMapMemory( m_owner->m_device, m_memory, offset, size, 0, &mapped ) ) );

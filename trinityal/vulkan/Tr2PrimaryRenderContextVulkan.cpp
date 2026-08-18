@@ -200,7 +200,8 @@ Tr2PrimaryRenderContextAL::Tr2PrimaryRenderContextAL()
 	m_currentImage( 0 ),
 	m_zeroBuffer( VK_NULL_HANDLE ),
 	m_zeroBufferMemory( VK_NULL_HANDLE ),
-	m_frameIndex( 0 )
+	m_frameIndex( 0 ),
+	m_acquireWaited( false )
 {
 	m_defaultBackBuffer.m_texture = std::make_shared<TrinityALImpl::Tr2TextureAL>();
 }
@@ -576,12 +577,14 @@ ALResult Tr2PrimaryRenderContextAL::Present()
 
 	CR_RETURN_HR( Vk2Al( vkEndCommandBuffer( m_commandBuffer ) ) );
 
+	// A FlushAndSyncVulkan earlier in the frame will already have consumed the acquire
+	// semaphore; waiting on it a second time would wait for a signal that never comes.
 	VkPipelineStageFlags waitMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
 	VkSubmitInfo submitInfo = {
 		VK_STRUCTURE_TYPE_SUBMIT_INFO,
 		nullptr,
-		1,
-		&m_frameData[m_frameIndex].imageAvailableSemaphore,
+		m_acquireWaited ? 0u : 1u,
+		m_acquireWaited ? nullptr : &m_frameData[m_frameIndex].imageAvailableSemaphore,
 		&waitMask,
 		1,
 		&m_commandBuffer,
@@ -589,6 +592,7 @@ ALResult Tr2PrimaryRenderContextAL::Present()
 		&m_frameData[m_frameIndex].finishedRenderingSemaphore
 	};
 	CR_RETURN_HR( Vk2Al( vkQueueSubmit( m_presentQueue, 1, &submitInfo, m_frameData[m_frameIndex].fence ) ) );
+	m_acquireWaited = true;
 
 	VkPresentInfoKHR presentInfo = {
 		VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -603,6 +607,68 @@ ALResult Tr2PrimaryRenderContextAL::Present()
 	CR_RETURN_HR( Vk2Al( vkQueuePresentKHR( m_presentQueue, &presentInfo ) ) );
 
 	FORWARD_HR( BeginFrame() );
+
+	return S_OK;
+}
+
+ALResult Tr2PrimaryRenderContextAL::FlushAndSyncVulkan()
+{
+	if( !IsValid() )
+	{
+		return E_INVALIDCALL;
+	}
+
+	// Recording has to be outside a render pass instance to end the command buffer. The
+	// backend already ends and lazily re-begins render passes mid-frame (see the clear
+	// path in Tr2RenderContextVulkan.cpp), so dropping it here is not a new behaviour --
+	// but it does mean a caller that flushes mid-pass pays a pass restart, which on a
+	// tiler is a resolve and a reload. That is the tile-GPU cost this backend's design
+	// notes warn about, and it is why this is a readback path and not a general one.
+	if( m_renderPass )
+	{
+		vkCmdEndRenderPass( m_commandBuffer );
+		m_renderPass = VK_NULL_HANDLE;
+	}
+
+	CR_RETURN_HR( Vk2Al( vkEndCommandBuffer( m_commandBuffer ) ) );
+
+	// No signal semaphore: nothing is being presented and nothing downstream is waiting
+	// on this. The wait is the acquire semaphore, and only if Present has not taken it --
+	// BeginFrame records a barrier against the acquired image, and that barrier is in the
+	// command buffer being submitted here.
+	VkPipelineStageFlags waitMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+	VkSubmitInfo submitInfo = {
+		VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		nullptr,
+		m_acquireWaited ? 0u : 1u,
+		m_acquireWaited ? nullptr : &m_frameData[m_frameIndex].imageAvailableSemaphore,
+		&waitMask,
+		1,
+		&m_commandBuffer,
+		0,
+		nullptr
+	};
+	CR_RETURN_HR( Vk2Al( vkQueueSubmit( m_presentQueue, 1, &submitInfo, VK_NULL_HANDLE ) ) );
+	m_acquireWaited = true;
+
+	// vkQueueWaitIdle rather than a fence: the frame fences belong to Present, and this
+	// path is a stall regardless of how the wait is spelled.
+	CR_RETURN_HR( Vk2Al( vkQueueWaitIdle( m_presentQueue ) ) );
+
+	// Carry on recording into the same command buffer. vkBeginCommandBuffer implicitly
+	// resets it because the pool carries VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT.
+	//
+	// Deliberately NOT re-running BeginFrame's barrier: that one transitions the back
+	// buffer from VK_IMAGE_LAYOUT_UNDEFINED, which discards its contents, and everything
+	// drawn before this flush is in there. The layout persists across the submit, so
+	// Present's barrier still finds TRANSFER_DST_OPTIMAL where it expects it.
+	VkCommandBufferBeginInfo cmd_buffer_begin_info = {
+		VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		nullptr,
+		VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+		nullptr
+	};
+	CR_RETURN_HR( Vk2Al( vkBeginCommandBuffer( m_commandBuffer, &cmd_buffer_begin_info ) ) );
 
 	return S_OK;
 }
@@ -624,6 +690,9 @@ ALResult Tr2PrimaryRenderContextAL::BeginFrame()
 	CR_RETURN_HR( Vk2Al( vkAcquireNextImageKHR( m_device, m_swapChain, UINT64_MAX, m_frameData[m_frameIndex].imageAvailableSemaphore, VK_NULL_HANDLE, &m_currentImage ) ) );
 	m_defaultBackBuffer.m_texture->SetCurrentImageVulkan( m_currentImage );
 	m_commandBuffer = m_frameData[m_frameIndex].commandBuffer;
+
+	// Freshly signalled, and nothing has waited on it yet. See the member's comment.
+	m_acquireWaited = false;
 
 	VkCommandBufferBeginInfo cmd_buffer_begin_info = {
 		VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,

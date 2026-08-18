@@ -83,6 +83,20 @@ public:
 	{
 		return m_defaultBackBuffer;
 	}
+
+	// Submit everything recorded so far and wait for the GPU to finish it, then carry on
+	// recording into the same command buffer. The dx12 equivalent is FlushAndSyncDx12,
+	// and it is called from the same place: a CPU read of something the GPU wrote.
+	//
+	// Until this existed the only vkQueueSubmit in the backend was the one inside
+	// Present, so there was no way to make GPU work observable without also presenting a
+	// frame -- and every Map-for-read returned host memory the GPU had not written yet.
+	// That is what made all three Compute tests return zeros while every AL call
+	// reported S_OK.
+	//
+	// This is a full stall by design, as dx12's is. It is a readback path.
+	ALResult FlushAndSyncVulkan();
+
 private:
 	Tr2PrimaryRenderContextAL( const Tr2PrimaryRenderContextAL& ) /* = delete */;
 	Tr2PrimaryRenderContextAL& operator=( const Tr2PrimaryRenderContextAL& ) /* = delete */;
@@ -110,6 +124,14 @@ private:
 	static const uint32_t VIRTUAL_FRAMES = 3;
 	FrameData m_frameData[VIRTUAL_FRAMES];
 	uint32_t m_frameIndex;
+
+	// imageAvailableSemaphore is a binary semaphore signalled by vkAcquireNextImageKHR in
+	// BeginFrame, and BeginFrame immediately records a barrier against the acquired image
+	// -- so whichever submit carries that barrier has to wait on it. Normally that is
+	// Present's. When FlushAndSyncVulkan submits first it must take the wait instead, and
+	// Present must then not wait on an already-consumed semaphore, which would never be
+	// signalled again and would hang. This flag is which of the two has it.
+	bool m_acquireWaited;
 
 	ALResult BeginFrame();
 
