@@ -173,10 +173,20 @@ namespace TrinityALImpl
 			{
 				for( uint32_t j = 0; j < desc.GetMipCount(); ++j )
 				{
+					// bufferImageHeight counts ROWS, so the slice pitch has to be divided by the ROW
+					// pitch. Dividing it by the pixel size instead made the GPU believe every slice
+					// was width-times taller than it is and read that far past the staging buffer:
+					// for the 32x32x32 BGRA8 volume in Rendering.CanSampleVolumeTexture it asked for
+					// 4067328 bytes out of a 131072-byte buffer. That is
+					// VUID-vkCmdCopyBufferToImage-pRegions-00171, and the page fault it caused lost
+					// the device -- which is why a later, unrelated test was the first to see
+					// VK_ERROR_DEVICE_LOST. 2D uploads never showed it because sliceExtent only
+					// matters once depth or layerCount exceeds 1.
+					const uint32_t rowPitch = initialData[index].m_sysMemPitch;
 					VkBufferImageCopy buffer_image_copy_info = {
 						size,                                  // VkDeviceSize               bufferOffset
-						initialData[index].m_sysMemPitch / Tr2RenderContextEnum::GetBytesPerPixel( desc.GetFormat() ),   // uint32_t                   bufferRowLength
-						initialData[index].m_sysMemSlicePitch / Tr2RenderContextEnum::GetBytesPerPixel( desc.GetFormat() ),                                  // uint32_t                   bufferImageHeight
+						rowPitch / Tr2RenderContextEnum::GetBytesPerPixel( desc.GetFormat() ),   // uint32_t                   bufferRowLength
+						rowPitch ? initialData[index].m_sysMemSlicePitch / rowPitch : 0,                                  // uint32_t                   bufferImageHeight
 						{ VK_IMAGE_ASPECT_COLOR_BIT, j, i, 1 },
 						{ 0, 0, 0 },
 						{ desc.GetMipWidth( j ), desc.GetMipHeight( j ), desc.GetMipDepth( j ) }
