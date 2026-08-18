@@ -182,7 +182,6 @@ namespace
 Tr2PrimaryRenderContextAL::FrameData::FrameData()
 	:commandBuffer( VK_NULL_HANDLE ),
 	imageAvailableSemaphore( VK_NULL_HANDLE ),
-	finishedRenderingSemaphore( VK_NULL_HANDLE ),
 	fence( VK_NULL_HANDLE )
 {
 }
@@ -232,6 +231,7 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	VkSwapchainKHR swapChain = VK_NULL_HANDLE;
 	ON_BLOCK_EXIT( [=] { if( swapChain != VK_NULL_HANDLE ) vkDestroySwapchainKHR( device, swapChain, nullptr ); } );
 	std::vector<VkImage> backBuffers;
+	std::vector<VkSemaphore> finishedRenderingSemaphores;
 
 	uint32_t graphicsQueue = physicalDevice.graphicsQueue;
 	uint32_t presentQueue = graphicsQueue;
@@ -360,6 +360,15 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		};
 
 		CR_RETURN_HR( TrinityALImpl::QueryArray( &vkGetSwapchainImagesKHR, device, swapChain, backBuffers ) );
+
+		// One per image, not one per virtual frame -- see the member's comment. The count is
+		// whatever the driver actually handed back, which need not be the number we asked for
+		// and need not equal VIRTUAL_FRAMES.
+		finishedRenderingSemaphores.resize( backBuffers.size(), VK_NULL_HANDLE );
+		for( size_t i = 0; i < finishedRenderingSemaphores.size(); ++i )
+		{
+			CR_RETURN_HR( Vk2Al( vkCreateSemaphore( device, &semaphoreInfo, nullptr, &finishedRenderingSemaphores[i] ) ) );
+		}
 	}
 
 
@@ -395,12 +404,10 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 			};
 
 			CR_RETURN_HR( Vk2Al( vkCreateSemaphore( device, &semaphoreInfo, nullptr, &frameData[i].imageAvailableSemaphore ) ) );
-			CR_RETURN_HR( Vk2Al( vkCreateSemaphore( device, &semaphoreInfo, nullptr, &frameData[i].finishedRenderingSemaphore ) ) );
 		}
 		else
 		{
 			frameData[i].imageAvailableSemaphore = VK_NULL_HANDLE;
-			frameData[i].finishedRenderingSemaphore = VK_NULL_HANDLE;
 		}
 
 		VkFenceCreateInfo fenceCreateInfo = {
@@ -425,6 +432,8 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		m_frameData[i] = frameData[i];
 	}
 
+	m_finishedRenderingSemaphores = finishedRenderingSemaphores;
+
 	m_defaultBackBuffer.m_texture->AssignFromSwapChainVulkan( backBuffers, presentationParameters.mode, *this );
 
 	m_commandPool = commandPool;
@@ -434,6 +443,7 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	surface = VK_NULL_HANDLE;
 	swapChain = VK_NULL_HANDLE;
 	backBuffers.clear();
+	finishedRenderingSemaphores.clear();
 	commandPool = VK_NULL_HANDLE;
 
 	m_owner = this;
@@ -496,11 +506,6 @@ void Tr2PrimaryRenderContextAL::Destroy()
 			vkDestroyFence( m_device, m_frameData[i].fence, nullptr );
 			m_frameData[i].fence = VK_NULL_HANDLE;
 		}
-		if( m_frameData[i].finishedRenderingSemaphore != VK_NULL_HANDLE )
-		{
-			vkDestroySemaphore( m_device, m_frameData[i].finishedRenderingSemaphore, nullptr );
-			m_frameData[i].finishedRenderingSemaphore = VK_NULL_HANDLE;
-		}
 		if( m_frameData[i].imageAvailableSemaphore != VK_NULL_HANDLE )
 		{
 			vkDestroySemaphore( m_device, m_frameData[i].imageAvailableSemaphore, nullptr );
@@ -513,6 +518,15 @@ void Tr2PrimaryRenderContextAL::Destroy()
 		}
 		m_frameData[i].pendingDestroys.clear();
 	}
+
+	for( size_t i = 0; i < m_finishedRenderingSemaphores.size(); ++i )
+	{
+		if( m_finishedRenderingSemaphores[i] != VK_NULL_HANDLE )
+		{
+			vkDestroySemaphore( m_device, m_finishedRenderingSemaphores[i], nullptr );
+		}
+	}
+	m_finishedRenderingSemaphores.clear();
 
 	if( m_commandPool != VK_NULL_HANDLE )
 	{
@@ -577,6 +591,13 @@ ALResult Tr2PrimaryRenderContextAL::Present()
 
 	CR_RETURN_HR( Vk2Al( vkEndCommandBuffer( m_commandBuffer ) ) );
 
+	// Indexed by the image we acquired, not by the frame -- see the member's comment. The
+	// windowless path has no swapchain and so no semaphores; VK_NULL_HANDLE there is what
+	// the per-frame code put in this slot as well.
+	VkSemaphore renderFinishedSemaphore = m_currentImage < m_finishedRenderingSemaphores.size()
+		? m_finishedRenderingSemaphores[m_currentImage]
+		: VK_NULL_HANDLE;
+
 	// A FlushAndSyncVulkan earlier in the frame will already have consumed the acquire
 	// semaphore; waiting on it a second time would wait for a signal that never comes.
 	VkPipelineStageFlags waitMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
@@ -589,7 +610,7 @@ ALResult Tr2PrimaryRenderContextAL::Present()
 		1,
 		&m_commandBuffer,
 		1,
-		&m_frameData[m_frameIndex].finishedRenderingSemaphore
+		&renderFinishedSemaphore
 	};
 	CR_RETURN_HR( Vk2Al( vkQueueSubmit( m_presentQueue, 1, &submitInfo, m_frameData[m_frameIndex].fence ) ) );
 	m_acquireWaited = true;
@@ -598,7 +619,7 @@ ALResult Tr2PrimaryRenderContextAL::Present()
 		VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
 		nullptr,
 		1,
-		&m_frameData[m_frameIndex].finishedRenderingSemaphore,
+		&renderFinishedSemaphore,
 		1,
 		&m_swapChain,
 		&m_currentImage,

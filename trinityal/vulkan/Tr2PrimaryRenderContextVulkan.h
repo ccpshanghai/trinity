@@ -114,7 +114,6 @@ private:
 		//VkFramebuffer framebuffer;
 		VkCommandBuffer commandBuffer;
 		VkSemaphore imageAvailableSemaphore;
-		VkSemaphore finishedRenderingSemaphore;
 		VkFence fence;
 		std::vector<PendingDestroy> pendingDestroys;
 
@@ -142,6 +141,21 @@ private:
 	VkSwapchainKHR m_swapChain;
 	VkSurfaceKHR m_surface;
 	uint32_t m_currentImage;
+
+	// One binary semaphore per swapchain image, NOT per virtual frame. It is signalled by
+	// Present's submit and waited on by vkQueuePresentKHR for image m_currentImage, so it
+	// stays in use until that present completes -- and the only thing that proves a present
+	// completed is the image coming back out of vkAcquireNextImageKHR. The frame fence does
+	// not prove it: the fence says the submit finished, not the present.
+	//
+	// Frame index is not that proof either. The presentation engine hands back whichever
+	// image is free, so the two indices desync -- observed acquire order on a 3-image
+	// swapchain with VIRTUAL_FRAMES == 3 was 2,0,1,2,0,1,2,2. At that last 2 the frame index
+	// had come round to the semaphore last used to present image 0, which had not been
+	// re-acquired, so signalling it again broke
+	// VUID-vkQueueSubmit-pSignalSemaphores-00067 and this driver answered the submit with
+	// VK_ERROR_DEVICE_LOST.
+	std::vector<VkSemaphore> m_finishedRenderingSemaphores;
 
 	VkCommandPool m_commandPool;
 
