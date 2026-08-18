@@ -75,6 +75,7 @@ namespace TrinityALImpl
 		:m_owner( nullptr ),
 		m_resourceLayout( VK_NULL_HANDLE ),
 		m_constantLayout( VK_NULL_HANDLE ),
+		m_emptyLayout( VK_NULL_HANDLE ),
 		m_pipelineLayout( VK_NULL_HANDLE )
 	{
 	}
@@ -232,10 +233,9 @@ namespace TrinityALImpl
 			else
 			{
 				VkDescriptorSetLayoutCreateInfo emptyLayoutInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, nullptr, 0, 0, nullptr };
-				VkDescriptorSetLayout emptyLayout = VK_NULL_HANDLE;
-				CR_RETURN_HR( Vk2Al( vkCreateDescriptorSetLayout( renderContext.m_device, &emptyLayoutInfo, nullptr, &emptyLayout ) ) );
+				CR_RETURN_HR( Vk2Al( vkCreateDescriptorSetLayout( renderContext.m_device, &emptyLayoutInfo, nullptr, &m_emptyLayout ) ) );
 
-				layouts[size++] = emptyLayout;
+				layouts[size++] = m_emptyLayout;
 			}
 			if( m_resourceLayout )
 			{
@@ -267,9 +267,11 @@ namespace TrinityALImpl
 		{
 			m_owner->DestroyLaterVulkan( m_resourceLayout, vkDestroyDescriptorSetLayout );
 			m_owner->DestroyLaterVulkan( m_constantLayout, vkDestroyDescriptorSetLayout );
+			m_owner->DestroyLaterVulkan( m_emptyLayout, vkDestroyDescriptorSetLayout );
 			m_owner->DestroyLaterVulkan( m_pipelineLayout, vkDestroyPipelineLayout );
 			m_resourceLayout = VK_NULL_HANDLE;
 			m_constantLayout = VK_NULL_HANDLE;
+			m_emptyLayout = VK_NULL_HANDLE;
 			m_pipelineLayout = VK_NULL_HANDLE;
 			m_owner = nullptr;
 		}

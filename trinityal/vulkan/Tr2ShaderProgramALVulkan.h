@@ -37,6 +37,13 @@ namespace TrinityALImpl
 		VkDescriptorSetLayout m_resourceLayout;
 		VkDescriptorSetLayout m_constantLayout;
 
+		// Set 0 still has to exist in the pipeline layout when the program has resources but
+		// no constants, so Create makes an empty one to occupy it. It is an ordinary device
+		// object and has to be destroyed; keeping it only in a local leaked one
+		// VkDescriptorSetLayout per such program -- 19 of the 57 objects
+		// VUID-vkDestroyDevice-device-05137 reported.
+		VkDescriptorSetLayout m_emptyLayout;
+
 		//std::vector<VkDescriptorSetLayout> m_layouts;
 		Tr2PrimaryRenderContextAL* m_owner;
 

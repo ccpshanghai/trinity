@@ -169,6 +169,23 @@ namespace TrinityALImpl
 			std::vector<VkBufferImageCopy> copyInfo;
 			size_t index = 0;
 			size_t size = 0;
+
+			// bufferRowLength and bufferImageHeight are both counted in TEXELS, and for a
+			// block-compressed format they have to be multiples of the block extent. The
+			// source pitches are byte counts over block rows, so both conversions go through
+			// the block size -- the same split BitmapDimensions::GetMipPitch already makes.
+			//
+			// GetBytesPerPixel returns 0 for every BC format, so dividing by it was an integer
+			// divide by zero. All four Rendering.CanSampleBc* tests died on SEH 0xc0000094,
+			// and because an SEH unwind does not run C++ destructors, every object those tests
+			// had built leaked through to vkDestroyDevice: 40 of the 57 objects reported by
+			// VUID-vkDestroyDevice-device-05137 came from these four tests alone.
+			const bool isCompressed = Tr2RenderContextEnum::IsCompressedFormat( desc.GetFormat() );
+			const uint32_t blockWidth = isCompressed ? 4u : 1u;
+			const uint32_t blockHeight = isCompressed ? 4u : 1u;
+			const uint32_t blockBytes = isCompressed
+				? Tr2RenderContextEnum::GetBlockByteSize( desc.GetFormat() )
+				: Tr2RenderContextEnum::GetBytesPerPixel( desc.GetFormat() );
 			for( uint32_t i = 0; i < desc.GetArraySize(); ++i )
 			{
 				for( uint32_t j = 0; j < desc.GetMipCount(); ++j )
@@ -185,8 +202,8 @@ namespace TrinityALImpl
 					const uint32_t rowPitch = initialData[index].m_sysMemPitch;
 					VkBufferImageCopy buffer_image_copy_info = {
 						size,                                  // VkDeviceSize               bufferOffset
-						rowPitch / Tr2RenderContextEnum::GetBytesPerPixel( desc.GetFormat() ),   // uint32_t                   bufferRowLength
-						rowPitch ? initialData[index].m_sysMemSlicePitch / rowPitch : 0,                                  // uint32_t                   bufferImageHeight
+						blockBytes ? rowPitch / blockBytes * blockWidth : 0,   // uint32_t                   bufferRowLength
+						rowPitch ? initialData[index].m_sysMemSlicePitch / rowPitch * blockHeight : 0,   // uint32_t                   bufferImageHeight
 						{ VK_IMAGE_ASPECT_COLOR_BIT, j, i, 1 },
 						{ 0, 0, 0 },
 						{ desc.GetMipWidth( j ), desc.GetMipHeight( j ), desc.GetMipDepth( j ) }
