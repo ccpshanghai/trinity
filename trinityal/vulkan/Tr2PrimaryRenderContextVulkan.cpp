@@ -745,7 +745,10 @@ ALResult Tr2PrimaryRenderContextAL::BeginFrame()
 	++m_recordingFrame;
 
 	m_frameIndex = ( m_frameIndex + 1 ) % VIRTUAL_FRAMES;
-	CR( Vk2Al( vkWaitForFences( m_device, 1, &m_frameData[m_frameIndex].fence, VK_FALSE, 1000000000 ) ) );
+	// ExactSuccess, not Vk2Al: VK_TIMEOUT is a Vulkan success code, but a fence that has
+	// not signalled in a second means the GPU is not coming back, and reporting that is the
+	// whole point of having a timeout rather than UINT64_MAX.
+	CR( TrinityALImpl::ExactSuccess( vkWaitForFences( m_device, 1, &m_frameData[m_frameIndex].fence, VK_FALSE, 1000000000 ) ) );
 	vkResetFences( m_device, 1, &m_frameData[m_frameIndex].fence );
 
 	for( auto it = begin( m_frameData[m_frameIndex].pendingDestroys ); it != end( m_frameData[m_frameIndex].pendingDestroys ); ++it )

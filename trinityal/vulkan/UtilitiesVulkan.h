@@ -11,6 +11,16 @@ struct Tr2MsaaDesc;
 namespace TrinityALImpl
 {
 
+	// VK_INCOMPLETE means the array was too small and only partly filled. It is a Vulkan
+	// *success* code, so Vk2Al maps it to S_FALSE and CR_RETURN_HR would carry on with a
+	// truncated vector -- which is why the fill calls below test for VK_SUCCESS exactly
+	// rather than going through Vk2Al. It happens when the count changes between the two
+	// calls, which for physical devices or present modes is unlikely but not impossible.
+	inline ALResult ExactSuccess( VkResult result )
+	{
+		return result == VK_SUCCESS ? ALResult( S_OK ) : ALResult( E_FAIL );
+	}
+
 	template <typename Func, typename A1, typename Result>
 	ALResult QueryArray( Func func, A1 a1, std::vector<Result>& result )
 	{
@@ -20,7 +30,7 @@ namespace TrinityALImpl
 		if( count )
 		{
 			result.resize( count );
-			CR_RETURN_HR( Vk2Al( ( *func )( a1, &count, &result[0] ) ) );
+			CR_RETURN_HR( ExactSuccess( ( *func )( a1, &count, &result[0] ) ) );
 		}
 		return S_OK;
 	}
@@ -34,7 +44,7 @@ namespace TrinityALImpl
 		if( count )
 		{
 			result.resize( count );
-			CR_RETURN_HR( Vk2Al( ( *func )( a1, a2, &count, &result[0] ) ) );
+			CR_RETURN_HR( ExactSuccess( ( *func )( a1, a2, &count, &result[0] ) ) );
 		}
 		return S_OK;
 	}
