@@ -45,39 +45,26 @@ namespace TrinityALImpl
 		{
 			return MapForReading( region, true, data, pitch, renderContext );
 		}
-		ALResult MapForReading( const Tr2TextureSubresource& region, bool synchronize, const void*& data, uint32_t& pitch, Tr2RenderContextAL& renderContext )
-		{
-			return E_NOTIMPL;
-		}
-		void UnmapForReading( Tr2RenderContextAL& renderContext )
-		{
-
-		}
-		ALResult MapForWriting( const Tr2TextureSubresource& region, void*& data, uint32_t& pitch, Tr2RenderContextAL& renderContext )
-		{
-			return E_NOTIMPL;
-		}
-		void UnmapForWriting( Tr2RenderContextAL& renderContext )
-		{
-
-		}
+		// Both directions go through a host-visible staging buffer, because a device-local
+		// optimally-tiled image cannot be mapped at all and the AL's contract is a pointer
+		// plus a row pitch. Reading copies image to buffer and stalls; writing fills the
+		// buffer and copies it back at Unmap.
+		//
+		// The pitch reported is the tightly packed one for the mapped region, which is what
+		// the staging buffer is laid out as -- not the image's own row pitch, which for an
+		// optimally-tiled image is not a thing the application may know.
+		ALResult MapForReading( const Tr2TextureSubresource& region, bool synchronize, const void*& data, uint32_t& pitch, Tr2RenderContextAL& renderContext );
+		void UnmapForReading( Tr2RenderContextAL& renderContext );
+		ALResult MapForWriting( const Tr2TextureSubresource& region, void*& data, uint32_t& pitch, Tr2RenderContextAL& renderContext );
+		void UnmapForWriting( Tr2RenderContextAL& renderContext );
 
 		ALResult UpdateSubresource( const Tr2TextureSubresource& region, const void* source, uint32_t pitch, uint32_t slicePitch, Tr2RenderContextAL& renderContext )
 		{
 			return E_NOTIMPL;
 		}
-		ALResult CopySubresourceRegion( const Tr2TextureSubresource& destSubresource, Tr2TextureAL& source, const Tr2TextureSubresource& sourceSubresource, Tr2RenderContextAL& renderContext )
-		{
-			return E_NOTIMPL;
-		}
-		ALResult GenerateMipMaps( Tr2RenderContextAL& renderContext )
-		{
-			return E_NOTIMPL;
-		}
-		ALResult Resolve( Tr2TextureAL& destination, Tr2RenderContextAL& renderContext )
-		{
-			return E_NOTIMPL;
-		}
+		ALResult CopySubresourceRegion( const Tr2TextureSubresource& destSubresource, Tr2TextureAL& source, const Tr2TextureSubresource& sourceSubresource, Tr2RenderContextAL& renderContext );
+		ALResult GenerateMipMaps( Tr2RenderContextAL& renderContext );
+		ALResult Resolve( Tr2TextureAL& destination, Tr2RenderContextAL& renderContext );
 		uintptr_t GetSharedHandle() const
 		{
 			return 0;
@@ -138,6 +125,16 @@ namespace TrinityALImpl
 		// Keyed by image index, mip and layer packed together; see
 		// GetAttachmentViewVulkan.
 		std::map<uint32_t, VkImageView> m_attachmentViews;
+
+		// The staging buffer behind whichever map is currently open. One at a time: the AL
+		// has no handle to distinguish two simultaneous maps of the same texture, so a
+		// second Map before the matching Unmap is a caller error rather than something to
+		// support.
+		VkBuffer m_mapBuffer;
+		VkDeviceMemory m_mapMemory;
+		uint32_t m_mapPitch;
+		Tr2TextureSubresource m_mapRegion;
+		bool m_mapIsWrite;
 		VkDeviceMemory m_memory;
 		Tr2PrimaryRenderContextAL* m_owner;
 		uint32_t m_currentIndex;

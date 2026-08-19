@@ -4,6 +4,8 @@
 
 #if TRINITY_PLATFORM == TRINITY_VULKAN
 
+#include <set>
+
 #include "../include/Tr2ShaderProgramAL.h"
 #include "../include/Tr2ShaderAL.h"
 #include "../include/Tr2ResourceSetAL.h"
@@ -36,6 +38,12 @@ namespace TrinityALImpl
 
 		VkDescriptorSetLayout m_resourceLayout;
 		VkDescriptorSetLayout m_constantLayout;
+
+		// The binding numbers m_constantLayout declares. BindConstantBuffers writes one
+		// descriptor per constant buffer the caller has set, and a caller sets whatever it
+		// has -- writing to a binding the layout does not declare is
+		// VUID-VkWriteDescriptorSet-dstBinding-00315, so the writer has to be able to ask.
+		std::set<uint32_t> m_constantBindings;
 
 		// Set 0 still has to exist in the pipeline layout when the program has resources but
 		// no constants, so Create makes an empty one to occupy it. It is an ordinary device

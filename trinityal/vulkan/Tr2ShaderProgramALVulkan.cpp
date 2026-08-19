@@ -200,6 +200,11 @@ namespace TrinityALImpl
 
 		if( !constantBindings.empty() )
 		{
+			for( auto it = begin( constantBindings ); it != end( constantBindings ); ++it )
+			{
+				m_constantBindings.insert( it->binding );
+			}
+
 			VkDescriptorSetLayoutCreateInfo layoutInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, nullptr, 0 };
 			layoutInfo.bindingCount = uint32_t( constantBindings.size() );
 			layoutInfo.pBindings = constantBindings.data();
@@ -271,6 +276,7 @@ namespace TrinityALImpl
 			m_owner->DestroyLaterVulkan( m_pipelineLayout, vkDestroyPipelineLayout );
 			m_resourceLayout = VK_NULL_HANDLE;
 			m_constantLayout = VK_NULL_HANDLE;
+			m_constantBindings.clear();
 			m_emptyLayout = VK_NULL_HANDLE;
 			m_pipelineLayout = VK_NULL_HANDLE;
 			m_owner = nullptr;

@@ -91,7 +91,11 @@ namespace TrinityALImpl
 		m_currentIndex( 0 ),
 		m_cpuUsage( Tr2CpuUsage::NONE ),
 		m_gpuUsage( Tr2GpuUsage::NONE ),
-		m_format( VK_FORMAT_UNDEFINED )
+		m_format( VK_FORMAT_UNDEFINED ),
+		m_mapBuffer( VK_NULL_HANDLE ),
+		m_mapMemory( VK_NULL_HANDLE ),
+		m_mapPitch( 0 ),
+		m_mapIsWrite( false )
 	{
 	}
 
@@ -116,7 +120,13 @@ namespace TrinityALImpl
 			return E_INVALIDARG;
 		}
 
-		VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+		// TRANSFER_SRC as well as TRANSFER_DST, and both unconditionally, for the same
+		// reason Tr2BufferALVulkan.cpp gives for its TRANSFER_DST: everything that reads an
+		// image back needs it and none of them can be predicted from the usage flags the
+		// caller passes. MapForReading, CopySubresourceRegion, Resolve and GenerateMipMaps
+		// all copy *from* the image; without the bit, vkCmdCopyImageToBuffer is
+		// VUID-vkCmdCopyImageToBuffer-srcImage-00186 and the driver loses the device.
+		VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 		if( HasFlag( gpuUsage, Tr2GpuUsage::SHADER_RESOURCE ) )
 		{
 			usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -324,6 +334,19 @@ namespace TrinityALImpl
 					m_owner->DestroyLaterVulkan( *it, vkDestroyImage );
 				}
 			}
+			// An open map holds a staging buffer. Leaving it to the destructor would free
+			// it against a device that Tr2PrimaryRenderContextAL::Destroy has already torn
+			// down, which is the trap the render context's own Destroy documents.
+			if( m_mapBuffer != VK_NULL_HANDLE )
+			{
+				vkUnmapMemory( m_owner->m_device, m_mapMemory );
+				m_owner->DestroyLaterVulkan( m_mapBuffer, &vkDestroyBuffer );
+				m_owner->DestroyLaterVulkan( m_mapMemory, &vkFreeMemory );
+				m_mapBuffer = VK_NULL_HANDLE;
+				m_mapMemory = VK_NULL_HANDLE;
+				m_mapIsWrite = false;
+			}
+
 			m_images.clear();
 			m_imageViews.clear();
 			m_attachmentViews.clear();
@@ -419,6 +442,402 @@ namespace TrinityALImpl
 	void Tr2TextureAL::SetCurrentImageVulkan( uint32_t index )
 	{
 		m_currentIndex = index;
+	}
+
+	namespace
+	{
+		// The mapped region in image coordinates, and the size of the tightly packed
+		// staging buffer that mirrors it. A subresource with no box means the whole mip.
+		void DescribeMappedRegion(
+			const Tr2TextureSubresource& region,
+			const Tr2BitmapDimensions& desc,
+			VkOffset3D& offset,
+			VkExtent3D& extent,
+			uint32_t& pitch,
+			VkDeviceSize& size )
+		{
+			const uint32_t mip = region.m_startMipLevel;
+			if( region.HasBox() )
+			{
+				offset.x = int32_t( region.m_box.left );
+				offset.y = int32_t( region.m_box.top );
+				offset.z = int32_t( region.m_box.front );
+				extent.width = region.GetWidth();
+				extent.height = region.GetHeight();
+				extent.depth = region.GetDepth() ? region.GetDepth() : 1;
+			}
+			else
+			{
+				offset.x = 0;
+				offset.y = 0;
+				offset.z = 0;
+				extent.width = desc.GetMipWidth( mip );
+				extent.height = desc.GetMipHeight( mip );
+				extent.depth = desc.GetMipDepth( mip );
+			}
+
+			const bool isCompressed = Tr2RenderContextEnum::IsCompressedFormat( desc.GetFormat() );
+			if( isCompressed )
+			{
+				// Rows of blocks, not rows of texels -- the same distinction the upload path
+				// in Create has to make.
+				pitch = ( ( extent.width + 3 ) / 4 ) * Tr2RenderContextEnum::GetBlockByteSize( desc.GetFormat() );
+				size = VkDeviceSize( pitch ) * ( ( extent.height + 3 ) / 4 ) * extent.depth;
+			}
+			else
+			{
+				pitch = extent.width * Tr2RenderContextEnum::GetBytesPerPixel( desc.GetFormat() );
+				size = VkDeviceSize( pitch ) * extent.height * extent.depth;
+			}
+		}
+	}
+
+	ALResult Tr2TextureAL::MapForReading( const Tr2TextureSubresource& region, bool synchronize, const void*& data, uint32_t& pitch, Tr2RenderContextAL& renderContext )
+	{
+		data = nullptr;
+		pitch = 0;
+		if( !IsValid() || !m_owner )
+		{
+			return E_INVALIDCALL;
+		}
+		if( m_mapBuffer != VK_NULL_HANDLE )
+		{
+			return E_INVALIDCALL;
+		}
+		if( m_currentIndex >= m_images.size() )
+		{
+			return E_INVALIDCALL;
+		}
+
+		VkOffset3D offset;
+		VkExtent3D extent;
+		VkDeviceSize size = 0;
+		DescribeMappedRegion( region, m_desc, offset, extent, pitch, size );
+		if( size == 0 )
+		{
+			return E_INVALIDARG;
+		}
+
+		VkBuffer buffer = VK_NULL_HANDLE;
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		CR_RETURN_HR( CreateBuffer(
+			buffer,
+			memory,
+			size_t( size ),
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VkMemoryPropertyFlagBits( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ),
+			*m_owner ) );
+
+		// HOST_COHERENT above, so no vkInvalidateMappedMemoryRanges is needed after the
+		// copy -- the same reasoning Tr2BufferALVulkan.cpp documents for its write paths.
+
+		renderContext.EndRenderPassVulkan();
+		TransitionVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
+
+		VkBufferImageCopy copy = {
+			0,
+			0,                                   // tightly packed, so let the extent decide
+			0,
+			{ GetAspectMaskVulkan( m_format ), region.m_startMipLevel, region.m_startFace, 1 },
+			offset,
+			extent
+		};
+		vkCmdCopyImageToBuffer( renderContext.m_commandBuffer, m_images[m_currentIndex], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy );
+
+		if( synchronize )
+		{
+			// The copy has to have happened before the pointer is handed out. This is a
+			// full stall by construction, which is what a CPU read of GPU memory costs.
+			ALResult flushed = m_owner->FlushAndSyncVulkan();
+			if( FAILED( flushed ) )
+			{
+				m_owner->DestroyLaterVulkan( buffer, &vkDestroyBuffer );
+				m_owner->DestroyLaterVulkan( memory, &vkFreeMemory );
+				return flushed;
+			}
+		}
+
+		void* mapped = nullptr;
+		ALResult mappedResult = Vk2Al( vkMapMemory( m_owner->m_device, memory, 0, VK_WHOLE_SIZE, 0, &mapped ) );
+		if( FAILED( mappedResult ) )
+		{
+			m_owner->DestroyLaterVulkan( buffer, &vkDestroyBuffer );
+			m_owner->DestroyLaterVulkan( memory, &vkFreeMemory );
+			return mappedResult;
+		}
+
+		m_mapBuffer = buffer;
+		m_mapMemory = memory;
+		m_mapPitch = pitch;
+		m_mapRegion = region;
+		m_mapIsWrite = false;
+		data = mapped;
+		return S_OK;
+	}
+
+	void Tr2TextureAL::UnmapForReading( Tr2RenderContextAL& )
+	{
+		if( m_mapBuffer == VK_NULL_HANDLE || m_mapIsWrite || !m_owner )
+		{
+			return;
+		}
+		vkUnmapMemory( m_owner->m_device, m_mapMemory );
+		m_owner->DestroyLaterVulkan( m_mapBuffer, &vkDestroyBuffer );
+		m_owner->DestroyLaterVulkan( m_mapMemory, &vkFreeMemory );
+		m_mapBuffer = VK_NULL_HANDLE;
+		m_mapMemory = VK_NULL_HANDLE;
+	}
+
+	ALResult Tr2TextureAL::MapForWriting( const Tr2TextureSubresource& region, void*& data, uint32_t& pitch, Tr2RenderContextAL& renderContext )
+	{
+		data = nullptr;
+		pitch = 0;
+		if( !IsValid() || !m_owner )
+		{
+			return E_INVALIDCALL;
+		}
+		if( m_mapBuffer != VK_NULL_HANDLE )
+		{
+			return E_INVALIDCALL;
+		}
+
+		VkOffset3D offset;
+		VkExtent3D extent;
+		VkDeviceSize size = 0;
+		DescribeMappedRegion( region, m_desc, offset, extent, pitch, size );
+		if( size == 0 )
+		{
+			return E_INVALIDARG;
+		}
+
+		VkBuffer buffer = VK_NULL_HANDLE;
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		CR_RETURN_HR( CreateBuffer(
+			buffer,
+			memory,
+			size_t( size ),
+			VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			VkMemoryPropertyFlagBits( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ),
+			*m_owner ) );
+
+		void* mapped = nullptr;
+		ALResult mappedResult = Vk2Al( vkMapMemory( m_owner->m_device, memory, 0, VK_WHOLE_SIZE, 0, &mapped ) );
+		if( FAILED( mappedResult ) )
+		{
+			m_owner->DestroyLaterVulkan( buffer, &vkDestroyBuffer );
+			m_owner->DestroyLaterVulkan( memory, &vkFreeMemory );
+			return mappedResult;
+		}
+
+		// Nothing is copied here: the caller has not written anything yet. UnmapForWriting
+		// is where the region reaches the image.
+		( void )renderContext;
+		m_mapBuffer = buffer;
+		m_mapMemory = memory;
+		m_mapPitch = pitch;
+		m_mapRegion = region;
+		m_mapIsWrite = true;
+		data = mapped;
+		return S_OK;
+	}
+
+	void Tr2TextureAL::UnmapForWriting( Tr2RenderContextAL& renderContext )
+	{
+		if( m_mapBuffer == VK_NULL_HANDLE || !m_mapIsWrite || !m_owner )
+		{
+			return;
+		}
+		vkUnmapMemory( m_owner->m_device, m_mapMemory );
+
+		VkOffset3D offset;
+		VkExtent3D extent;
+		uint32_t pitch = 0;
+		VkDeviceSize size = 0;
+		DescribeMappedRegion( m_mapRegion, m_desc, offset, extent, pitch, size );
+
+		const VkImageLayout restore = GetLayoutVulkan();
+		renderContext.EndRenderPassVulkan();
+		TransitionVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
+
+		VkBufferImageCopy copy = {
+			0,
+			0,
+			0,
+			{ GetAspectMaskVulkan( m_format ), m_mapRegion.m_startMipLevel, m_mapRegion.m_startFace, 1 },
+			offset,
+			extent
+		};
+		vkCmdCopyBufferToImage( renderContext.m_commandBuffer, m_mapBuffer, m_images[m_currentIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy );
+
+		// Back to where it was, so that a texture being sampled every frame does not have
+		// to wait for SetPass to notice. UNDEFINED means it had never been used, and
+		// transitioning back to that would discard what was just written.
+		if( restore != VK_IMAGE_LAYOUT_UNDEFINED && restore != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL )
+		{
+			TransitionVulkan( renderContext.m_commandBuffer, restore );
+		}
+
+		m_owner->DestroyLaterVulkan( m_mapBuffer, &vkDestroyBuffer );
+		m_owner->DestroyLaterVulkan( m_mapMemory, &vkFreeMemory );
+		m_mapBuffer = VK_NULL_HANDLE;
+		m_mapMemory = VK_NULL_HANDLE;
+		m_mapIsWrite = false;
+	}
+
+	ALResult Tr2TextureAL::CopySubresourceRegion( const Tr2TextureSubresource& destSubresource, Tr2TextureAL& source, const Tr2TextureSubresource& sourceSubresource, Tr2RenderContextAL& renderContext )
+	{
+		if( !IsValid() || !source.IsValid() || !m_owner )
+		{
+			return E_INVALIDCALL;
+		}
+		if( m_currentIndex >= m_images.size() || source.m_currentIndex >= source.m_images.size() )
+		{
+			return E_INVALIDCALL;
+		}
+
+		VkOffset3D srcOffset, dstOffset;
+		VkExtent3D srcExtent, dstExtent;
+		uint32_t ignoredPitch = 0;
+		VkDeviceSize ignoredSize = 0;
+		DescribeMappedRegion( sourceSubresource, source.m_desc, srcOffset, srcExtent, ignoredPitch, ignoredSize );
+		DescribeMappedRegion( destSubresource, m_desc, dstOffset, dstExtent, ignoredPitch, ignoredSize );
+
+		// The source extent wins. vkCmdCopyImage takes one extent for both ends, and the
+		// AL's two subresources can legitimately describe different-sized boxes -- the
+		// destination box says where to put it, not how much to take.
+		VkImageCopy copy = {
+			{ GetAspectMaskVulkan( source.m_format ), sourceSubresource.m_startMipLevel, sourceSubresource.m_startFace, 1 },
+			srcOffset,
+			{ GetAspectMaskVulkan( m_format ), destSubresource.m_startMipLevel, destSubresource.m_startFace, 1 },
+			dstOffset,
+			srcExtent
+		};
+
+		renderContext.EndRenderPassVulkan();
+		source.TransitionVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
+		TransitionVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
+
+		vkCmdCopyImage(
+			renderContext.m_commandBuffer,
+			source.m_images[source.m_currentIndex],
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			m_images[m_currentIndex],
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			1,
+			&copy );
+		return S_OK;
+	}
+
+	ALResult Tr2TextureAL::Resolve( Tr2TextureAL& destination, Tr2RenderContextAL& renderContext )
+	{
+		if( !IsValid() || !destination.IsValid() || !m_owner )
+		{
+			return E_INVALIDCALL;
+		}
+		if( m_currentIndex >= m_images.size() || destination.m_currentIndex >= destination.m_images.size() )
+		{
+			return E_INVALIDCALL;
+		}
+		if( m_msaa.samples <= 1 )
+		{
+			// Resolving a single-sample image is not a resolve; vkCmdResolveImage requires
+			// the source to be multisampled and the destination not to be.
+			return E_INVALIDCALL;
+		}
+
+		VkImageResolve resolve = {
+			{ GetAspectMaskVulkan( m_format ), 0, 0, 1 },
+			{ 0, 0, 0 },
+			{ GetAspectMaskVulkan( destination.m_format ), 0, 0, 1 },
+			{ 0, 0, 0 },
+			{ m_desc.GetWidth(), m_desc.GetHeight(), 1 }
+		};
+
+		renderContext.EndRenderPassVulkan();
+		TransitionVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
+		destination.TransitionVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
+
+		vkCmdResolveImage(
+			renderContext.m_commandBuffer,
+			m_images[m_currentIndex],
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			destination.m_images[destination.m_currentIndex],
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			1,
+			&resolve );
+		return S_OK;
+	}
+
+	ALResult Tr2TextureAL::GenerateMipMaps( Tr2RenderContextAL& renderContext )
+	{
+		if( !IsValid() || !m_owner || m_currentIndex >= m_images.size() )
+		{
+			return E_INVALIDCALL;
+		}
+		const uint32_t mipCount = m_desc.GetTrueMipCount();
+		if( mipCount <= 1 )
+		{
+			return S_OK;
+		}
+		if( Tr2RenderContextEnum::IsCompressedFormat( m_desc.GetFormat() ) )
+		{
+			// vkCmdBlitImage cannot filter a block-compressed format. Generating those
+			// means decompress, downsample, recompress, which is a texture-pipeline job
+			// and not something the AL should be doing behind a caller's back.
+			return E_INVALIDARG;
+		}
+
+		// VK_IMAGE_LAYOUT_GENERAL for the whole image rather than the usual
+		// TRANSFER_SRC/TRANSFER_DST pair, because the blit chain reads level i-1 while
+		// writing level i and the layout tracker is per image, not per level (see
+		// TransitionVulkan). GENERAL is legal for both ends of a blit and keeps the tracker
+		// truthful; a per-level tracker would allow the tighter layouts, and this is the
+		// caller that would justify writing one.
+		renderContext.EndRenderPassVulkan();
+		const VkImageLayout restore = GetLayoutVulkan();
+		TransitionVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_GENERAL );
+
+		const VkImageAspectFlags aspect = GetAspectMaskVulkan( m_format );
+		for( uint32_t level = 1; level < mipCount; ++level )
+		{
+			VkImageMemoryBarrier barrier = {
+				VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+				nullptr,
+				VK_ACCESS_TRANSFER_WRITE_BIT,
+				VK_ACCESS_TRANSFER_READ_BIT,
+				VK_IMAGE_LAYOUT_GENERAL,
+				VK_IMAGE_LAYOUT_GENERAL,
+				VK_QUEUE_FAMILY_IGNORED,
+				VK_QUEUE_FAMILY_IGNORED,
+				m_images[m_currentIndex],
+				{ aspect, level - 1, 1, 0, VK_REMAINING_ARRAY_LAYERS }
+			};
+			// Level i-1 was written by the previous iteration's blit and is about to be
+			// read by this one. No layout change, only the write-then-read ordering.
+			vkCmdPipelineBarrier( renderContext.m_commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier );
+
+			VkImageBlit blit = {
+				{ aspect, level - 1, 0, 1 },
+				{ { 0, 0, 0 }, { int32_t( m_desc.GetMipWidth( level - 1 ) ), int32_t( m_desc.GetMipHeight( level - 1 ) ), int32_t( m_desc.GetMipDepth( level - 1 ) ) } },
+				{ aspect, level, 0, 1 },
+				{ { 0, 0, 0 }, { int32_t( m_desc.GetMipWidth( level ) ), int32_t( m_desc.GetMipHeight( level ) ), int32_t( m_desc.GetMipDepth( level ) ) } }
+			};
+			vkCmdBlitImage(
+				renderContext.m_commandBuffer,
+				m_images[m_currentIndex],
+				VK_IMAGE_LAYOUT_GENERAL,
+				m_images[m_currentIndex],
+				VK_IMAGE_LAYOUT_GENERAL,
+				1,
+				&blit,
+				VK_FILTER_LINEAR );
+		}
+
+		if( restore != VK_IMAGE_LAYOUT_UNDEFINED )
+		{
+			TransitionVulkan( renderContext.m_commandBuffer, restore );
+		}
+		return S_OK;
 	}
 
 	VkImageLayout Tr2TextureAL::GetLayoutVulkan() const

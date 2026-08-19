@@ -1196,6 +1196,14 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 		bufferInfos.reserve( m_constantBuffers.size() );
 		for( auto it = begin( m_constantBuffers ); it != end( m_constantBuffers ); ++it )
 		{
+			// Only the bindings this program's layout declares. m_constantBuffers holds
+			// whatever the caller has set, which outlives any one shader program, and
+			// writing a descriptor to a binding the layout does not have is
+			// VUID-VkWriteDescriptorSet-dstBinding-00315.
+			if( program->m_constantBindings.find( it->first ) == program->m_constantBindings.end() )
+			{
+				continue;
+			}
 			VkDescriptorBufferInfo bufferInfo = { it->second, 0, VK_WHOLE_SIZE };
 			bufferInfos.push_back( bufferInfo );
 			VkWriteDescriptorSet write = {
@@ -1333,11 +1341,22 @@ ALResult Tr2RenderContextAL::CreatePipeline( VkPipeline& pipeline )
 		nullptr
 	};
 
+	// The pipeline's sample count has to match the attachments the render pass declares.
+	// It was hardcoded to one, so any pipeline used with a multisampled render target was
+	// VUID-VkGraphicsPipelineCreateInfo-multisampledRenderToSingleSampled-06853. The count
+	// comes from the same place the attachment description takes it from, so the two
+	// cannot disagree.
+	VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT;
+	if( m_boundRenderTargets[0].IsValid() && m_boundRenderTargets[0].GetMsaaDesc().samples > 1 )
+	{
+		sampleCount = VkSampleCountFlagBits( m_boundRenderTargets[0].GetMsaaDesc().samples );
+	}
+
 	VkPipelineMultisampleStateCreateInfo msaa = {
 		VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
 		nullptr,
 		0,
-		VK_SAMPLE_COUNT_1_BIT,
+		sampleCount,
 		VK_FALSE,
 		1.0f,
 		nullptr,
