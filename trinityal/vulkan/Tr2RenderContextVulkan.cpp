@@ -13,6 +13,7 @@
 #include "Tr2TextureALVulkan.h"
 #include "Tr2ConstantBufferALVulkan.h"
 #include "Tr2ShaderBindingABIVulkan.h"
+#include "UtilitiesVulkan.h"
 #include "VkResult.h"
 #include "../include/Tr2RtTopLevelAccelerationStructureAL.h"
 
@@ -54,6 +55,7 @@ Tr2RenderContextAL::Tr2RenderContextAL() throw( )
 	m_constantSet( VK_NULL_HANDLE ),
 	m_boundConstantLayout( VK_NULL_HANDLE ),
 	m_constantsDirty( false ),
+	m_constantPoolLastUse( 0 ),
 	m_computePipeline( VK_NULL_HANDLE ),
 	m_computePipelineLayout( VK_NULL_HANDLE ),
 	m_primitiveToVertexCount( 0, 0 ),
@@ -63,6 +65,11 @@ Tr2RenderContextAL::Tr2RenderContextAL() throw( )
 	memset( &m_renderPassSource, 0, sizeof( m_renderPassSource ) );
 
 	m_pipelineSource.m_depthStencilState.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+	// The memset above leaves depthCompareOp as VK_COMPARE_OP_NEVER, which discards every
+	// fragment the moment depth testing is switched on. LESS_OR_EQUAL is what the D3D-
+	// shaped AL above this defaults RS_ZFUNC to, so a caller that enables depth without
+	// naming a function gets what it expects rather than a black screen.
+	m_pipelineSource.m_depthStencilState.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
 	m_pipelineSource.m_rasterizationState.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
 	m_pipelineSource.m_rasterizationState.lineWidth = 1;
 
@@ -118,6 +125,20 @@ void Tr2RenderContextAL::Destroy() throw( )
 	// for the destructor means destroying the module against a null device.
 	m_pipelineSource.m_shaderProgram = Tr2ShaderProgramAL();
 	m_resourceSet = Tr2ResourceSetAL();
+
+	// The bound attachments and the push/pop stacks hold texture references too, and for
+	// the same reason they have to be let go here rather than in the destructor. A test
+	// that fails between SetDepthStencil and PopDepthStencil -- an ASSERT returning early
+	// is enough -- leaves its depth buffer bound to a render context that outlives it, and
+	// four of those turned up at vkDestroyDevice as twelve leaked objects the moment
+	// binding a depth stencil started working.
+	for( uint32_t i = 0; i < RENDER_TARGET_COUNT; ++i )
+	{
+		m_boundRenderTargets[i] = Tr2TextureAL();
+		m_rtStack[i].clear();
+	}
+	m_boundDepthStencil = Tr2TextureAL();
+	m_dsStack.clear();
 
 	if( m_constantPool != VK_NULL_HANDLE )
 	{
@@ -191,13 +212,44 @@ ALResult Tr2RenderContextAL::Clear(
 			return E_INVALIDCALL;
 		}
 	}
-	if( clearFlags & Tr2RenderContextEnum::CLEARFLAGS_ZBUFFER )
+	if( clearFlags & ( Tr2RenderContextEnum::CLEARFLAGS_ZBUFFER | Tr2RenderContextEnum::CLEARFLAGS_STENCIL ) )
 	{
-		return E_NOTIMPL;
-	}
-	if( clearFlags & Tr2RenderContextEnum::CLEARFLAGS_STENCIL )
-	{
-		return E_NOTIMPL;
+		if( !m_boundDepthStencil.IsValid() )
+		{
+			return E_INVALIDCALL;
+		}
+
+		// One vkCmdClearDepthStencilImage for both flags rather than two calls: the aspect
+		// mask is what selects them, and clearing the same image twice in a row is a
+		// write-after-write hazard the sync validator would rightly complain about.
+		//
+		// The requested aspects are intersected with what the format actually has, because
+		// asking to clear the stencil of a depth-only image is a VUID, and callers pass
+		// CLEARFLAGS_ZBUFFER | CLEARFLAGS_STENCIL habitually.
+		const VkImageAspectFlags available = TrinityALImpl::GetAspectMaskVulkan( m_boundDepthStencil.m_texture->m_format );
+		VkImageAspectFlags aspect = 0;
+		if( clearFlags & Tr2RenderContextEnum::CLEARFLAGS_ZBUFFER )
+		{
+			aspect |= VK_IMAGE_ASPECT_DEPTH_BIT;
+		}
+		if( clearFlags & Tr2RenderContextEnum::CLEARFLAGS_STENCIL )
+		{
+			aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+		}
+		aspect &= available;
+		if( aspect == 0 )
+		{
+			return E_INVALIDARG;
+		}
+
+		EndRenderPassVulkan();
+		m_boundDepthStencil.m_texture->TransitionVulkan( m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
+
+		VkClearDepthStencilValue clearValue = { depth, stencil };
+		VkImageSubresourceRange subresourceRange = { aspect, 0, 1, 0, 1 };
+		vkCmdClearDepthStencilImage( m_commandBuffer, m_boundDepthStencil.m_texture->GetImageVulkan(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearValue, 1, &subresourceRange );
+
+		m_dirtyPass = true;
 	}
 
 	return S_OK;
@@ -323,6 +375,21 @@ ALResult Tr2RenderContextAL::SetRenderState( Tr2RenderContextEnum::RenderState s
 		m_pipelineSource.m_depthStencilState.depthTestEnable = value != 0;
 		m_dirtyPso = true;
 		return S_OK;
+	case Tr2RenderContextEnum::RS_ZWRITEENABLE:
+		m_pipelineSource.m_depthStencilState.depthWriteEnable = value != 0;
+		m_dirtyPso = true;
+		return S_OK;
+	case Tr2RenderContextEnum::RS_ZFUNC:
+		// Tr2RenderContextEnum's comparisons are the D3D ones, numbered from 1;
+		// VkCompareOp is the same order numbered from 0. Same off-by-one the cullMode
+		// case above relies on.
+		if( value < Tr2RenderContextEnum::CMP_NEVER || value > Tr2RenderContextEnum::CMP_ALWAYS )
+		{
+			return E_INVALIDARG;
+		}
+		m_pipelineSource.m_depthStencilState.depthCompareOp = VkCompareOp( value - 1 );
+		m_dirtyPso = true;
+		return S_OK;
 	case Tr2RenderContextEnum::RS_CULLMODE:
 		m_pipelineSource.m_rasterizationState.cullMode = value - 1;
 		m_dirtyPso = true;
@@ -403,11 +470,39 @@ ALResult Tr2RenderContextAL::SetRenderTarget( const Tr2TextureAL& renderTarget, 
 
 ALResult Tr2RenderContextAL::SetDepthStencil( const Tr2TextureAL& depthStencil ) throw()
 {
+	m_boundDepthStencil = depthStencil;
+
+	// Slot 0 of the render pass source is the depth attachment; CreateRenderPass has
+	// always read it that way and nothing ever wrote it, which is why binding a depth
+	// buffer was E_NOTIMPL rather than wrong.
+	VkAttachmentDescription attachment = {};
 	if( depthStencil.IsValid() )
 	{
-		return E_NOTIMPL;
+		attachment.format = depthStencil.m_texture->m_format;
+		attachment.samples = VkSampleCountFlagBits( depthStencil.GetMsaaDesc().samples );
+		attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+		attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		// Spelled out rather than left DONT_CARE: for a combined format the stencil ops
+		// are what govern the stencil aspect, and DONT_CARE there would discard it on
+		// every pass while the depth aspect survived.
+		attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+		attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+		attachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		attachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 	}
-	m_boundDepthStencil = depthStencil;
+	else
+	{
+		attachment.format = VK_FORMAT_UNDEFINED;
+		attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+		attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		attachment.finalLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	}
+
+	if( memcmp( &m_renderPassSource.m_rt[0], &attachment, sizeof( attachment ) ) != 0 )
+	{
+		m_renderPassSource.m_rt[0] = attachment;
+		m_dirtyPass = true;
+	}
 	return S_OK;
 }
 
@@ -522,16 +617,26 @@ ALResult Tr2RenderContextAL::SetPass()
 	// and the barriers that get it there are illegal once the pass is open -- so this is
 	// the only place they can go. A texture that is already in the right layout costs
 	// nothing here; TransitionVulkan emits no barrier in that case.
+	// Resource set first, attachments second, and the order is load-bearing. A texture can
+	// appear in both -- a depth buffer sampled in one pass and rendered into the next --
+	// and whichever runs last decides the layout the pass actually begins in. The pass
+	// declares its attachment layouts, so the attachments have to win, or
+	// vkCmdBeginRenderPass finds SHADER_READ_ONLY_OPTIMAL where it promised
+	// DEPTH_STENCIL_ATTACHMENT_OPTIMAL (VUID-vkCmdBeginRenderPass-initialLayout-00900).
+	if( m_resourceSet.IsValid() )
+	{
+		m_resourceSet.m_resourceSet->TransitionImagesVulkan( m_commandBuffer );
+	}
+	if( m_boundDepthStencil.IsValid() )
+	{
+		m_boundDepthStencil.m_texture->TransitionVulkan( m_commandBuffer, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
+	}
 	for( uint32_t i = 0; i < RENDER_TARGET_COUNT; ++i )
 	{
 		if( m_boundRenderTargets[i].IsValid() )
 		{
 			m_boundRenderTargets[i].m_texture->TransitionVulkan( m_commandBuffer, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL );
 		}
-	}
-	if( m_resourceSet.IsValid() )
-	{
-		m_resourceSet.m_resourceSet->TransitionImagesVulkan( m_commandBuffer );
 	}
 
 	auto hash = m_renderPassSource.GetHash();
@@ -608,6 +713,10 @@ ALResult Tr2RenderContextAL::CreateRenderPass( VkRenderPass& renderPass )
 			if( i == 0 )
 			{
 				ds.attachment = count;
+				// Never set before, so it defaulted to VK_IMAGE_LAYOUT_UNDEFINED (0) from
+				// the initialiser. Harmless only for as long as nothing could put a format
+				// in slot 0, which SetDepthStencil now can.
+				ds.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 			}
 			else
 			{
@@ -655,18 +764,49 @@ void Tr2RenderContextAL::UpdateFramebuffer()
 		m_framebuffer = VK_NULL_HANDLE;
 	}
 
-	uint32_t width = m_boundRenderTargets[0].GetWidth();
-	uint32_t height = m_boundRenderTargets[0].GetHeight();
+	// The attachment array has to be in the same order CreateRenderPass built the pass
+	// from, or the framebuffer describes a different pass than the one it is used with:
+	// depth at index 0 when there is one, then the bound colour slots in order. This used
+	// to be hardcoded to a single view taken from render target 0, which was wrong the
+	// moment a second slot could be bound and wrong for depth from the start.
+	uint32_t width = 0;
+	uint32_t height = 0;
+	uint32_t count = 0;
+	VkImageView views[5] = {};
 
-	VkImageView views[4] = {};
-	views[0] = m_boundRenderTargets[0].m_texture->GetImageView();
+	for( uint32_t i = 0; i < 5; ++i )
+	{
+		if( m_renderPassSource.m_rt[i].format == VK_FORMAT_UNDEFINED )
+		{
+			continue;
+		}
+		const Tr2TextureAL& attachment = ( i == 0 ) ? m_boundDepthStencil : m_boundRenderTargets[i - 1];
+		if( !attachment.IsValid() )
+		{
+			continue;
+		}
+		// Mip 0: nothing in the AL binds a render target at another level yet, and the
+		// slice argument to SetRenderTarget is not plumbed through either. Both belong
+		// with mip generation, which is a separate cluster.
+		views[count++] = attachment.m_texture->GetAttachmentViewVulkan( 0, 0 );
+		if( width == 0 )
+		{
+			width = attachment.GetWidth();
+			height = attachment.GetHeight();
+		}
+	}
+
+	if( count == 0 )
+	{
+		return;
+	}
 
 	VkFramebufferCreateInfo framebufferInfo = {
 		VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
 		nullptr,
 		0,
 		m_renderPass,
-		1,
+		count,
 		views,
 		width,
 		height,
@@ -696,7 +836,12 @@ ALResult Tr2RenderContextAL::SetPipeline()
 		return S_OK;
 	}
 
-	auto hash = m_pipelineSource.GetHash();
+	// The render pass is part of the key, not just the pipeline state. A pipeline is
+	// created against a specific VkRenderPass and may only be used with a compatible one
+	// (VUID-vkCmdDraw-renderPass-02684), and PipelineSource does not describe the
+	// attachments at all -- so without this, the first pipeline built for a colour-only
+	// pass was handed straight back for a pass that also had depth.
+	auto hash = m_pipelineSource.GetHash() ^ ( m_renderPassSource.GetHash() * 0x9e3779b9u );
 	auto found = m_owner->m_pipelines.find( hash );
 	VkPipeline pipeline;
 	if( found == m_owner->m_pipelines.end() )
@@ -726,6 +871,29 @@ ALResult Tr2RenderContextAL::SetPipeline()
 	return S_OK;
 }
 
+void Tr2RenderContextAL::ResetConstantPoolVulkan()
+{
+	if( m_constantPool == VK_NULL_HANDLE || !m_owner )
+	{
+		return;
+	}
+
+	// Waiting on this frame slot's fence proves the work from VIRTUAL_FRAMES ago is done,
+	// not that the last two frames are -- and they allocated from this same pool.
+	// vkResetDescriptorPool on a pool a live command buffer still references is
+	// VUID-vkResetDescriptorPool-descriptorPool-00313. The frame numbers added for
+	// Tr2FenceAL answer exactly this question, so ask them rather than adding a second
+	// mechanism. If the answer is no, the sets simply survive another frame.
+	if( m_owner->GetRenderedFrameNumber() < m_constantPoolLastUse )
+	{
+		return;
+	}
+
+	vkResetDescriptorPool( m_owner->m_device, m_constantPool, 0 );
+	m_constantSet = VK_NULL_HANDLE;
+	m_constantsDirty = true;
+}
+
 ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint )
 {
 	auto* program = m_pipelineSource.m_shaderProgram.m_program.get();
@@ -748,12 +916,16 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 	{
 		if( !m_constantPool )
 		{
-			VkDescriptorPoolSize poolSize = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 32 };
+			// One set per SetConstants that actually changes something, for a whole
+			// frame, so maxSets is a frame's budget rather than 1. The pool is reset in
+			// BeginFrame, after the frame fence has been waited on -- which is the only
+			// moment nothing in flight can still reference a set from it.
+			VkDescriptorPoolSize poolSize = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, CONSTANT_SETS_PER_FRAME * 4 };
 			VkDescriptorPoolCreateInfo poolInfo = {
 				VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
 				nullptr,
 				0,
-				1,
+				CONSTANT_SETS_PER_FRAME,
 				1,
 				&poolSize
 			};
@@ -773,6 +945,27 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 
 	if( m_constantsDirty )
 	{
+		// A fresh set rather than a rewrite of the bound one. vkUpdateDescriptorSets on a
+		// set that a command buffer has already bound invalidates that command buffer --
+		// "destroyed or updated without UPDATE_AFTER_BIND" -- and every command recorded
+		// afterwards is rejected. Nothing reached this before, because it needs two draws
+		// with different constants in one frame, which needed depth states to get to.
+		VkDescriptorSetAllocateInfo reallocateInfo = {
+			VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+			nullptr,
+			m_constantPool,
+			1,
+			&program->m_constantLayout
+		};
+		VkDescriptorSet fresh = VK_NULL_HANDLE;
+		if( SUCCEEDED( Vk2Al( vkAllocateDescriptorSets( m_owner->m_device, &reallocateInfo, &fresh ) ) ) )
+		{
+			m_constantSet = fresh;
+			m_constantPoolLastUse = m_owner->GetRecordingFrameNumber();
+		}
+		// If the pool is exhausted the old set is rewritten, which is what used to happen
+		// always. Better a validation error than a dropped draw.
+
 		std::vector<VkWriteDescriptorSet> writes;
 		std::vector<VkDescriptorBufferInfo> bufferInfos;
 		writes.reserve( m_constantBuffers.size() );
@@ -934,7 +1127,12 @@ ALResult Tr2RenderContextAL::CreatePipeline( VkPipeline& pipeline )
 		&viewport,
 		&m_pipelineSource.m_rasterizationState,
 		&msaa,
-		nullptr,
+		// pDepthStencilState was null unconditionally, which is legal only while no
+		// subpass has a depth attachment -- true for as long as SetDepthStencil could not
+		// bind one. With one bound it is VUID-VkGraphicsPipelineCreateInfo-renderPass-09028.
+		// The state itself has been carried in m_pipelineSource since before this backend
+		// could use it; SetRenderState is what fills it in.
+		m_renderPassSource.m_rt[0].format != VK_FORMAT_UNDEFINED ? &m_pipelineSource.m_depthStencilState : nullptr,
 		&m_pipelineSource.m_colorBlendState,
 		&dynamicInfo,
 		m_pipelineSource.m_shaderProgram.m_program->m_pipelineLayout,

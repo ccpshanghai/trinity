@@ -153,7 +153,10 @@ namespace TrinityALImpl
 				VK_COMPONENT_SWIZZLE_IDENTITY
 			},
 			{
-				VK_IMAGE_ASPECT_COLOR_BIT,
+				// Not COLOR unconditionally: a depth format has no colour aspect, and
+				// vkCreateImageView rejects the mismatch. This is the first thing that has
+				// to be right before a depth buffer can be created at all.
+				GetAspectMaskVulkan( GetVulkanFormat( desc.GetFormat() ) ),
 				0,
 				desc.GetTrueMipCount(),
 				0,
@@ -309,6 +312,10 @@ namespace TrinityALImpl
 			{
 				m_owner->DestroyLaterVulkan( *it, vkDestroyImageView );
 			}
+			for( auto it = begin( m_attachmentViews ); it != end( m_attachmentViews ); ++it )
+			{
+				m_owner->DestroyLaterVulkan( it->second, vkDestroyImageView );
+			}
 			if( m_images.size() == 1 )
 			{
 				// don't destroy swap chain images?
@@ -319,6 +326,8 @@ namespace TrinityALImpl
 			}
 			m_images.clear();
 			m_imageViews.clear();
+			m_attachmentViews.clear();
+			m_layouts.clear();
 		}
 		m_currentIndex = 0;
 		m_cpuUsage = Tr2CpuUsage::NONE;
@@ -485,6 +494,60 @@ namespace TrinityALImpl
 	VkImageView Tr2TextureAL::GetImageView() const
 	{
 		return m_imageViews[m_currentIndex];
+	}
+
+	VkImageView Tr2TextureAL::GetAttachmentViewVulkan( uint32_t mip, uint32_t layer )
+	{
+		if( m_currentIndex >= m_images.size() || !m_owner )
+		{
+			return VK_NULL_HANDLE;
+		}
+
+		// The common case, and the only one the swapchain ever hits: a texture with one
+		// level and one layer already has a view of exactly the right shape.
+		if( mip == 0 && layer == 0 && m_desc.GetTrueMipCount() <= 1 && m_desc.GetArraySize() <= 1 )
+		{
+			return m_imageViews[m_currentIndex];
+		}
+
+		const uint32_t key = ( m_currentIndex << 20 ) | ( mip << 10 ) | layer;
+		auto found = m_attachmentViews.find( key );
+		if( found != m_attachmentViews.end() )
+		{
+			return found->second;
+		}
+
+		VkImageViewCreateInfo createInfo = {
+			VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			nullptr,
+			0,
+			m_images[m_currentIndex],
+			// Always 2D, even for a 3D texture: a framebuffer attachment is one slice, and
+			// a 3D view cannot be one.
+			VK_IMAGE_VIEW_TYPE_2D,
+			m_format,
+			{
+				VK_COMPONENT_SWIZZLE_IDENTITY,
+				VK_COMPONENT_SWIZZLE_IDENTITY,
+				VK_COMPONENT_SWIZZLE_IDENTITY,
+				VK_COMPONENT_SWIZZLE_IDENTITY
+			},
+			{
+				GetAspectMaskVulkan( m_format ),
+				mip,
+				1,
+				layer,
+				1
+			}
+		};
+
+		VkImageView view = VK_NULL_HANDLE;
+		if( FAILED( Vk2Al( vkCreateImageView( m_owner->m_device, &createInfo, nullptr, &view ) ) ) )
+		{
+			return VK_NULL_HANDLE;
+		}
+		m_attachmentViews[key] = view;
+		return view;
 	}
 
 	uint32_t Tr2TextureAL::GetSrvIndexInHeap( Tr2RenderContextEnum::ColorSpace ) const

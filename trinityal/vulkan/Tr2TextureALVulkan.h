@@ -5,6 +5,8 @@
 #if TRINITY_PLATFORM == TRINITY_VULKAN
 
 
+#include <map>
+
 #include "../include/Tr2TextureAL.h"
 #include "../Tr2HalHelperStructures.h"
 
@@ -111,6 +113,16 @@ namespace TrinityALImpl
 		void SetCurrentImageVulkan( uint32_t index );
 		VkImage GetImageVulkan() const;
 		VkImageView GetImageView() const;
+
+		// A view suitable for use as a framebuffer attachment, which must name exactly one
+		// mip level and one array layer -- VUID-VkFramebufferCreateInfo-pAttachments-00883.
+		// GetImageView returns the shader-resource view, which spans every level, so it
+		// cannot be used here: an eight-mip render target was rejected outright.
+		//
+		// Created on demand and cached, because most textures never become attachments and
+		// the ones that do usually need only level 0 of layer 0 -- for which the
+		// shader-resource view is already the right shape and is returned unchanged.
+		VkImageView GetAttachmentViewVulkan( uint32_t mip, uint32_t layer );
 		void Describe( Tr2DeviceResourceDescriptionAL& description ) const;
 		ALResult SetName( const char* name );
 		const char* GetName() const;
@@ -122,6 +134,10 @@ namespace TrinityALImpl
 		std::vector<VkImage> m_images;
 		std::vector<VkImageView> m_imageViews;
 		std::vector<VkImageLayout> m_layouts;
+
+		// Keyed by image index, mip and layer packed together; see
+		// GetAttachmentViewVulkan.
+		std::map<uint32_t, VkImageView> m_attachmentViews;
 		VkDeviceMemory m_memory;
 		Tr2PrimaryRenderContextAL* m_owner;
 		uint32_t m_currentIndex;

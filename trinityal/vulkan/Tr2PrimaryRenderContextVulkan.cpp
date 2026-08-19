@@ -756,6 +756,10 @@ ALResult Tr2PrimaryRenderContextAL::BeginFrame()
 
 
 	CR_RETURN_HR( Vk2Al( vkAcquireNextImageKHR( m_device, m_swapChain, UINT64_MAX, m_frameData[m_frameIndex].imageAvailableSemaphore, VK_NULL_HANDLE, &m_currentImage ) ) );
+	// The fence above has been waited on, so nothing submitted for this slot is still in
+	// flight and the sets it used can be handed out again.
+	ResetConstantPoolVulkan();
+
 	m_defaultBackBuffer.m_texture->SetCurrentImageVulkan( m_currentImage );
 
 	// vkAcquireNextImageKHR gives no guarantee about the contents or the layout of the

@@ -177,11 +177,6 @@ public:
 		uint32_t registerIndex,
 		uint32_t unusedArgument = 0 ) throw( );
 
-	// Unbinding is implemented, binding is not. Clearing the depth attachment is a
-	// no-op on the render pass source -- m_rt[0] is already VK_FORMAT_UNDEFINED and
-	// nothing else references it -- so PopDepthStencil can restore "no depth stencil"
-	// truthfully. Binding a real one needs a depth attachment in the framebuffer, and
-	// UpdateFramebuffer is still hardcoded to a single colour view.
 	ALResult SetDepthStencil( const Tr2TextureAL& depthStencil ) throw( );
 	void SetReadOnlyDepth( bool enable ) throw( )
 	{
@@ -374,7 +369,15 @@ private:
 	// by SetConstants, written to a descriptor set and bound at SetPipeline time.
 	std::map<uint32_t, VkBuffer> m_constantBuffers;
 	bool m_constantsDirty;
+	// How many distinct constant descriptor sets one frame may use before the pool is
+	// exhausted. Reset every BeginFrame.
+	static const uint32_t CONSTANT_SETS_PER_FRAME = 64;
 	VkDescriptorPool m_constantPool;
+
+	// The newest frame that allocated a set from m_constantPool. The pool cannot be reset
+	// until that frame has retired -- a single pool is shared by every frame in flight, so
+	// "this slot's fence has signalled" is not enough on its own.
+	uint64_t m_constantPoolLastUse;
 	VkDescriptorSet m_constantSet;
 	VkDescriptorSetLayout m_boundConstantLayout;
 
@@ -411,6 +414,11 @@ public:
 	//
 	// On a tiler this is a resolve and a reload, so it is not free; it is here because
 	// Vulkan 1.0 has no host-side vkResetQueryPool, which arrived in 1.2.
+	// Recycle the frame's constant descriptor sets. Only safe once the frame's fence has
+	// been waited on, which is why the primary render context calls it from BeginFrame and
+	// nothing else calls it at all.
+	void ResetConstantPoolVulkan();
+
 	void EndRenderPassVulkan()
 	{
 		if( m_renderPass )
