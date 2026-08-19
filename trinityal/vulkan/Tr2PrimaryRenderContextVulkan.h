@@ -97,6 +97,20 @@ public:
 	// This is a full stall by design, as dx12's is. It is a readback path.
 	ALResult FlushAndSyncVulkan();
 
+	// Frame numbering. dx12 and the stub backend both expose this pair, and everything in
+	// the AL that has to answer "has the GPU finished the work I recorded?" is written
+	// against it: Tr2FenceAL, Tr2OcclusionQueryAL, Tr2GpuTimerAL and
+	// Tr2PipelineStatsQueryAL each store a recording frame number at record time and
+	// compare it against the rendered one at read time. Vulkan had neither number, which
+	// is the single reason all four were E_NOTIMPL.
+	//
+	// GetRenderedFrameNumber is the largest N for which every frame up to and including N
+	// has completed on the GPU. It polls the per-frame fences rather than caching, so it
+	// needs no callback and cannot go stale. A FlushAndSyncVulkan also advances it,
+	// because after that vkQueueWaitIdle everything submitted so far is done.
+	uint64_t GetRecordingFrameNumber() const;
+	uint64_t GetRenderedFrameNumber() const;
+
 private:
 	Tr2PrimaryRenderContextAL( const Tr2PrimaryRenderContextAL& ) /* = delete */;
 	Tr2PrimaryRenderContextAL& operator=( const Tr2PrimaryRenderContextAL& ) /* = delete */;
@@ -117,6 +131,11 @@ private:
 		VkFence fence;
 		std::vector<PendingDestroy> pendingDestroys;
 
+		// Which absolute frame this slot's fence belongs to, or 0 if the slot has never
+		// been submitted. Needed because the fence array cycles and the frame number does
+		// not, so a signalled fence on its own does not say *which* frame finished.
+		uint64_t submittedFrame;
+
 		FrameData();
 	};
 
@@ -131,6 +150,15 @@ private:
 	// Present must then not wait on an already-consumed semaphore, which would never be
 	// signalled again and would hang. This flag is which of the two has it.
 	bool m_acquireWaited;
+
+	// The frame being recorded right now; 0 before the first BeginFrame. Monotonic for the
+	// life of the device, unlike m_frameIndex, which cycles 0..VIRTUAL_FRAMES-1.
+	uint64_t m_recordingFrame;
+
+	// Raised by FlushAndSyncVulkan once its vkQueueWaitIdle returns: everything submitted
+	// up to and including that frame is complete, whether or not the frame has reached a
+	// fence yet. Without this a Tr2FenceAL::Wait would return with IsReached still false.
+	uint64_t m_flushedFrame;
 
 	ALResult BeginFrame();
 

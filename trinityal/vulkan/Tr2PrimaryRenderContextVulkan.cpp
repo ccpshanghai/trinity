@@ -182,7 +182,8 @@ namespace
 Tr2PrimaryRenderContextAL::FrameData::FrameData()
 	:commandBuffer( VK_NULL_HANDLE ),
 	imageAvailableSemaphore( VK_NULL_HANDLE ),
-	fence( VK_NULL_HANDLE )
+	fence( VK_NULL_HANDLE ),
+	submittedFrame( 0 )
 {
 }
 
@@ -200,7 +201,9 @@ Tr2PrimaryRenderContextAL::Tr2PrimaryRenderContextAL()
 	m_zeroBuffer( VK_NULL_HANDLE ),
 	m_zeroBufferMemory( VK_NULL_HANDLE ),
 	m_frameIndex( 0 ),
-	m_acquireWaited( false )
+	m_acquireWaited( false ),
+	m_recordingFrame( 0 ),
+	m_flushedFrame( 0 )
 {
 	m_defaultBackBuffer.m_texture = std::make_shared<TrinityALImpl::Tr2TextureAL>();
 }
@@ -466,6 +469,9 @@ void Tr2PrimaryRenderContextAL::Destroy()
 {
 	Tr2RenderContextAL::Destroy();
 
+	m_recordingFrame = 0;
+	m_flushedFrame = 0;
+
 	m_samplerStateFactory.Clear();
 
 	if( m_device != VK_NULL_HANDLE )
@@ -612,6 +618,9 @@ ALResult Tr2PrimaryRenderContextAL::Present()
 		1,
 		&renderFinishedSemaphore
 	};
+	// This fence now stands for this frame. Recorded before the submit so that a submit
+	// failure cannot leave the slot claiming a frame that was never sent.
+	m_frameData[m_frameIndex].submittedFrame = m_recordingFrame;
 	CR_RETURN_HR( Vk2Al( vkQueueSubmit( m_presentQueue, 1, &submitInfo, m_frameData[m_frameIndex].fence ) ) );
 	m_acquireWaited = true;
 
@@ -676,6 +685,11 @@ ALResult Tr2PrimaryRenderContextAL::FlushAndSyncVulkan()
 	// path is a stall regardless of how the wait is spelled.
 	CR_RETURN_HR( Vk2Al( vkQueueWaitIdle( m_presentQueue ) ) );
 
+	// The queue is idle, so everything submitted for this frame and every earlier one has
+	// completed. Callers that flushed in order to read something back need this to be
+	// visible immediately -- Tr2FenceAL::Wait is exactly that caller.
+	m_flushedFrame = m_recordingFrame;
+
 	// Carry on recording into the same command buffer. vkBeginCommandBuffer implicitly
 	// resets it because the pool carries VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT.
 	//
@@ -694,8 +708,50 @@ ALResult Tr2PrimaryRenderContextAL::FlushAndSyncVulkan()
 	return S_OK;
 }
 
+uint64_t Tr2PrimaryRenderContextAL::GetRecordingFrameNumber() const
+{
+	return m_recordingFrame;
+}
+
+uint64_t Tr2PrimaryRenderContextAL::GetRenderedFrameNumber() const
+{
+	if( m_device == VK_NULL_HANDLE )
+	{
+		return m_flushedFrame;
+	}
+
+	// Start from the newest frame that has actually been submitted -- never from
+	// m_recordingFrame, because the frame being recorded has not been sent to the GPU and
+	// a frame that was begun and then abandoned never will be.
+	uint64_t rendered = 0;
+	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
+	{
+		if( m_frameData[i].submittedFrame > rendered )
+		{
+			rendered = m_frameData[i].submittedFrame;
+		}
+	}
+
+	// Then pull it back below anything still in flight. The answer has to be "every frame
+	// up to N is done", not "some frame N is done", because that is what the callers
+	// compare against -- and with VIRTUAL_FRAMES in flight the newest fence can signal
+	// while an older one has not.
+	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
+	{
+		if( m_frameData[i].submittedFrame != 0 &&
+			vkGetFenceStatus( m_device, m_frameData[i].fence ) != VK_SUCCESS &&
+			rendered > m_frameData[i].submittedFrame - 1 )
+		{
+			rendered = m_frameData[i].submittedFrame - 1;
+		}
+	}
+
+	return rendered > m_flushedFrame ? rendered : m_flushedFrame;
+}
+
 ALResult Tr2PrimaryRenderContextAL::BeginFrame()
 {
+	++m_recordingFrame;
 
 	m_frameIndex = ( m_frameIndex + 1 ) % VIRTUAL_FRAMES;
 	CR( Vk2Al( vkWaitForFences( m_device, 1, &m_frameData[m_frameIndex].fence, VK_FALSE, 1000000000 ) ) );
