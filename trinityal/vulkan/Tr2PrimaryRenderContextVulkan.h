@@ -37,9 +37,14 @@ public:
 
 	bool IsValid() const;
 
+	// The swapchain's format, which the default back buffer already carries -- it is set
+	// from the presentation mode in AssignFromSwapChainVulkan. Returning UNKNOWN was a
+	// placeholder, and one that no caller could distinguish from "there is no device".
 	Tr2RenderContextEnum::PixelFormat GetBackBufferFormat() const
 	{
-		return Tr2RenderContextEnum::PIXEL_FORMAT_UNKNOWN;
+		return m_defaultBackBuffer.IsValid()
+			? m_defaultBackBuffer.GetFormat()
+			: Tr2RenderContextEnum::PIXEL_FORMAT_UNKNOWN;
 	}
 	
 	static const uint32_t SHADER_TYPE_MASK = 

@@ -44,17 +44,24 @@ public:
 	void Destroy() throw( );
 	bool IsValid() const throw( );
 
+	// A no-op, as it is on dx12: every render context already knows its owning device, so
+	// there is nothing for the caller to tell it. The tests call it, which is why it
+	// exists at all.
 	static void SetPrimaryRenderContext( Tr2PrimaryRenderContextAL* )
 	{
 
 	}
-	static Tr2PrimaryRenderContextAL& GetPrimaryRenderContext()
+
+	// These were returning a null reference and a null pointer. Dereferencing the first is
+	// undefined behaviour at the call site, not at the return -- it happened to survive
+	// only because nothing had called it yet.
+	Tr2PrimaryRenderContextAL& GetPrimaryRenderContext()
 	{
-		return *static_cast<Tr2PrimaryRenderContextAL*>( nullptr );
+		return *m_owner;
 	}
-	static Tr2PrimaryRenderContextAL* GetPrimaryRenderContextPointer()
+	Tr2PrimaryRenderContextAL* GetPrimaryRenderContextPointer()
 	{
-		return nullptr;
+		return m_owner;
 	}
 
 	ALResult BeginScene() throw( );
@@ -115,47 +122,33 @@ public:
 		uint32_t numVertices,
 		uint32_t startIndex,
 		uint32_t primitiveCount,
-		uint32_t numInstances ) throw( )
-	{
-		return E_NOTIMPL;
-	}
-	
-	ALResult DrawIndexedInstancedIndirect( Tr2BufferAL& params, uint32_t offset ) throw( )
-	{
-		return E_NOTIMPL;
-	}
-	ALResult DrawInstancedIndirect( Tr2BufferAL& params, uint32_t offset ) throw( )
-	{
-		return E_NOTIMPL;
-	}
+		uint32_t numInstances ) throw( );
 
+	ALResult DrawIndexedInstancedIndirect( Tr2BufferAL& params, uint32_t offset ) throw( );
+	ALResult DrawInstancedIndirect( Tr2BufferAL& params, uint32_t offset ) throw( );
+
+	// The DrawXxxUP family is a DX9 shape -- geometry passed by pointer with no buffer --
+	// and Tr2DrawUPHelper already emulates it on top of SetStreamSource, SetIndices and
+	// the ordinary draws, entirely in terms of the AL. dx12 uses the same helper, so
+	// nothing here is Vulkan-specific and all three are one line.
 	ALResult DrawIndexedPrimitiveUP(
 		uint32_t numVertices,
 		uint32_t primitiveCount,
 		const uint32_t* indexData,
 		const void* vertexStreamZeroData,
-		uint32_t vertexStreamZeroStride ) throw( )
-	{
-		return E_NOTIMPL;
-	}
+		uint32_t vertexStreamZeroStride ) throw( );
 
 	ALResult DrawIndexedPrimitiveUP(
 		uint32_t numVertices,
 		uint32_t primitiveCount,
 		const uint16_t* indexData,
 		const void* vertexStreamZeroData,
-		uint32_t vertexStreamZeroStride ) throw( )
-	{
-		return E_NOTIMPL;
-	}
+		uint32_t vertexStreamZeroStride ) throw( );
 
 	ALResult DrawPrimitiveUP(
 		uint32_t primitiveCount,
 		const void* vertexStreamZeroData,
-		uint32_t VertexStreamZeroStride ) throw( )
-	{
-		return E_NOTIMPL;
-	}
+		uint32_t VertexStreamZeroStride ) throw( );
 
 	ALResult RunComputeShader( unsigned groupDimX, unsigned groupDimY, unsigned groupDimZ ) throw( );
 	ALResult RunComputeShaderIndirect( Tr2BufferAL& indirectParams, unsigned offset ) throw( )
@@ -335,6 +328,10 @@ private:
 	ALResult CreatePipeline( VkPipeline& pipeline );
 	ALResult BindConstantBuffers( VkPipelineBindPoint bindPoint );
 
+	// Four, matching Tr2VertexLayoutAL::m_streamRates. The two arrays are indexed by the
+	// same stream number and CreatePipeline reads them together.
+	static const uint32_t MAX_VERTEX_STREAMS = 4;
+
 	struct PipelineSource
 	{
 		Tr2VertexLayoutAL m_layout;
@@ -346,7 +343,7 @@ private:
 		VkPipelineColorBlendStateCreateInfo m_colorBlendState;
 		VkPipelineColorBlendAttachmentState m_attachmentBlend[4];
 
-		VkVertexInputBindingDescription m_streams[4];
+		VkVertexInputBindingDescription m_streams[MAX_VERTEX_STREAMS];
 
 		size_t GetHash() const;
 	} m_pipelineSource;
@@ -357,6 +354,12 @@ private:
 
 		size_t GetHash() const;
 	} m_renderPassSource;
+	// The topology in the AL's own terms. m_pipelineSource.m_topology is the translated
+	// VkPrimitiveTopology, and Tr2DrawUPHelper needs the untranslated one to work out how
+	// many vertices a primitive count means.
+	Tr2RenderContextEnum::Topology m_topology;
+	TrinityALImpl::Tr2DrawUPHelper m_drawUPHelper;
+
 	bool m_dirtyPso;
 	bool m_dirtyPass;
 	std::pair<uint32_t, uint32_t> m_primitiveToVertexCount;

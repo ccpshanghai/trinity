@@ -59,6 +59,7 @@ Tr2RenderContextAL::Tr2RenderContextAL() throw( )
 	m_computePipeline( VK_NULL_HANDLE ),
 	m_computePipelineLayout( VK_NULL_HANDLE ),
 	m_primitiveToVertexCount( 0, 0 ),
+	m_topology( Tr2RenderContextEnum::TOP_TRIANGLES ),
 	m_viewportSet( false )
 {
 	memset( &m_pipelineSource, 0, sizeof( m_pipelineSource ) );
@@ -125,6 +126,7 @@ void Tr2RenderContextAL::Destroy() throw( )
 	// for the destructor means destroying the module against a null device.
 	m_pipelineSource.m_shaderProgram = Tr2ShaderProgramAL();
 	m_resourceSet = Tr2ResourceSetAL();
+	m_drawUPHelper.Destroy();
 
 	// The bound attachments and the push/pop stacks hold texture references too, and for
 	// the same reason they have to be let go here rather than in the destructor. A test
@@ -306,6 +308,7 @@ namespace
 
 ALResult Tr2RenderContextAL::SetTopology( Tr2RenderContextEnum::Topology topology ) throw( )
 {
+	m_topology = topology;
 	auto top = s_topologyMap[topology];
 	if( top != m_pipelineSource.m_topology )
 	{
@@ -597,6 +600,80 @@ ALResult Tr2RenderContextAL::DrawPrimitive( uint32_t startVertex, uint32_t primi
 
 	vkCmdDraw( m_commandBuffer, m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second, 1, 0, 0 );
 	return S_OK;
+}
+
+ALResult Tr2RenderContextAL::DrawIndexedInstanced(
+	uint32_t numVertices,
+	uint32_t startIndex,
+	uint32_t primitiveCount,
+	uint32_t numInstances ) throw( )
+{
+	SetPipeline();
+
+	// startIndex is honoured here even though DrawIndexedPrimitive above still ignores it.
+	// Passing it is free and leaving it out would be a second copy of that defect.
+	vkCmdDrawIndexed(
+		m_commandBuffer,
+		m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second,
+		numInstances,
+		startIndex,
+		0,
+		0 );
+	return S_OK;
+}
+
+ALResult Tr2RenderContextAL::DrawInstancedIndirect( Tr2BufferAL& params, uint32_t offset ) throw( )
+{
+	if( !params.IsValid() )
+	{
+		return E_INVALIDARG;
+	}
+	SetPipeline();
+
+	// drawCount 1, so the stride is never read; passing 0 for it is the documented way of
+	// saying so rather than an oversight.
+	vkCmdDrawIndirect( m_commandBuffer, params.m_buffer->GetBufferVulkan(), offset, 1, 0 );
+	return S_OK;
+}
+
+ALResult Tr2RenderContextAL::DrawIndexedInstancedIndirect( Tr2BufferAL& params, uint32_t offset ) throw( )
+{
+	if( !params.IsValid() )
+	{
+		return E_INVALIDARG;
+	}
+	SetPipeline();
+
+	vkCmdDrawIndexedIndirect( m_commandBuffer, params.m_buffer->GetBufferVulkan(), offset, 1, 0 );
+	return S_OK;
+}
+
+ALResult Tr2RenderContextAL::DrawIndexedPrimitiveUP(
+	uint32_t numVertices,
+	uint32_t primitiveCount,
+	const uint32_t* indexData,
+	const void* vertexStreamZeroData,
+	uint32_t vertexStreamZeroStride ) throw( )
+{
+	return m_drawUPHelper.DrawIndexedPrimitiveUP( m_topology, numVertices, primitiveCount, indexData, vertexStreamZeroData, vertexStreamZeroStride, *this, *m_owner );
+}
+
+ALResult Tr2RenderContextAL::DrawIndexedPrimitiveUP(
+	uint32_t numVertices,
+	uint32_t primitiveCount,
+	const uint16_t* indexData,
+	const void* vertexStreamZeroData,
+	uint32_t vertexStreamZeroStride ) throw( )
+{
+	return m_drawUPHelper.DrawIndexedPrimitiveUP( m_topology, numVertices, primitiveCount, indexData, vertexStreamZeroData, vertexStreamZeroStride, *this, *m_owner );
+}
+
+ALResult Tr2RenderContextAL::DrawPrimitiveUP(
+	uint32_t primitiveCount,
+	const void* vertexStreamZeroData,
+	uint32_t VertexStreamZeroStride ) throw( )
+{
+	return m_drawUPHelper.DrawPrimitiveUP( m_topology, primitiveCount, vertexStreamZeroData, VertexStreamZeroStride, *this, *m_owner );
 }
 
 ALResult Tr2RenderContextAL::SetPass()
@@ -1065,12 +1142,28 @@ ALResult Tr2RenderContextAL::CreatePipeline( VkPipeline& pipeline )
 	std::vector<VkVertexInputAttributeDescription> layout;
 	m_pipelineSource.m_layout.m_layout->PopulateInputLayoutVulkan( layout, m_pipelineSource.m_shaderProgram.m_program->m_shaderInputs );
 
+	// m_pipelineSource.m_streams carries only the stride, because SetStreamSource is the
+	// only thing that writes it and a stride is all it knows. binding and inputRate were
+	// left at whatever the memset put there, which is 0 -- so with two streams bound both
+	// descriptions claimed binding 0 and nothing described binding 1
+	// (VUID-VkPipelineVertexInputStateCreateInfo-pVertexBindingDescriptions-00616 and
+	// -binding-00615). The vertex layout has computed the per-stream input rate since
+	// before anything read it; instanced data was being fetched per vertex.
+	const uint32_t streamCount = m_pipelineSource.m_layout.m_layout->m_streamCount;
+	VkVertexInputBindingDescription bindings[MAX_VERTEX_STREAMS];
+	for( uint32_t i = 0; i < streamCount && i < MAX_VERTEX_STREAMS; ++i )
+	{
+		bindings[i].binding = i;
+		bindings[i].stride = m_pipelineSource.m_streams[i].stride;
+		bindings[i].inputRate = m_pipelineSource.m_layout.m_layout->m_streamRates[i];
+	}
+
 	VkPipelineVertexInputStateCreateInfo vertexInput = {
 		VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
 		nullptr,
 		0,
-		m_pipelineSource.m_layout.m_layout->m_streamCount,
-		m_pipelineSource.m_streams,
+		streamCount < MAX_VERTEX_STREAMS ? streamCount : MAX_VERTEX_STREAMS,
+		bindings,
 		uint32_t( layout.size() ),
 		layout.data()
 	};
