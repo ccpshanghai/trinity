@@ -394,6 +394,24 @@ protected:
 	VkRenderPass m_renderPass;
 
 public:
+	// Close any render pass instance that is open, so that a command which is illegal
+	// inside one can be recorded. vkCmdResetQueryPool is the case that needs it; the
+	// clear path in Tr2RenderContextVulkan.cpp does the same thing inline for
+	// vkCmdClearColorImage. Setting m_dirtyPass is what makes SetPipeline re-open the
+	// pass before the next draw -- without it the draw records outside a pass and fails.
+	//
+	// On a tiler this is a resolve and a reload, so it is not free; it is here because
+	// Vulkan 1.0 has no host-side vkResetQueryPool, which arrived in 1.2.
+	void EndRenderPassVulkan()
+	{
+		if( m_renderPass )
+		{
+			vkCmdEndRenderPass( m_commandBuffer );
+			m_renderPass = VK_NULL_HANDLE;
+			m_dirtyPass = true;
+		}
+	}
+
 	VkCommandBuffer m_commandBuffer;
 
 private:	
