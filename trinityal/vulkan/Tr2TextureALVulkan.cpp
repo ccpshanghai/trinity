@@ -4,6 +4,7 @@
 
 #if TRINITY_PLATFORM == TRINITY_VULKAN
 
+#include "ALLog.h"
 #include "Tr2TextureALVulkan.h"
 #include "Tr2AdapterStructures.h"
 #include "Tr2PrimaryRenderContextVulkan.h"
@@ -144,10 +145,60 @@ namespace TrinityALImpl
 			usage |= VK_IMAGE_USAGE_STORAGE_BIT;
 		}
 
+		// Whether this texture can carry an sRGB view has to be settled before the image
+		// exists, because VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT is a creation flag and a view
+		// whose format differs from the image's is illegal without it.
+		//
+		// Only for sampled textures, and only where the format has a same-class sRGB
+		// sibling the driver will sample. That keeps the flag off depth buffers, off render
+		// targets that are never read, and off every format with no sRGB form -- which is
+		// the difference between this and setting MUTABLE_FORMAT everywhere. The remaining
+		// cost is that a mutable-format image can lose a driver's lossless compression;
+		// VkImageFormatListCreateInfo exists to hand that back and is not chained here,
+		// because it is core 1.2 and the effective API version is not plumbed this far yet.
+		// That is a performance follow-up, not a correctness one.
+		VkFormat srgbFormat = VK_FORMAT_UNDEFINED;
+		if( HasFlag( gpuUsage, Tr2GpuUsage::SHADER_RESOURCE ) )
+		{
+			const VkFormat candidate = GetSrgbCounterpartVulkan( GetVulkanFormat( desc.GetFormat() ) );
+			if( candidate != VK_FORMAT_UNDEFINED )
+			{
+				// A view inherits the whole image's usage, not the subset the view is for,
+				// so the sibling has to support every usage-implied feature the image has
+				// -- not just sampling. Checking only SAMPLED_IMAGE_BIT was wrong and cost
+				// a VUID-VkImageViewCreateInfo-usage-02275 on Rendering.CanUsePsUavs: no
+				// sRGB format supports STORAGE_IMAGE, so a texture that is both a shader
+				// resource and a UAV can have no sRGB view at all.
+				//
+				// (VkImageViewUsageCreateInfo could narrow the view's usage instead and
+				// keep the sRGB view for UAV textures. It is core 1.1, and it would mean
+				// the same texture decoding for one binding and not the other, which is a
+				// bigger decision than this slice. Falling back to the linear view is what
+				// dx11 does when it cannot make the sRGB one.)
+				VkFormatFeatureFlags required = 0;
+				if( usage & VK_IMAGE_USAGE_SAMPLED_BIT )          required |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+				if( usage & VK_IMAGE_USAGE_STORAGE_BIT )          required |= VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+				if( usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT ) required |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+
+				// Asked rather than assumed. Requesting MUTABLE_FORMAT for a sibling the
+				// driver cannot use would trade a working texture for a broken one.
+				VkFormatProperties formatProperties = {};
+				vkGetPhysicalDeviceFormatProperties( renderContext.m_physicalDevice, candidate, &formatProperties );
+				if( ( formatProperties.optimalTilingFeatures & required ) == required )
+				{
+					srgbFormat = candidate;
+				}
+			}
+		}
+
 		VkImage image;
 		VkDeviceMemory memory;
 
-		CR_RETURN_HR( CreateImage( image, memory, desc, msaa, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, renderContext ) );
+		const VkImageCreateFlags imageFlags = srgbFormat != VK_FORMAT_UNDEFINED
+			? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT
+			: 0;
+
+		CR_RETURN_HR( CreateImage( image, memory, desc, msaa, usage, imageFlags, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, renderContext ) );
 
 		VkImageViewCreateInfo image_view_create_info = {
 			VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -176,6 +227,23 @@ namespace TrinityALImpl
 
 		VkImageView imageView;
 		CR_RETURN_HR( Vk2Al( vkCreateImageView( renderContext.m_device, &image_view_create_info, nullptr, &imageView ) ) );
+
+		// The same view with the sibling format. Only .format changes: the aspect mask, the
+		// level and layer ranges and the view type are all properties of the image, not of
+		// the colour space.
+		VkImageView srgbImageView = VK_NULL_HANDLE;
+		if( srgbFormat != VK_FORMAT_UNDEFINED )
+		{
+			image_view_create_info.format = srgbFormat;
+			if( FAILED( Vk2Al( vkCreateImageView( renderContext.m_device, &image_view_create_info, nullptr, &srgbImageView ) ) ) )
+			{
+				// Not a failure of Create. dx11 does the same and logs a warning: the
+				// texture is still perfectly usable, a COLOR_SPACE_SRGB request just gets
+				// the linear view.
+				CCP_AL_LOGWARN( "Failed to create an sRGB view for the texture of Vulkan format %i - will use the linear view instead", int( srgbFormat ) );
+				srgbImageView = VK_NULL_HANDLE;
+			}
+		}
 
 		if( initialData )
 		{
@@ -291,6 +359,10 @@ namespace TrinityALImpl
 
 		m_images.push_back( image );
 		m_imageViews.push_back( imageView );
+		if( srgbImageView != VK_NULL_HANDLE )
+		{
+			m_srgbImageViews.push_back( srgbImageView );
+		}
 
 		// The upload above ends with a barrier into SHADER_READ_ONLY_OPTIMAL. Without
 		// initial data nothing has touched the image and vkCreateImage left it UNDEFINED
@@ -322,6 +394,13 @@ namespace TrinityALImpl
 			{
 				m_owner->DestroyLaterVulkan( *it, vkDestroyImageView );
 			}
+			for( auto it = begin( m_srgbImageViews ); it != end( m_srgbImageViews ); ++it )
+			{
+				if( *it != VK_NULL_HANDLE )
+				{
+					m_owner->DestroyLaterVulkan( *it, vkDestroyImageView );
+				}
+			}
 			for( auto it = begin( m_attachmentViews ); it != end( m_attachmentViews ); ++it )
 			{
 				m_owner->DestroyLaterVulkan( it->second, vkDestroyImageView );
@@ -349,6 +428,7 @@ namespace TrinityALImpl
 
 			m_images.clear();
 			m_imageViews.clear();
+			m_srgbImageViews.clear();
 			m_attachmentViews.clear();
 			m_layouts.clear();
 		}
@@ -910,8 +990,14 @@ namespace TrinityALImpl
 		return m_images[m_currentIndex];
 	}
 
-	VkImageView Tr2TextureAL::GetImageView() const
+	VkImageView Tr2TextureAL::GetImageView( Tr2RenderContextEnum::ColorSpace colorSpace ) const
 	{
+		if( colorSpace == Tr2RenderContextEnum::COLOR_SPACE_SRGB &&
+			m_currentIndex < m_srgbImageViews.size() &&
+			m_srgbImageViews[m_currentIndex] != VK_NULL_HANDLE )
+		{
+			return m_srgbImageViews[m_currentIndex];
+		}
 		return m_imageViews[m_currentIndex];
 	}
 

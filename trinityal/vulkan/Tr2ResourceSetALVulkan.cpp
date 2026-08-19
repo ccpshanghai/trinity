@@ -164,7 +164,18 @@ namespace TrinityALImpl
 							return E_FAIL;
 						}
 						VkDescriptorImageInfo imageInfo = {  };
-						imageInfo.imageView = resource.texture.m_texture->m_imageViews[0];
+						// resource.colorSpace was being dropped on the floor here, so an SRV
+						// asked for COLOR_SPACE_SRGB sampled raw UNORM and every sampled
+						// texel came back un-decoded. Nothing failed and no test noticed:
+						// Rendering.CanSampleSrgbTexture passes either way because it never
+						// compares against a reference image.
+						//
+						// GetImageView also indexes by m_currentIndex rather than 0, which
+						// is a second, deliberate change: for a swapchain-backed texture
+						// bound as an SRV, view 0 is the wrong image on every frame but the
+						// first. Identical for every single-image texture, which is all the
+						// suite exercises.
+						imageInfo.imageView = resource.texture.m_texture->GetImageView( resource.colorSpace );
 						imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 						imageInfos.push_back( imageInfo );
 						BoundImageVulkan bound = { resource.texture, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };

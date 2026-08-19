@@ -99,7 +99,17 @@ namespace TrinityALImpl
 		ALResult AssignFromSwapChainVulkan( const std::vector<VkImage>& backBuffers, const Tr2DisplayModeInfo& mode, Tr2PrimaryRenderContextAL& renderContext );
 		void SetCurrentImageVulkan( uint32_t index );
 		VkImage GetImageVulkan() const;
-		VkImageView GetImageView() const;
+
+		// The shader-resource view, in the colour space asked for.
+		//
+		// COLOR_SPACE_SRGB returns a view whose format is the sRGB sibling of the image's,
+		// so the hardware decodes on sample. It falls back to the linear view when there is
+		// no sibling, when the driver does not support sampling it, or when creating it
+		// failed -- which is what dx11 does, down to the fallback being silent apart from a
+		// warning. So this never returns VK_NULL_HANDLE for a valid texture, and a caller
+		// asking for sRGB on a format that has no sRGB form gets undecoded data rather than
+		// an error, exactly as on dx11.
+		VkImageView GetImageView( Tr2RenderContextEnum::ColorSpace colorSpace = Tr2RenderContextEnum::COLOR_SPACE_LINEAR ) const;
 
 		// A view suitable for use as a framebuffer attachment, which must name exactly one
 		// mip level and one array layer -- VUID-VkFramebufferCreateInfo-pAttachments-00883.
@@ -120,6 +130,11 @@ namespace TrinityALImpl
 	private:
 		std::vector<VkImage> m_images;
 		std::vector<VkImageView> m_imageViews;
+
+		// Parallel to m_imageViews, and VK_NULL_HANDLE wherever an sRGB view could not be
+		// made. Empty for every texture whose format has no sRGB sibling, which is most of
+		// them, so this costs nothing where it is not used.
+		std::vector<VkImageView> m_srgbImageViews;
 		std::vector<VkImageLayout> m_layouts;
 
 		// Keyed by image index, mip and layer packed together; see

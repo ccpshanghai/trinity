@@ -137,6 +137,25 @@ namespace TrinityALImpl
 		}
 	}
 
+	VkFormat GetSrgbCounterpartVulkan( VkFormat format )
+	{
+		switch( format )
+		{
+		case VK_FORMAT_R8G8B8A8_UNORM: return VK_FORMAT_R8G8B8A8_SRGB;
+		case VK_FORMAT_B8G8R8A8_UNORM: return VK_FORMAT_B8G8R8A8_SRGB;
+		case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
+		case VK_FORMAT_BC2_UNORM_BLOCK: return VK_FORMAT_BC2_SRGB_BLOCK;
+		case VK_FORMAT_BC3_UNORM_BLOCK: return VK_FORMAT_BC3_SRGB_BLOCK;
+		case VK_FORMAT_BC7_UNORM_BLOCK: return VK_FORMAT_BC7_SRGB_BLOCK;
+		default:
+			// Exactly the UNORM formats GetVulkanFormat can produce that have a reachable
+			// sRGB sibling. ETC2 and ASTC have the same pairing and belong here as soon as
+			// the AL can name them -- Tr2RenderContextEnum::PixelFormat is DXGI-derived and
+			// currently cannot, so adding them now would be untestable.
+			return VK_FORMAT_UNDEFINED;
+		}
+	}
+
 	ALResult AllocateMemory( VkDeviceMemory& memory, const VkMemoryRequirements& memoryRequirements, VkMemoryPropertyFlagBits memoryProperty, Tr2PrimaryRenderContextAL& renderContext )
 	{
 		VkPhysicalDeviceMemoryProperties memoryProperties;
@@ -253,7 +272,7 @@ namespace TrinityALImpl
 		}
 	}
 
-	ALResult CreateImage( VkImage& image, VkDeviceMemory& memory, const Tr2BitmapDimensions& desc, const Tr2MsaaDesc& msaa, VkImageUsageFlags usage, VkMemoryPropertyFlagBits memoryProperty, Tr2PrimaryRenderContextAL& renderContext )
+	ALResult CreateImage( VkImage& image, VkDeviceMemory& memory, const Tr2BitmapDimensions& desc, const Tr2MsaaDesc& msaa, VkImageUsageFlags usage, VkImageCreateFlags flags, VkMemoryPropertyFlagBits memoryProperty, Tr2PrimaryRenderContextAL& renderContext )
 	{
 		image = VK_NULL_HANDLE;
 		memory = VK_NULL_HANDLE;
@@ -271,7 +290,7 @@ namespace TrinityALImpl
 		VkImageCreateInfo createInfo = {
 			VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 			nullptr,
-			0,
+			flags,
 			imageType,
 			GetVulkanFormat( desc.GetFormat() ),
 			{ desc.GetWidth(), desc.GetHeight(), desc.GetDepth() },
