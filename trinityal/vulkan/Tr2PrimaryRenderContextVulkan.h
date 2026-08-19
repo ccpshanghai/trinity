@@ -138,6 +138,21 @@ private:
 		// not, so a signalled fence on its own does not say *which* frame finished.
 		uint64_t submittedFrame;
 
+		// Whether a vkQueueSubmit that signals this slot's fence is outstanding, which is
+		// not the same question as whether the slot has ever been used.
+		//
+		// BeginFrame resets the fence and Present signals it, and those are not the same
+		// code path: SetPresentParameters ends the frame it was recording and rebuilds
+		// without ever submitting it. That leaves a fence reset by BeginFrame and signalled
+		// by nobody, and one lap round the ring later the wait on it can only time out --
+		// for the whole budget, every time, deterministically.
+		//
+		// It was invisible until the timeout stopped being stepped over. So the wait is
+		// conditional on this rather than on the slot having been used, and the fences are
+		// created *unsignalled*: nothing waits on a fence with no submit behind it, so
+		// nothing needs the initial signal that used to paper over the first lap.
+		bool fencePending;
+
 		FrameData();
 	};
 
@@ -162,6 +177,16 @@ private:
 	// Present must then not wait on an already-consumed semaphore, which would never be
 	// signalled again and would hang. This flag is which of the two has it.
 	bool m_acquireWaited;
+
+	// True exactly while m_commandBuffer is in the recording state.
+	//
+	// BeginFrame is the only thing that calls vkBeginCommandBuffer, and it has three ways
+	// to return before reaching it -- a minimised window, a failed acquire, and a fence
+	// wait that did not succeed. On any of them m_commandBuffer still names the *previous*
+	// slot's buffer, which is submitted and pending, and the next Present would end it and
+	// submit it a second time: VUID-vkQueueSubmit-pCommandBuffers-00071. So Present has to
+	// know whether there is a frame to present at all, and this is how.
+	bool m_commandBufferRecording;
 
 	// The frame being recorded right now; 0 before the first BeginFrame. Monotonic for the
 	// life of the device, unlike m_frameIndex, which cycles 0..VIRTUAL_FRAMES-1.

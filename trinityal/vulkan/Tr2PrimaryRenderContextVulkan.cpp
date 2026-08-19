@@ -15,6 +15,11 @@
 
 namespace
 {
+	// Ten seconds. Long enough that no amount of validation-layer overhead reaches it --
+	// the old one-second budget did, which is what BeginFrame's comment is about -- and
+	// bounded so that a hung GPU on a platform without a TDR still terminates.
+	const uint64_t FRAME_FENCE_TIMEOUT_NS = 10000000000ull;
+
 	bool FindPresentableQueues( VkPhysicalDevice device, VkSurfaceKHR surface, uint32_t& graphicsQueue, uint32_t& presentQueue )
 	{
 		graphicsQueue = 0xffffffff;
@@ -352,7 +357,8 @@ Tr2PrimaryRenderContextAL::FrameData::FrameData()
 	:commandBuffer( VK_NULL_HANDLE ),
 	imageAvailableSemaphore( VK_NULL_HANDLE ),
 	fence( VK_NULL_HANDLE ),
-	submittedFrame( 0 )
+	submittedFrame( 0 ),
+	fencePending( false )
 {
 }
 
@@ -371,6 +377,7 @@ Tr2PrimaryRenderContextAL::Tr2PrimaryRenderContextAL()
 	m_zeroBufferMemory( VK_NULL_HANDLE ),
 	m_frameIndex( 0 ),
 	m_acquireWaited( false ),
+	m_commandBufferRecording( false ),
 	m_recordingFrame( 0 ),
 	m_flushedFrame( 0 ),
 	m_needsSwapChainRebuild( false )
@@ -557,10 +564,14 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 			frameData[i].imageAvailableSemaphore = VK_NULL_HANDLE;
 		}
 
+		// Unsignalled. See FrameData::fencePending -- the first lap waits on nothing,
+		// because nothing has been submitted yet, so the initial signal is not needed. It
+		// was also actively unhelpful: it made an unsignalled-and-unsubmitted fence and a
+		// signalled-and-complete one look the same to the only wait in the backend.
 		VkFenceCreateInfo fenceCreateInfo = {
 			VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
 			nullptr,
-			VK_FENCE_CREATE_SIGNALED_BIT
+			0
 		};
 
 		CR_RETURN_HR( Vk2Al( vkCreateFence( device, &fenceCreateInfo, nullptr, &frameData[i].fence ) ) );
@@ -842,6 +853,7 @@ ALResult Tr2PrimaryRenderContextAL::SetPresentParameters( unsigned, const Tr2Pre
 		m_renderPass = VK_NULL_HANDLE;
 	}
 	vkEndCommandBuffer( m_commandBuffer );
+	m_commandBufferRecording = false;
 
 	ALResult rebuilt = RebuildSwapChainVulkan();
 	if( FAILED( rebuilt ) )
@@ -860,6 +872,16 @@ ALResult Tr2PrimaryRenderContextAL::Present()
 		return E_INVALIDCALL;
 	}
 
+	if( !m_commandBufferRecording )
+	{
+		// BeginFrame never got as far as vkBeginCommandBuffer, so m_commandBuffer is the
+		// previous slot's buffer and it is already submitted. Ending and submitting it
+		// again is VUID-vkQueueSubmit-pCommandBuffers-00071. Try to start a frame instead
+		// of presenting one that does not exist.
+		FORWARD_HR( BeginFrame() );
+		return S_FALSE;
+	}
+
 	if( m_renderPass )
 	{
 		vkCmdEndRenderPass( m_commandBuffer );
@@ -873,6 +895,7 @@ ALResult Tr2PrimaryRenderContextAL::Present()
 	m_defaultBackBuffer.m_texture->TransitionVulkan( m_commandBuffer, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR );
 
 	CR_RETURN_HR( Vk2Al( vkEndCommandBuffer( m_commandBuffer ) ) );
+	m_commandBufferRecording = false;
 
 	// Indexed by the image we acquired, not by the frame -- see the member's comment. The
 	// windowless path has no swapchain and so no semaphores; VK_NULL_HANDLE there is what
@@ -906,6 +929,14 @@ ALResult Tr2PrimaryRenderContextAL::Present()
 	m_frameData[m_frameIndex].submittedFrame = m_recordingFrame;
 	const VkResult submitResult = vkQueueSubmit( m_presentQueue, 1, &submitInfo, m_frameData[m_frameIndex].fence );
 	m_acquireWaited = true;
+
+	// Only a submit that was accepted will ever signal the fence. A rejected one leaves it
+	// unsignalled, and claiming otherwise is what puts a wait in front of a signal that is
+	// never coming.
+	if( submitResult == VK_SUCCESS )
+	{
+		m_frameData[m_frameIndex].fencePending = true;
+	}
 
 	// A lost device is the one thing a rebuild cannot fix, so it is the one thing that is
 	// still reported as a hard failure.
@@ -976,6 +1007,7 @@ ALResult Tr2PrimaryRenderContextAL::FlushAndSyncVulkan()
 	}
 
 	CR_RETURN_HR( Vk2Al( vkEndCommandBuffer( m_commandBuffer ) ) );
+	m_commandBufferRecording = false;
 
 	// No signal semaphore: nothing is being presented and nothing downstream is waiting
 	// on this. The wait is the acquire semaphore, and only if Present has not taken it --
@@ -1019,6 +1051,7 @@ ALResult Tr2PrimaryRenderContextAL::FlushAndSyncVulkan()
 		nullptr
 	};
 	CR_RETURN_HR( Vk2Al( vkBeginCommandBuffer( m_commandBuffer, &cmd_buffer_begin_info ) ) );
+	m_commandBufferRecording = true;
 
 	return S_OK;
 }
@@ -1086,11 +1119,48 @@ ALResult Tr2PrimaryRenderContextAL::BeginFrame()
 	++m_recordingFrame;
 
 	m_frameIndex = ( m_frameIndex + 1 ) % VIRTUAL_FRAMES;
-	// ExactSuccess, not Vk2Al: VK_TIMEOUT is a Vulkan success code, but a fence that has
-	// not signalled in a second means the GPU is not coming back, and reporting that is the
-	// whole point of having a timeout rather than UINT64_MAX.
-	CR( TrinityALImpl::ExactSuccess( vkWaitForFences( m_device, 1, &m_frameData[m_frameIndex].fence, VK_FALSE, 1000000000 ) ) );
-	vkResetFences( m_device, 1, &m_frameData[m_frameIndex].fence );
+
+	// Everything below this wait -- resetting the fence, running the slot's pending
+	// destroys, acquiring into its semaphore, re-beginning its command buffer -- is
+	// illegal while the slot's previous submission is still in flight. So a wait that did
+	// not succeed has to stop the frame, not be noted and stepped over.
+	//
+	// It was noted and stepped over. vkWaitForFences reports VK_TIMEOUT as a Vulkan
+	// *success* code, and in release builds CR is `#define CR( x ) x` -- it evaluates its
+	// argument and discards the result -- so a timeout fell straight through. Validation
+	// named every step of what followed, in order, and one timeout produced all of it:
+	//
+	//   VUID-vkResetFences-pFences-01123            x1   the fence, still in flight
+	//   VUID-vkDestroyBuffer-buffer-00922           x2   pendingDestroys, still in use
+	//   VUID-vkAcquireNextImageKHR-semaphore-01779  x1
+	//   VUID-vkBeginCommandBuffer-commandBuffer-00049 x1 the buffer, still pending
+	//   VUID-vkQueueSubmit-pCommandBuffers-00071    x12  and then it is resubmitted
+	//
+	// followed by 428 -commandBuffer-recording messages, 13 lost devices and 12 failed
+	// tests. Intermittently: 3 full-suite runs in 22, always triggered in the same test
+	// and always with those exact counts.
+	//
+	// The old budget was one second, which a full run under core + sync + thread-safety +
+	// best-practices validation exceeds on its own -- the test it always triggered in
+	// takes 832ms of wall time by itself. A hung GPU does not need a short timeout here to
+	// be caught: on Windows the TDR resets the device after about two seconds and the wait
+	// returns VK_ERROR_DEVICE_LOST, which is the honest signal and fails this the same way.
+	// The budget is bounded rather than UINT64_MAX only because Android and Linux have no
+	// TDR to fall back on.
+	if( m_frameData[m_frameIndex].fencePending )
+	{
+		const VkResult waited = vkWaitForFences( m_device, 1, &m_frameData[m_frameIndex].fence, VK_FALSE, FRAME_FENCE_TIMEOUT_NS );
+		if( waited != VK_SUCCESS )
+		{
+			// m_frameIndex has already moved and m_commandBuffer still names the previous
+			// slot's submitted buffer, so this must not look like a frame that can be
+			// presented. See m_commandBufferRecording.
+			return E_FAIL;
+		}
+
+		vkResetFences( m_device, 1, &m_frameData[m_frameIndex].fence );
+		m_frameData[m_frameIndex].fencePending = false;
+	}
 
 	for( auto it = begin( m_frameData[m_frameIndex].pendingDestroys ); it != end( m_frameData[m_frameIndex].pendingDestroys ); ++it )
 	{
@@ -1124,6 +1194,7 @@ ALResult Tr2PrimaryRenderContextAL::BeginFrame()
 	};
 
 	CR_RETURN_HR( Vk2Al( vkBeginCommandBuffer( m_commandBuffer, &cmd_buffer_begin_info ) ) );
+	m_commandBufferRecording = true;
 
 	// Straight to COLOR_ATTACHMENT_OPTIMAL, which is where SetPass wants it and where the
 	// render pass now declares both its initial and final layout. It used to land in
