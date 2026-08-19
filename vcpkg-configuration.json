@@ -8,8 +8,8 @@
     {
       "kind": "git",
       "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
-      "reference": "m2-python-313",
-      "baseline": "e33fdc9e7e028b11904022bbfee160ec6f074340",
+      "reference": "mobile-exp",
+      "baseline": "9ebb6f676e149dd4640e78a786fa4823638dd8aa",
       "packages": [
         "python3",
         "carbon-*",
