@@ -293,6 +293,34 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		VK_KHR_MAINTENANCE1_EXTENSION_NAME
 	};
 
+	// pEnabledFeatures was null, which enables nothing at all -- and a Vulkan feature that
+	// is not enabled is not merely slower, it is illegal to use. Four validation findings
+	// trace straight to this line, and one AL class is E_NOTIMPL because of it.
+	//
+	// The portable form is the intersection of what is wanted and what the device reports,
+	// never a fixed list: a feature absent on this device is simply not enabled, and the
+	// code that wanted it asks m_enabledFeatures rather than assuming.
+	VkPhysicalDeviceFeatures enabledFeatures = {};
+
+	// Occlusion queries answer only "zero or non-zero" without this; with it they return a
+	// real sample count. See Tr2OcclusionQueryAL.
+	enabledFeatures.occlusionQueryPrecise = physicalDevice.features.occlusionQueryPrecise;
+
+	// A storage image written from a fragment shader needs both of these. HLSL's
+	// RWTexture2D<float4> carries no format, so the SPIR-V declares one the image does not
+	// have unless writes-without-format is available.
+	// VUID-RuntimeSpirv-NonWritable-06340 and the fragmentStoresAndAtomics rule.
+	enabledFeatures.shaderStorageImageWriteWithoutFormat = physicalDevice.features.shaderStorageImageWriteWithoutFormat;
+	enabledFeatures.fragmentStoresAndAtomics = physicalDevice.features.fragmentStoresAndAtomics;
+
+	// Tr2SamplerStateAL sets anisotropyEnable from the AL description, and without the
+	// feature that is VUID-VkSamplerCreateInfo-anisotropyEnable-01070 -- a live error in
+	// the inventory, not a hypothetical one.
+	enabledFeatures.samplerAnisotropy = physicalDevice.features.samplerAnisotropy;
+
+	// Tr2PipelineStatsQueryAL cannot be implemented at all without this.
+	enabledFeatures.pipelineStatisticsQuery = physicalDevice.features.pipelineStatisticsQuery;
+
 	VkDeviceCreateInfo device_create_info = {
 		VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 		nullptr,
@@ -303,7 +331,7 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		nullptr,
 		_countof( extensions ),
 		extensions,
-		nullptr
+		&enabledFeatures
 	};
 
 	CR_RETURN_HR( Vk2Al( vkCreateDevice( physicalDevice.device, &device_create_info, nullptr, &device ) ) );
@@ -428,6 +456,7 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	m_device = device;
 	m_physicalDevice = physicalDevice.device;
 	m_physicalDeviceProperties = physicalDevice.properties;
+	m_enabledFeatures = enabledFeatures;
 	m_surface = surface;
 	m_swapChain = swapChain;
 	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )

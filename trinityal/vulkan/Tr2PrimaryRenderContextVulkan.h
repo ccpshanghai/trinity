@@ -209,6 +209,11 @@ public:
 	VkPhysicalDevice m_physicalDevice;
 	VkPhysicalDeviceProperties m_physicalDeviceProperties;
 
+	// What vkCreateDevice was actually given, which is the intersection of what this
+	// backend wants and what the device reports -- so a caller that needs a feature asks
+	// here rather than assuming it got what it asked for.
+	VkPhysicalDeviceFeatures m_enabledFeatures;
+
 	std::map<unsigned, VkRenderPass> m_renderPasses;
 	std::map<unsigned, VkPipeline> m_pipelines;
 };
