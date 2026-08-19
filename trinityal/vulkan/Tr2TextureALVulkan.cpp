@@ -259,6 +259,9 @@ namespace TrinityALImpl
 					desc.GetArraySize()
 				}
 			};
+			// The whole upload -- two barriers and the copy between them -- has to be
+			// outside any render pass instance. See the note in Tr2BufferALVulkan.cpp.
+			renderContext.EndRenderPassVulkan();
 			vkCmdPipelineBarrier( renderContext.m_commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier );
 
 			vkCmdCopyBufferToImage( renderContext.m_commandBuffer, stagingBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, uint32_t( copyInfo.size() ), copyInfo.data() );

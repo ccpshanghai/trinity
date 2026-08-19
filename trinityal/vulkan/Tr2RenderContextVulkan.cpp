@@ -516,6 +516,12 @@ ALResult Tr2RenderContextAL::SetPass()
 		return S_OK;
 	}
 
+	// A pass can still be open: SetRenderTarget and SetViewport only mark the source
+	// dirty, they do not close anything. vkCmdBeginRenderPass inside an active pass is
+	// VUID-vkCmdBeginRenderPass-renderpass, and it only became reachable once a second
+	// render target could be bound. Closing here rather than at the rebind keeps the
+	// pass open for as long as possible, which is what a tiler wants.
+	EndRenderPassVulkan();
 
 	auto hash = m_renderPassSource.GetHash();
 	auto found = m_owner->m_renderPasses.find( hash );

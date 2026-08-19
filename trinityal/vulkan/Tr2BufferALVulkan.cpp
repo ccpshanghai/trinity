@@ -156,6 +156,12 @@ namespace TrinityALImpl
 			vkUnmapMemory( renderContext.m_device, stagingMemory );
 
 			VkBufferCopy copyInfo = { 0, 0, size };
+			// Transfer commands and pipeline barriers are illegal inside a render pass
+			// instance. Nothing had a render target bound before PushRenderTarget existed, so
+			// no pass was ever open here and this was unreachable; the moment it became
+			// reachable it was VUID-vkCmdCopyBuffer-renderpass and
+			// VUID-vkCmdPipelineBarrier-None-07889. The pass is reopened lazily by SetPass.
+			renderContext.EndRenderPassVulkan();
 			vkCmdCopyBuffer( renderContext.m_commandBuffer, stagingBuffer, buffer, 1, &copyInfo );
 
 			VkBufferMemoryBarrier barrier = {
@@ -309,6 +315,9 @@ namespace TrinityALImpl
 			0,
 			VK_WHOLE_SIZE
 		};
+		// Outside the pass for the same reason as the staging copies above; the
+		// FlushAndSyncVulkan below would close it anyway, but not before this barrier.
+		m_owner->EndRenderPassVulkan();
 		vkCmdPipelineBarrier(
 			m_owner->m_commandBuffer,
 			VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
@@ -431,6 +440,7 @@ namespace TrinityALImpl
 		vkUnmapMemory( m_owner->m_device, stagingMemory );
 
 		VkBufferCopy copyInfo = { 0, offset, size };
+		m_owner->EndRenderPassVulkan();
 		vkCmdCopyBuffer( m_owner->m_commandBuffer, stagingBuffer, m_buffer, 1, &copyInfo );
 
 		VkBufferMemoryBarrier barrier = {
