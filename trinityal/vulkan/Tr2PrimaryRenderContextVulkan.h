@@ -10,9 +10,9 @@
 #include "../include/Tr2CapsAL.h"
 #include "../include/Tr2SamplerStateAL.h"
 #include "../include/Tr2TextureAL.h"
+#include "../Tr2AdapterStructures.h"
 
 
-struct Tr2PresentParametersAL;
 
 class Tr2PrimaryRenderContextAL : public Tr2RenderContextAL
 {
@@ -23,10 +23,7 @@ public:
 	ALResult CreateDevice( uint32_t adapter, Tr2WindowHandle focusWindow, const Tr2PresentParametersAL& presentationParameters );
 	void Destroy();
 
-	ALResult SetPresentParameters( unsigned adapter, const Tr2PresentParametersAL& pPresentationParameters )
-	{
-		return E_NOTIMPL;
-	}
+	ALResult SetPresentParameters( unsigned adapter, const Tr2PresentParametersAL& pPresentationParameters );
 
 	const Tr2CapsAL& GetCaps() const
 	{
@@ -177,12 +174,38 @@ private:
 
 	ALResult BeginFrame();
 
+	// Throw the swapchain away and build it again against the surface as it is now. One
+	// action for every cause -- a present that reported SUBOPTIMAL or OUT_OF_DATE, a submit
+	// that failed, or SetPresentParameters -- because they all leave the same mess and there
+	// is only one sound way out of it.
+	//
+	// The per-frame acquire semaphores are recreated too. That is the point: a failed submit
+	// leaves one signalled with nothing to wait on it, Vulkan has no vkResetSemaphore, and
+	// the next vkAcquireNextImageKHR on a signalled semaphore is illegal. Waiting the device
+	// idle and building new ones is the only way to drain that state.
+	ALResult RebuildSwapChainVulkan();
+
 	Tr2CapsAL m_caps;
 	VkQueue m_graphicsQueue;
 	VkQueue m_presentQueue;
 
 	VkSwapchainKHR m_swapChain;
 	VkSurfaceKHR m_surface;
+
+	// Kept so the swapchain can be rebuilt without the caller having to hand them over
+	// again -- a rebuild triggered by VK_ERROR_OUT_OF_DATE_KHR has no caller to ask.
+	Tr2PresentParametersAL m_presentParameters;
+
+	// Set when the swapchain has to be thrown away and built again: a present that reported
+	// SUBOPTIMAL or OUT_OF_DATE, a submit that failed, or SetPresentParameters. Acted on in
+	// BeginFrame, which is the one place that is between frames by construction.
+	//
+	// Recovery is deliberately one action for all of those causes. A failed submit leaves
+	// the acquire semaphore signalled with nothing to wait on it, and Vulkan has no
+	// vkResetSemaphore -- so the only sound way back is to wait the device idle and rebuild
+	// the sync objects along with the swapchain. Trying to un-signal a semaphore, or to
+	// carry on from a half-submitted frame, is what makes this look like it needs cleverness.
+	bool m_needsSwapChainRebuild;
 	uint32_t m_currentImage;
 
 	// One binary semaphore per swapchain image, NOT per virtual frame. It is signalled by

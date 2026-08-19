@@ -177,6 +177,132 @@ namespace
 		}
 		return static_cast<VkPresentModeKHR>( -1 );
 	}
+
+	struct SwapChainObjects
+	{
+		VkSwapchainKHR swapChain;
+		std::vector<VkImage> backBuffers;
+		std::vector<VkSemaphore> finishedRenderingSemaphores;
+
+		// What was actually created, which is not necessarily what was asked for -- see the
+		// extent note in BuildSwapChain.
+		Tr2DisplayModeInfo mode;
+
+		SwapChainObjects() : swapChain( VK_NULL_HANDLE ) {}
+	};
+
+	// The single place that decides swapchain parameters. CreateDevice and every rebuild go
+	// through it, so the two cannot drift on format, image count or present mode.
+	ALResult BuildSwapChain(
+		VkDevice device,
+		VkPhysicalDevice physicalDevice,
+		VkSurfaceKHR surface,
+		const Tr2PresentParametersAL& parameters,
+		VkSwapchainKHR oldSwapChain,
+		SwapChainObjects& out )
+	{
+		VkSurfaceCapabilitiesKHR surfaceCapabilities;
+		CR_RETURN_HR( Vk2Al( vkGetPhysicalDeviceSurfaceCapabilitiesKHR( physicalDevice, surface, &surfaceCapabilities ) ) );
+
+		std::vector<VkSurfaceFormatKHR> surfaceFormats;
+		FORWARD_HR( TrinityALImpl::QueryArrayNotEmpty( &vkGetPhysicalDeviceSurfaceFormatsKHR, physicalDevice, surface, surfaceFormats ) );
+
+		std::vector<VkPresentModeKHR> presentModes;
+		FORWARD_HR( TrinityALImpl::QueryArrayNotEmpty( &vkGetPhysicalDeviceSurfacePresentModesKHR, physicalDevice, surface, presentModes ) );
+
+		// The extent comes from the surface, not from the parameters.
+		//
+		// When currentExtent is not the "application chooses" sentinel it is the *only*
+		// legal imageExtent, and on Win32 and Android it is always the real client area.
+		// This used to pass parameters.mode straight through, which asked for 1920x1080
+		// against a 640x480 window: eighteen VUID-VkSwapchainCreateInfoKHR-imageExtent
+		// violations across eight tests, two of which were green because the back buffer
+		// reported the *request* rather than what exists.
+		//
+		// So the AL's mode is a request, not a guarantee. DXGI can honour it because a DXGI
+		// swapchain's buffers are independent of the window and scale at present time;
+		// Vulkan has no equivalent without VK_KHR_swapchain_maintenance1, and emulating it
+		// means rendering offscreen and blitting. That is a separate decision, and until it
+		// is taken the back buffer reports what was actually created.
+		VkExtent2D desiredExtent = { parameters.mode.width, parameters.mode.height };
+		if( surfaceCapabilities.currentExtent.width != 0xFFFFFFFF )
+		{
+			desiredExtent = surfaceCapabilities.currentExtent;
+		}
+		else
+		{
+			if( desiredExtent.width < surfaceCapabilities.minImageExtent.width )   desiredExtent.width = surfaceCapabilities.minImageExtent.width;
+			if( desiredExtent.height < surfaceCapabilities.minImageExtent.height ) desiredExtent.height = surfaceCapabilities.minImageExtent.height;
+			if( desiredExtent.width > surfaceCapabilities.maxImageExtent.width )   desiredExtent.width = surfaceCapabilities.maxImageExtent.width;
+			if( desiredExtent.height > surfaceCapabilities.maxImageExtent.height ) desiredExtent.height = surfaceCapabilities.maxImageExtent.height;
+		}
+
+		// A zero extent means the window is minimised. There is nothing legal to create, and
+		// the caller has to try again later rather than treat it as a hard failure.
+		if( desiredExtent.width == 0 || desiredExtent.height == 0 )
+		{
+			return S_FALSE;
+		}
+
+		const uint32_t desiredImageCount = GetSwapChainNumImages( surfaceCapabilities );
+		const VkSurfaceFormatKHR desiredFormat = GetSwapChainFormat( surfaceFormats );
+		const VkImageUsageFlags desiredUsage = GetSwapChainUsageFlags( surfaceCapabilities );
+		const VkSurfaceTransformFlagBitsKHR desiredTransform = GetSwapChainTransform( surfaceCapabilities );
+		const VkPresentModeKHR desiredPresentMode = GetSwapChainPresentMode( parameters.presentInterval, presentModes );
+
+		if( static_cast<int>( desiredUsage ) == -1 || static_cast<int>( desiredPresentMode ) == -1 )
+		{
+			return E_FAIL;
+		}
+
+		VkSwapchainCreateInfoKHR swapChainCreateInfo = {
+			VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+			nullptr,
+			0,
+			surface,
+			desiredImageCount,
+			desiredFormat.format,
+			desiredFormat.colorSpace,
+			desiredExtent,
+			1,
+			desiredUsage,
+			VK_SHARING_MODE_EXCLUSIVE,
+			0,
+			nullptr,
+			desiredTransform,
+			VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+			desiredPresentMode,
+			VK_TRUE,
+			// Handing the old swapchain over lets the driver reuse what it can and avoids a
+			// blank window on some platforms. It also means the old one must be destroyed
+			// after this call, and never presented to again.
+			oldSwapChain
+		};
+
+		CR_RETURN_HR( Vk2Al( vkCreateSwapchainKHR( device, &swapChainCreateInfo, nullptr, &out.swapChain ) ) );
+
+		CR_RETURN_HR( TrinityALImpl::QueryArray( &vkGetSwapchainImagesKHR, device, out.swapChain, out.backBuffers ) );
+
+		VkSemaphoreCreateInfo semaphoreInfo = {
+			VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+			nullptr,
+			0
+		};
+
+		// One per image, not one per virtual frame -- see the member's comment. The count is
+		// whatever the driver actually handed back, which need not be the number we asked for
+		// and need not equal VIRTUAL_FRAMES.
+		out.finishedRenderingSemaphores.resize( out.backBuffers.size(), VK_NULL_HANDLE );
+		for( size_t i = 0; i < out.finishedRenderingSemaphores.size(); ++i )
+		{
+			CR_RETURN_HR( Vk2Al( vkCreateSemaphore( device, &semaphoreInfo, nullptr, &out.finishedRenderingSemaphores[i] ) ) );
+		}
+
+		out.mode = parameters.mode;
+		out.mode.width = desiredExtent.width;
+		out.mode.height = desiredExtent.height;
+		return S_OK;
+	}
 }
 
 Tr2PrimaryRenderContextAL::FrameData::FrameData()
@@ -203,7 +329,8 @@ Tr2PrimaryRenderContextAL::Tr2PrimaryRenderContextAL()
 	m_frameIndex( 0 ),
 	m_acquireWaited( false ),
 	m_recordingFrame( 0 ),
-	m_flushedFrame( 0 )
+	m_flushedFrame( 0 ),
+	m_needsSwapChainRebuild( false )
 {
 	m_defaultBackBuffer.m_texture = std::make_shared<TrinityALImpl::Tr2TextureAL>();
 }
@@ -336,70 +463,16 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 
 	CR_RETURN_HR( Vk2Al( vkCreateDevice( physicalDevice.device, &device_create_info, nullptr, &device ) ) );
 
+	Tr2DisplayModeInfo actualMode = presentationParameters.mode;
+
 	if( !isWindowless )
 	{
-		VkSurfaceCapabilitiesKHR surfaceCapabilities;
-		CR_RETURN_HR( Vk2Al( vkGetPhysicalDeviceSurfaceCapabilitiesKHR( physicalDevice.device, surface, &surfaceCapabilities ) ) );
-
-		std::vector<VkSurfaceFormatKHR> surfaceFormats;
-		FORWARD_HR( TrinityALImpl::QueryArrayNotEmpty( &vkGetPhysicalDeviceSurfaceFormatsKHR, physicalDevice.device, surface, surfaceFormats ) );
-
-		std::vector<VkPresentModeKHR> presentModes;
-		FORWARD_HR( TrinityALImpl::QueryArrayNotEmpty( &vkGetPhysicalDeviceSurfacePresentModesKHR, physicalDevice.device, surface, presentModes ) );
-
-		uint32_t desired_number_of_images = GetSwapChainNumImages( surfaceCapabilities );
-		VkSurfaceFormatKHR desired_format = GetSwapChainFormat( surfaceFormats );
-		VkExtent2D desired_extent = { presentationParameters.mode.width, presentationParameters.mode.height };
-		VkImageUsageFlags desired_usage = GetSwapChainUsageFlags( surfaceCapabilities );
-		VkSurfaceTransformFlagBitsKHR desired_transform = GetSwapChainTransform( surfaceCapabilities );
-		VkPresentModeKHR desired_present_mode = GetSwapChainPresentMode( presentationParameters.presentInterval, presentModes );
-
-		if( static_cast<int>( desired_usage ) == -1 ) {
-			return E_FAIL;
-		}
-		if( static_cast<int>( desired_present_mode ) == -1 ) {
-			return E_FAIL;
-		}
-
-		VkSwapchainCreateInfoKHR swapChainCreateInfo = {
-			VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-			nullptr,
-			0,
-			surface,
-			desired_number_of_images,
-			desired_format.format,
-			desired_format.colorSpace,
-			desired_extent,
-			1,
-			desired_usage,
-			VK_SHARING_MODE_EXCLUSIVE,
-			0,
-			nullptr,
-			desired_transform,
-			VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-			desired_present_mode,
-			VK_TRUE,
-			VK_NULL_HANDLE
-		};
-
-		CR_RETURN_HR( Vk2Al( vkCreateSwapchainKHR( device, &swapChainCreateInfo, nullptr, &swapChain ) ) );
-
-		VkSemaphoreCreateInfo semaphoreInfo = {
-			VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-			nullptr,
-			0
-		};
-
-		CR_RETURN_HR( TrinityALImpl::QueryArray( &vkGetSwapchainImagesKHR, device, swapChain, backBuffers ) );
-
-		// One per image, not one per virtual frame -- see the member's comment. The count is
-		// whatever the driver actually handed back, which need not be the number we asked for
-		// and need not equal VIRTUAL_FRAMES.
-		finishedRenderingSemaphores.resize( backBuffers.size(), VK_NULL_HANDLE );
-		for( size_t i = 0; i < finishedRenderingSemaphores.size(); ++i )
-		{
-			CR_RETURN_HR( Vk2Al( vkCreateSemaphore( device, &semaphoreInfo, nullptr, &finishedRenderingSemaphores[i] ) ) );
-		}
+		SwapChainObjects created;
+		CR_RETURN_HR( BuildSwapChain( device, physicalDevice.device, surface, presentationParameters, VK_NULL_HANDLE, created ) );
+		swapChain = created.swapChain;
+		backBuffers = created.backBuffers;
+		finishedRenderingSemaphores = created.finishedRenderingSemaphores;
+		actualMode = created.mode;
 	}
 
 
@@ -457,6 +530,8 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	m_physicalDevice = physicalDevice.device;
 	m_physicalDeviceProperties = physicalDevice.properties;
 	m_enabledFeatures = enabledFeatures;
+	m_presentParameters = presentationParameters;
+	m_needsSwapChainRebuild = false;
 	m_surface = surface;
 	m_swapChain = swapChain;
 	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
@@ -466,7 +541,8 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 
 	m_finishedRenderingSemaphores = finishedRenderingSemaphores;
 
-	m_defaultBackBuffer.m_texture->AssignFromSwapChainVulkan( backBuffers, presentationParameters.mode, *this );
+	// actualMode, not presentationParameters.mode: the back buffer reports what exists.
+	m_defaultBackBuffer.m_texture->AssignFromSwapChainVulkan( backBuffers, actualMode, *this );
 
 	m_commandPool = commandPool;
 	m_frameIndex = 0;
@@ -596,6 +672,144 @@ bool Tr2PrimaryRenderContextAL::IsValid() const
 	return m_device != VK_NULL_HANDLE;
 }
 
+ALResult Tr2PrimaryRenderContextAL::RebuildSwapChainVulkan()
+{
+	if( m_device == VK_NULL_HANDLE )
+	{
+		return E_INVALIDCALL;
+	}
+	if( m_surface == VK_NULL_HANDLE )
+	{
+		// Windowless: there is no swapchain to rebuild and nothing to recover from.
+		m_needsSwapChainRebuild = false;
+		return S_OK;
+	}
+
+	// Everything below assumes nothing is in flight, and that assumption is the reason this
+	// is a device-wide wait rather than a fence wait: the frame that failed may have left a
+	// submit half-done, and the acquire semaphore signalled with nobody to wait on it.
+	vkDeviceWaitIdle( m_device );
+
+	// The queue is idle, so every frame ever submitted is complete. Say so, or
+	// GetRenderedFrameNumber keeps reporting the pre-rebuild answer to Tr2FenceAL and the
+	// constant-pool recycle.
+	m_flushedFrame = m_recordingFrame;
+	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
+	{
+		m_frameData[i].submittedFrame = 0;
+	}
+
+	// The back buffer's image views are ours and have to go; its images belong to the
+	// swapchain and Tr2TextureAL::Destroy already knows not to touch those.
+	m_defaultBackBuffer.m_texture->Destroy();
+
+	// The framebuffer references image views that have just been destroyed. The render pass
+	// cache can stay -- a VkRenderPass describes formats, not images.
+	InvalidateFramebufferVulkan();
+
+	// Build the replacement first, handing the old swapchain over so the driver can reuse
+	// what it can. Nothing is destroyed until this succeeds, so a failure here leaves a
+	// working swapchain in place rather than a half-torn-down one.
+	SwapChainObjects created;
+	ALResult built = BuildSwapChain( m_device, m_physicalDevice, m_surface, m_presentParameters, m_swapChain, created );
+	if( FAILED( built ) )
+	{
+		return built;
+	}
+	if( built == S_FALSE )
+	{
+		// A zero-sized surface: the window is minimised. Leave the flag set and try again
+		// next frame rather than tearing down what is still there.
+		return S_FALSE;
+	}
+
+	VkSwapchainKHR oldSwapChain = m_swapChain;
+	m_swapChain = created.swapChain;
+
+	// ORDER MATTERS HERE, and getting it wrong cost a device loss in one full-suite run out
+	// of twelve while the control lost none.
+	//
+	// A semaphore waited on by vkQueuePresentKHR is in use until that present completes, and
+	// vkDeviceWaitIdle does not prove a present has completed -- it waits on queue work, not
+	// on the presentation engine. That is the same invariant 0f0650de recorded for the
+	// per-image semaphores in the steady-state path, arrived at from the other direction.
+	//
+	// Destroying the swapchain is what ends its outstanding presentation operations, so the
+	// semaphores those presents waited on can only be destroyed afterwards. Doing it before
+	// is a use-after-free inside the driver, which surfaces as VK_ERROR_DEVICE_LOST on some
+	// later submit -- intermittently, because it depends on whether the present had already
+	// retired.
+	if( oldSwapChain != VK_NULL_HANDLE )
+	{
+		vkDestroySwapchainKHR( m_device, oldSwapChain, nullptr );
+	}
+
+	for( size_t i = 0; i < m_finishedRenderingSemaphores.size(); ++i )
+	{
+		if( m_finishedRenderingSemaphores[i] != VK_NULL_HANDLE )
+		{
+			vkDestroySemaphore( m_device, m_finishedRenderingSemaphores[i], nullptr );
+		}
+	}
+	m_finishedRenderingSemaphores = created.finishedRenderingSemaphores;
+
+	// The acquire semaphores go and come back, for the reason this whole function exists: a
+	// submit that failed leaves one signalled with no pending wait, there is no
+	// vkResetSemaphore, and vkAcquireNextImageKHR on a signalled semaphore is illegal.
+	// After the swapchain is gone no acquire on it can still be outstanding, so this is also
+	// the earliest point at which destroying them is sound.
+	VkSemaphoreCreateInfo semaphoreInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, nullptr, 0 };
+	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
+	{
+		if( m_frameData[i].imageAvailableSemaphore != VK_NULL_HANDLE )
+		{
+			vkDestroySemaphore( m_device, m_frameData[i].imageAvailableSemaphore, nullptr );
+			m_frameData[i].imageAvailableSemaphore = VK_NULL_HANDLE;
+		}
+		CR_RETURN_HR( Vk2Al( vkCreateSemaphore( m_device, &semaphoreInfo, nullptr, &m_frameData[i].imageAvailableSemaphore ) ) );
+	}
+	m_acquireWaited = false;
+
+	CR_RETURN_HR( m_defaultBackBuffer.m_texture->AssignFromSwapChainVulkan( created.backBuffers, created.mode, *this ) );
+
+	m_currentImage = 0;
+	m_needsSwapChainRebuild = false;
+	return S_OK;
+}
+
+ALResult Tr2PrimaryRenderContextAL::SetPresentParameters( unsigned, const Tr2PresentParametersAL& presentationParameters )
+{
+	if( !IsValid() )
+	{
+		return E_INVALIDCALL;
+	}
+
+	m_presentParameters = presentationParameters;
+
+	// Rebuilt now rather than flagged for later: the caller asked for this, and a resize
+	// costs a frame whichever way it is spelled. The deferred path exists for failures
+	// discovered inside Present, where there is no caller to report to.
+	//
+	// The command buffer is mid-recording here, and RebuildSwapChainVulkan waits the device
+	// idle -- which is legal, but whatever was recorded for this frame is discarded along
+	// with the framebuffer it referenced. BeginFrame starts a clean one.
+	if( m_renderPass )
+	{
+		vkCmdEndRenderPass( m_commandBuffer );
+		m_renderPass = VK_NULL_HANDLE;
+	}
+	vkEndCommandBuffer( m_commandBuffer );
+
+	ALResult rebuilt = RebuildSwapChainVulkan();
+	if( FAILED( rebuilt ) )
+	{
+		return rebuilt;
+	}
+
+	FORWARD_HR( BeginFrame() );
+	return S_OK;
+}
+
 ALResult Tr2PrimaryRenderContextAL::Present()
 {
 	if( !IsValid() )
@@ -640,9 +854,22 @@ ALResult Tr2PrimaryRenderContextAL::Present()
 	};
 	// This fence now stands for this frame. Recorded before the submit so that a submit
 	// failure cannot leave the slot claiming a frame that was never sent.
+	// Nothing below returns early on failure. Present used to bail through CR_RETURN_HR
+	// here and again after vkQueuePresentKHR, having already called vkEndCommandBuffer --
+	// so it never reached BeginFrame, the only caller of vkBeginCommandBuffer, and the
+	// command buffer stayed ended for the life of the process. Every later vkCmd* was then
+	// recorded against a buffer that was not recording, which is the section 13 cascade
+	// arrived at from a routine window resize instead of a lost device.
 	m_frameData[m_frameIndex].submittedFrame = m_recordingFrame;
-	CR_RETURN_HR( Vk2Al( vkQueueSubmit( m_presentQueue, 1, &submitInfo, m_frameData[m_frameIndex].fence ) ) );
+	const VkResult submitResult = vkQueueSubmit( m_presentQueue, 1, &submitInfo, m_frameData[m_frameIndex].fence );
 	m_acquireWaited = true;
+
+	// A lost device is the one thing a rebuild cannot fix, so it is the one thing that is
+	// still reported as a hard failure.
+	if( submitResult == VK_ERROR_DEVICE_LOST )
+	{
+		return E_FAIL;
+	}
 
 	VkPresentInfoKHR presentInfo = {
 		VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -654,11 +881,36 @@ ALResult Tr2PrimaryRenderContextAL::Present()
 		&m_currentImage,
 		nullptr
 	};
-	CR_RETURN_HR( Vk2Al( vkQueuePresentKHR( m_presentQueue, &presentInfo ) ) );
+	// Only presented if the submit worked; presenting an image whose rendering was never
+	// submitted would wait on a semaphore that will never be signalled.
+	VkResult presentResult = VK_SUCCESS;
+	if( submitResult == VK_SUCCESS )
+	{
+		presentResult = vkQueuePresentKHR( m_presentQueue, &presentInfo );
+		if( presentResult == VK_ERROR_DEVICE_LOST )
+		{
+			return E_FAIL;
+		}
+	}
+
+	// VK_SUBOPTIMAL_KHR is a *success*: the frame was presented, and the swapchain no longer
+	// matches the surface. VK_ERROR_OUT_OF_DATE_KHR is a failure that says the same thing
+	// more firmly. Both mean rebuild, and so does a submit that failed for any other reason
+	// -- one recovery action for every cause, because they leave the same mess.
+	const bool needsRebuild =
+		submitResult != VK_SUCCESS ||
+		presentResult != VK_SUCCESS;
+	if( needsRebuild )
+	{
+		m_needsSwapChainRebuild = true;
+	}
 
 	FORWARD_HR( BeginFrame() );
 
-	return S_OK;
+	// S_FALSE, not S_OK: the context is usable again and the caller need not do anything,
+	// but a frame was lost. FAILED( S_FALSE ) is false, so a caller that only checks for
+	// failure carries on -- which is what a resize should look like from above.
+	return needsRebuild ? ALResult( S_FALSE ) : ALResult( S_OK );
 }
 
 ALResult Tr2PrimaryRenderContextAL::FlushAndSyncVulkan()
@@ -771,6 +1023,23 @@ uint64_t Tr2PrimaryRenderContextAL::GetRenderedFrameNumber() const
 
 ALResult Tr2PrimaryRenderContextAL::BeginFrame()
 {
+	// The one place that is between frames by construction, so the one place a rebuild can
+	// happen. Anything Present discovered too late to act on lands here.
+	if( m_needsSwapChainRebuild )
+	{
+		ALResult rebuilt = RebuildSwapChainVulkan();
+		if( FAILED( rebuilt ) )
+		{
+			return rebuilt;
+		}
+		if( rebuilt == S_FALSE )
+		{
+			// Minimised window: nothing to acquire and nothing to record into. The flag
+			// stays set, so the next frame tries again.
+			return S_FALSE;
+		}
+	}
+
 	++m_recordingFrame;
 
 	m_frameIndex = ( m_frameIndex + 1 ) % VIRTUAL_FRAMES;

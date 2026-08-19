@@ -419,6 +419,15 @@ public:
 	// nothing else calls it at all.
 	void ResetConstantPoolVulkan();
 
+	// Throw away the cached framebuffer and force the next draw to rebuild the pass. Needed
+	// when the images the framebuffer referenced have been destroyed under it -- a swapchain
+	// rebuild is the only thing that does that, and a VkFramebuffer naming a destroyed
+	// VkImageView is not something the next vkCmdBeginRenderPass survives.
+	//
+	// The render pass cache is deliberately left alone: a VkRenderPass describes formats and
+	// layouts, not images, so it stays valid across a rebuild.
+	void InvalidateFramebufferVulkan();
+
 	void EndRenderPassVulkan()
 	{
 		if( m_renderPass )

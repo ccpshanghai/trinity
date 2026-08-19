@@ -1163,6 +1163,17 @@ ALResult Tr2RenderContextAL::SetPipeline()
 	return S_OK;
 }
 
+void Tr2RenderContextAL::InvalidateFramebufferVulkan()
+{
+	if( m_framebuffer != VK_NULL_HANDLE && m_owner )
+	{
+		vkDestroyFramebuffer( m_owner->m_device, m_framebuffer, nullptr );
+		m_framebuffer = VK_NULL_HANDLE;
+	}
+	m_renderPass = VK_NULL_HANDLE;
+	m_dirtyPass = true;
+}
+
 void Tr2RenderContextAL::ResetConstantPoolVulkan()
 {
 	if( m_constantPool == VK_NULL_HANDLE || !m_owner )
