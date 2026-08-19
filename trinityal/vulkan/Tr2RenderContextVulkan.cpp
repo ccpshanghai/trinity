@@ -823,6 +823,74 @@ ALResult Tr2RenderContextAL::DrawPrimitiveUP(
 	return m_drawUPHelper.DrawPrimitiveUP( m_topology, primitiveCount, vertexStreamZeroData, VertexStreamZeroStride, *this, *m_owner );
 }
 
+namespace
+{
+	// A UAV is bound to its descriptor as VK_IMAGE_LAYOUT_GENERAL, and GENERAL is one of
+	// the layouts vkCmdClearColorImage accepts, so clearing there avoids a transition out
+	// and straight back again for an image that is about to be written by a shader.
+	const VkImageLayout UAV_CLEAR_LAYOUT = VK_IMAGE_LAYOUT_GENERAL;
+}
+
+ALResult Tr2RenderContextAL::ClearUav( Tr2TextureAL& rt, uint32_t mip, const float values[4] ) throw( )
+{
+	if( !rt.IsValid() )
+	{
+		return E_INVALIDARG;
+	}
+	VkClearColorValue clearColor;
+	memcpy( clearColor.float32, values, sizeof( clearColor.float32 ) );
+
+	EndRenderPassVulkan();
+	rt.m_texture->TransitionVulkan( m_commandBuffer, UAV_CLEAR_LAYOUT );
+
+	VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, VK_REMAINING_ARRAY_LAYERS };
+	vkCmdClearColorImage( m_commandBuffer, rt.m_texture->GetImageVulkan(), UAV_CLEAR_LAYOUT, &clearColor, 1, &range );
+	return S_OK;
+}
+
+ALResult Tr2RenderContextAL::ClearUav( Tr2TextureAL& rt, uint32_t mip, const uint32_t values[4] ) throw( )
+{
+	if( !rt.IsValid() )
+	{
+		return E_INVALIDARG;
+	}
+	VkClearColorValue clearColor;
+	memcpy( clearColor.uint32, values, sizeof( clearColor.uint32 ) );
+
+	EndRenderPassVulkan();
+	rt.m_texture->TransitionVulkan( m_commandBuffer, UAV_CLEAR_LAYOUT );
+
+	VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, VK_REMAINING_ARRAY_LAYERS };
+	vkCmdClearColorImage( m_commandBuffer, rt.m_texture->GetImageVulkan(), UAV_CLEAR_LAYOUT, &clearColor, 1, &range );
+	return S_OK;
+}
+
+ALResult Tr2RenderContextAL::ClearUav( Tr2BufferAL& buffer, const float values[4] ) throw( )
+{
+	if( !buffer.IsValid() )
+	{
+		return E_INVALIDARG;
+	}
+	uint32_t bits;
+	memcpy( &bits, &values[0], sizeof( bits ) );
+
+	EndRenderPassVulkan();
+	vkCmdFillBuffer( m_commandBuffer, buffer.m_buffer->GetBufferVulkan(), 0, VK_WHOLE_SIZE, bits );
+	return S_OK;
+}
+
+ALResult Tr2RenderContextAL::ClearUav( Tr2BufferAL& buffer, const uint32_t values[4] ) throw( )
+{
+	if( !buffer.IsValid() )
+	{
+		return E_INVALIDARG;
+	}
+
+	EndRenderPassVulkan();
+	vkCmdFillBuffer( m_commandBuffer, buffer.m_buffer->GetBufferVulkan(), 0, VK_WHOLE_SIZE, values[0] );
+	return S_OK;
+}
+
 ALResult Tr2RenderContextAL::SetPass()
 {
 	if( !m_dirtyPass )

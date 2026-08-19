@@ -5,6 +5,7 @@
 #if TRINITY_PLATFORM == TRINITY_VULKAN
 
 #include "Tr2VertexLayoutALVulkan.h"
+#include "Tr2PrimaryRenderContextVulkan.h"
 
 namespace
 {
@@ -87,9 +88,18 @@ namespace TrinityALImpl
 
 	}
 
-	ALResult Tr2VertexLayoutAL::Create( const Tr2VertexDefinition& definition, Tr2PrimaryRenderContextAL& )
+	ALResult Tr2VertexLayoutAL::Create( const Tr2VertexDefinition& definition, Tr2PrimaryRenderContextAL& renderContext )
 	{
 		Destroy();
+
+		// The render context argument was ignored, so this succeeded against a device that
+		// does not exist -- the one AL Create in the Vulkan backend that did not check.
+		// Nothing here needs the device, but the contract is that creating a device
+		// resource without a device fails.
+		if( !renderContext.IsValid() )
+		{
+			return E_INVALIDARG;
+		}
 
 		for( auto it = begin( definition.m_items ); it != end( definition.m_items ); ++it )
 		{

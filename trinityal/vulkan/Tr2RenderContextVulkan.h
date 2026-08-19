@@ -77,14 +77,12 @@ public:
 	ALResult SetStreamSource( uint32_t stream, const Tr2BufferAL & buffer, uint32_t offset, uint32_t stride ) throw( );
 	ALResult SetIndices( const Tr2BufferAL & buffer ) throw( );
 
-	ALResult ClearUav( Tr2BufferAL& buffer, const float values[4] ) throw( )
-	{
-		return E_NOTIMPL;
-	}
-	ALResult ClearUav( Tr2BufferAL& buffer, const uint32_t values[4] ) throw( )
-	{
-		return E_NOTIMPL;
-	}
+	// vkCmdFillBuffer writes one 32-bit value over a range, which covers the single-
+	// component typed buffer these are used for. A buffer whose format has more than one
+	// component would need the pattern repeated, and nothing asks for that yet -- so this
+	// takes values[0] and says so rather than pretending to handle four.
+	ALResult ClearUav( Tr2BufferAL& buffer, const float values[4] ) throw( );
+	ALResult ClearUav( Tr2BufferAL& buffer, const uint32_t values[4] ) throw( );
 
 	ALResult CopySubBuffer(
 		Tr2BufferAL& dest,
@@ -100,14 +98,8 @@ public:
 	ALResult SetVertexLayout( const Tr2VertexLayoutAL& layout ) throw( );
 	ALResult SetShaderProgram( const Tr2ShaderProgramAL& shader ) throw( );
 
-	ALResult ClearUav( Tr2TextureAL& rt, uint32_t mip, const float values[4] ) throw( )
-	{
-		return E_NOTIMPL;
-	}
-	ALResult ClearUav( Tr2TextureAL& rt, uint32_t mip, const uint32_t values[4] ) throw( )
-	{
-		return E_NOTIMPL;
-	}
+	ALResult ClearUav( Tr2TextureAL& rt, uint32_t mip, const float values[4] ) throw( );
+	ALResult ClearUav( Tr2TextureAL& rt, uint32_t mip, const uint32_t values[4] ) throw( );
 
 	ALResult SetResourceSet( const Tr2ResourceSetAL& resourceSet ) throw( );
 	
