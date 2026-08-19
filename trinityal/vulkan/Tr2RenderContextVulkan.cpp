@@ -173,26 +173,13 @@ ALResult Tr2RenderContextAL::Clear(
 				} 
 			};
 
-			if( m_renderPass )
-			{
-				vkCmdEndRenderPass( m_commandBuffer );
-				m_renderPass = VK_NULL_HANDLE;
-
-				VkImageSubresourceRange subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-				VkImageMemoryBarrier barrier = {
-					VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-					nullptr,
-					VK_ACCESS_TRANSFER_WRITE_BIT,
-					VK_ACCESS_MEMORY_READ_BIT,
-					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-					VK_QUEUE_FAMILY_IGNORED,
-					VK_QUEUE_FAMILY_IGNORED,
-					m_boundRenderTargets[slot].m_texture->GetImageVulkan(),
-					subresourceRange
-				};
-				vkCmdPipelineBarrier( m_commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier );
-			}
+			// vkCmdClearColorImage is a transfer command, so it needs the image in a
+			// transfer layout and needs to be outside any render pass. The barrier that
+			// used to be spelled out here assumed the image was in
+			// COLOR_ATTACHMENT_OPTIMAL, which was only true if a pass had just been open;
+			// the tracker knows where it actually is.
+			EndRenderPassVulkan();
+			m_boundRenderTargets[slot].m_texture->TransitionVulkan( m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
 
 			VkImageSubresourceRange subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 			vkCmdClearColorImage( m_commandBuffer, m_boundRenderTargets[slot].m_texture->GetImageVulkan(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearColor, 1, &subresourceRange );
@@ -375,8 +362,16 @@ ALResult Tr2RenderContextAL::SetRenderTarget( const Tr2TextureAL& renderTarget, 
 			VK_ATTACHMENT_STORE_OP_STORE,
 			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_UNDEFINED,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			// COLOR_ATTACHMENT_OPTIMAL both ends. It used to be UNDEFINED in and
+			// TRANSFER_DST_OPTIMAL out, which was wrong twice: an initialLayout of
+			// UNDEFINED discards the contents the LOAD_OP_LOAD above is asking to keep
+			// (VUID-VkAttachmentDescription-format-06699), and a finalLayout of
+			// TRANSFER_DST_OPTIMAL left every render target resting in a transfer layout,
+			// so sampling one contradicted its own descriptor
+			// (VUID-vkCmdDraw-imageLayout-00344). SetPass now transitions the attachment
+			// into this layout before the pass opens, so declaring it is truthful.
+			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		};
 		if( memcmp( &m_renderPassSource.m_rt[slot + 1], &attachment, sizeof( attachment ) ) != 0 )
 		{
@@ -523,6 +518,22 @@ ALResult Tr2RenderContextAL::SetPass()
 	// pass open for as long as possible, which is what a tiler wants.
 	EndRenderPassVulkan();
 
+	// Everything the pass is about to touch has to be in the layout the pass declares,
+	// and the barriers that get it there are illegal once the pass is open -- so this is
+	// the only place they can go. A texture that is already in the right layout costs
+	// nothing here; TransitionVulkan emits no barrier in that case.
+	for( uint32_t i = 0; i < RENDER_TARGET_COUNT; ++i )
+	{
+		if( m_boundRenderTargets[i].IsValid() )
+		{
+			m_boundRenderTargets[i].m_texture->TransitionVulkan( m_commandBuffer, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL );
+		}
+	}
+	if( m_resourceSet.IsValid() )
+	{
+		m_resourceSet.m_resourceSet->TransitionImagesVulkan( m_commandBuffer );
+	}
+
 	auto hash = m_renderPassSource.GetHash();
 	auto found = m_owner->m_renderPasses.find( hash );
 	if( found == m_owner->m_renderPasses.end() )
@@ -667,6 +678,15 @@ void Tr2RenderContextAL::UpdateFramebuffer()
 
 ALResult Tr2RenderContextAL::SetPipeline()
 {
+	// Checked before the m_dirtyPass test rather than folded into SetPass, because a
+	// resource set can change without the pass source changing at all. Asking the set
+	// first means a pass only restarts when an image genuinely has to move -- marking the
+	// pass dirty on every SetResourceSet would restart it on almost every draw.
+	if( m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->NeedsTransitionVulkan() )
+	{
+		EndRenderPassVulkan();
+	}
+
 	if( m_dirtyPass )
 	{
 		SetPass();

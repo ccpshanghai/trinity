@@ -81,6 +81,32 @@ namespace TrinityALImpl
 			return 0;
 		}
 
+		// Image layout, tracked per image because the back buffer holds one per swapchain
+		// entry and they retire independently.
+		//
+		// Before this existed the backend transitioned images at a handful of hardcoded
+		// points and left every other image wherever it happened to be. A texture created
+		// without initial data was never transitioned at all and stayed UNDEFINED for
+		// life, which is what vkQueueSubmit reported as
+		// VUID-vkCmdDraw-None-09600, and a render target sampled after being drawn to sat
+		// in TRANSFER_DST_OPTIMAL while its descriptor claimed SHADER_READ_ONLY_OPTIMAL,
+		// which is VUID-vkCmdDraw-imageLayout-00344.
+		VkImageLayout GetLayoutVulkan() const;
+
+		// Record a transition that something else performed -- a render pass moving the
+		// attachment to its finalLayout, for instance. Emits nothing.
+		void SetLayoutVulkan( VkImageLayout layout );
+
+		// Emit a barrier if the image is not already in this layout, and record it.
+		// Recording a barrier inside a render pass instance is illegal, so the caller is
+		// responsible for having closed one -- see EndRenderPassVulkan.
+		//
+		// srcStageOverride is for the one case the old layout cannot describe: a barrier
+		// that has to be ordered after a semaphore wait rather than after earlier work in
+		// this command buffer. Leaving it 0 derives the stage from the old layout, which
+		// is what every caller but BeginFrame wants.
+		void TransitionVulkan( VkCommandBuffer commandBuffer, VkImageLayout newLayout, VkPipelineStageFlags srcStageOverride = 0 );
+
 		ALResult AssignFromSwapChainVulkan( const std::vector<VkImage>& backBuffers, const Tr2DisplayModeInfo& mode, Tr2PrimaryRenderContextAL& renderContext );
 		void SetCurrentImageVulkan( uint32_t index );
 		VkImage GetImageVulkan() const;
@@ -95,6 +121,7 @@ namespace TrinityALImpl
 	private:
 		std::vector<VkImage> m_images;
 		std::vector<VkImageView> m_imageViews;
+		std::vector<VkImageLayout> m_layouts;
 		VkDeviceMemory m_memory;
 		Tr2PrimaryRenderContextAL* m_owner;
 		uint32_t m_currentIndex;

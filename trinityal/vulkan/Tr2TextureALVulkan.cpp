@@ -278,6 +278,14 @@ namespace TrinityALImpl
 
 		m_images.push_back( image );
 		m_imageViews.push_back( imageView );
+
+		// The upload above ends with a barrier into SHADER_READ_ONLY_OPTIMAL. Without
+		// initial data nothing has touched the image and vkCreateImage left it UNDEFINED
+		// -- which is exactly the case that used to reach a draw untransitioned, because
+		// the upload path was the only thing in the backend that emitted image barriers.
+		m_layouts.push_back( initialData
+			? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			: VK_IMAGE_LAYOUT_UNDEFINED );
 		m_memory = memory;
 		m_cpuUsage = cpuUsage;
 		m_gpuUsage = gpuUsage;
@@ -386,6 +394,11 @@ namespace TrinityALImpl
 
 		m_images = backBuffers;
 		m_imageViews = views;
+
+		// Acquired swapchain images carry no guarantee about their contents or layout, and
+		// BeginFrame transitions each one from UNDEFINED every frame, so UNDEFINED is the
+		// truthful starting point rather than a placeholder.
+		m_layouts.assign( backBuffers.size(), VK_IMAGE_LAYOUT_UNDEFINED );
 		m_desc = Tr2BitmapDimensions( mode.width, mode.height, 1, mode.format );
 		m_msaa = Tr2MsaaDesc();
 		m_gpuUsage = Tr2GpuUsage::RENDER_TARGET;
@@ -397,6 +410,71 @@ namespace TrinityALImpl
 	void Tr2TextureAL::SetCurrentImageVulkan( uint32_t index )
 	{
 		m_currentIndex = index;
+	}
+
+	VkImageLayout Tr2TextureAL::GetLayoutVulkan() const
+	{
+		if( m_currentIndex >= m_layouts.size() )
+		{
+			return VK_IMAGE_LAYOUT_UNDEFINED;
+		}
+		return m_layouts[m_currentIndex];
+	}
+
+	void Tr2TextureAL::SetLayoutVulkan( VkImageLayout layout )
+	{
+		if( m_currentIndex < m_layouts.size() )
+		{
+			m_layouts[m_currentIndex] = layout;
+		}
+	}
+
+	void Tr2TextureAL::TransitionVulkan( VkCommandBuffer commandBuffer, VkImageLayout newLayout, VkPipelineStageFlags srcStageOverride )
+	{
+		if( m_currentIndex >= m_images.size() || m_currentIndex >= m_layouts.size() )
+		{
+			return;
+		}
+		const VkImageLayout oldLayout = m_layouts[m_currentIndex];
+		if( oldLayout == newLayout )
+		{
+			return;
+		}
+
+		VkPipelineStageFlags srcStage, dstStage;
+		VkAccessFlags srcAccess, dstAccess;
+		GetLayoutStageAccessVulkan( oldLayout, srcStage, srcAccess );
+		GetLayoutStageAccessVulkan( newLayout, dstStage, dstAccess );
+		if( srcStageOverride != 0 )
+		{
+			srcStage = srcStageOverride;
+		}
+
+		VkImageMemoryBarrier barrier = {
+			VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+			nullptr,
+			srcAccess,
+			dstAccess,
+			oldLayout,
+			newLayout,
+			VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED,
+			m_images[m_currentIndex],
+			{
+				GetAspectMaskVulkan( m_format ),
+				0,
+				// Every mip and every layer. A per-mip tracker would let mip generation
+				// transition one level at a time, which is what Tr2TextureAL::GenerateMips
+				// will want; until that exists, transitioning the whole image keeps the
+				// tracker honest, which a partial transition would not.
+				VK_REMAINING_MIP_LEVELS,
+				0,
+				VK_REMAINING_ARRAY_LAYERS
+			}
+		};
+		vkCmdPipelineBarrier( commandBuffer, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier );
+
+		m_layouts[m_currentIndex] = newLayout;
 	}
 
 	VkImage Tr2TextureAL::GetImageVulkan() const

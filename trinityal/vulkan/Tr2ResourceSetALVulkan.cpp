@@ -132,6 +132,8 @@ namespace TrinityALImpl
 						imageInfo.imageView = resource.texture.m_texture->m_imageViews[0];
 						imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 						imageInfos.push_back( imageInfo );
+						BoundImageVulkan bound = { resource.texture, VK_IMAGE_LAYOUT_GENERAL };
+						m_boundImages.push_back( bound );
 						d.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 						d.pImageInfo = &imageInfos.back();
 					}
@@ -165,6 +167,8 @@ namespace TrinityALImpl
 						imageInfo.imageView = resource.texture.m_texture->m_imageViews[0];
 						imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 						imageInfos.push_back( imageInfo );
+						BoundImageVulkan bound = { resource.texture, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+						m_boundImages.push_back( bound );
 						d.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 						d.pImageInfo = &imageInfos.back();
 					}
@@ -182,6 +186,11 @@ namespace TrinityALImpl
 
 	void Tr2ResourceSetAL::Destroy()
 	{
+		// Released here rather than left to the destructor: each entry holds a reference
+		// to the texture, which is deliberate -- a descriptor naming a destroyed image is
+		// worse than keeping it alive -- but it means the set has to let go explicitly.
+		m_boundImages.clear();
+
 		if( m_owner )
 		{
 			//m_owner->DestroyLaterVulkan( m_descriptorSets, vkFreeDescriptorSets );
@@ -195,6 +204,29 @@ namespace TrinityALImpl
 	bool Tr2ResourceSetAL::IsValid() const
 	{
 		return m_owner != nullptr;
+	}
+
+	bool Tr2ResourceSetAL::NeedsTransitionVulkan() const
+	{
+		for( auto it = begin( m_boundImages ); it != end( m_boundImages ); ++it )
+		{
+			if( it->texture.IsValid() && it->texture.m_texture->GetLayoutVulkan() != it->layout )
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	void Tr2ResourceSetAL::TransitionImagesVulkan( VkCommandBuffer commandBuffer )
+	{
+		for( auto it = begin( m_boundImages ); it != end( m_boundImages ); ++it )
+		{
+			if( it->texture.IsValid() )
+			{
+				it->texture.m_texture->TransitionVulkan( commandBuffer, it->layout );
+			}
+		}
 	}
 
 	Tr2ALMemoryType Tr2ResourceSetAL::GetMemoryClass() const

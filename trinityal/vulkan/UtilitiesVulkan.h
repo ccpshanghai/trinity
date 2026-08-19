@@ -80,4 +80,19 @@ namespace TrinityALImpl
 	ALResult CreateBuffer( VkBuffer& buffer, VkDeviceMemory& memory, size_t size, VkBufferUsageFlags usage, VkMemoryPropertyFlagBits memoryProperty, Tr2PrimaryRenderContextAL& renderContext );
 	ALResult CreateImage( VkImage& image, VkDeviceMemory& memory, const Tr2BitmapDimensions& desc, const Tr2MsaaDesc& msaa, VkImageUsageFlags usage, VkMemoryPropertyFlagBits memoryProperty, Tr2PrimaryRenderContextAL& renderContext );
 
+	// The pipeline stage and access mask that go with an image layout. Every barrier in
+	// this backend used to spell both out by hand at the call site, which is how the
+	// backend ended up transitioning some images and simply not others: there was no one
+	// place that knew what a layout implies. Callers now name only the layout they want.
+	//
+	// These are the conservative pairings, not the tightest ones. A tighter srcStage for
+	// a known producer would be faster; getting it wrong is a data race that validation
+	// cannot always see, so the wide mask is the right default until something measures.
+	void GetLayoutStageAccessVulkan( VkImageLayout layout, VkPipelineStageFlags& stage, VkAccessFlags& access );
+
+	// Colour formats get the colour aspect, depth formats get depth (plus stencil where
+	// the format has one). Barriers and image views both need this and both used to
+	// hardcode VK_IMAGE_ASPECT_COLOR_BIT, which is why nothing depth-shaped worked.
+	VkImageAspectFlags GetAspectMaskVulkan( VkFormat format );
+
 }

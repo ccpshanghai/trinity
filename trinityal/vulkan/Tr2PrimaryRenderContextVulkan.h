@@ -139,6 +139,16 @@ private:
 		FrameData();
 	};
 
+	// The pipeline stage at which a submit waits on imageAvailableSemaphore, and therefore
+	// the earliest stage at which anything may touch the acquired image.
+	//
+	// It has to appear in the srcStageMask of the first barrier of the frame as well, or
+	// that barrier's layout transition is not ordered after the wait and races the
+	// presentation engine's read -- SYNC-HAZARD-WRITE-AFTER-READ, one per frame, which is
+	// what happened the moment the barrier stopped naming this stage by hand. Two places
+	// have to agree and neither can see the other, so the constant is the agreement.
+	static const VkPipelineStageFlags ACQUIRE_WAIT_STAGE = VK_PIPELINE_STAGE_TRANSFER_BIT;
+
 	static const uint32_t VIRTUAL_FRAMES = 3;
 	FrameData m_frameData[VIRTUAL_FRAMES];
 	uint32_t m_frameIndex;

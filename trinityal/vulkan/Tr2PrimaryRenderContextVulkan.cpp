@@ -580,20 +580,11 @@ ALResult Tr2PrimaryRenderContextAL::Present()
 		m_renderPass = VK_NULL_HANDLE;
 	}
 
-	VkImageSubresourceRange subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-	VkImageMemoryBarrier barrier = {
-		VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-		nullptr,
-		VK_ACCESS_TRANSFER_WRITE_BIT,
-		VK_ACCESS_MEMORY_READ_BIT,
-		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-		VK_QUEUE_FAMILY_IGNORED,
-		VK_QUEUE_FAMILY_IGNORED,
-		m_defaultBackBuffer.m_texture->GetImageVulkan(),
-		subresourceRange
-	};
-	vkCmdPipelineBarrier( m_commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier );
+	// Whatever the frame left it in -- COLOR_ATTACHMENT_OPTIMAL after a draw,
+	// TRANSFER_DST_OPTIMAL after a clear -- into PRESENT_SRC_KHR. The old barrier named
+	// TRANSFER_DST_OPTIMAL as the source unconditionally, which was a lie in every frame
+	// that ended with a draw.
+	m_defaultBackBuffer.m_texture->TransitionVulkan( m_commandBuffer, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR );
 
 	CR_RETURN_HR( Vk2Al( vkEndCommandBuffer( m_commandBuffer ) ) );
 
@@ -606,7 +597,7 @@ ALResult Tr2PrimaryRenderContextAL::Present()
 
 	// A FlushAndSyncVulkan earlier in the frame will already have consumed the acquire
 	// semaphore; waiting on it a second time would wait for a signal that never comes.
-	VkPipelineStageFlags waitMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+	VkPipelineStageFlags waitMask = ACQUIRE_WAIT_STAGE;
 	VkSubmitInfo submitInfo = {
 		VK_STRUCTURE_TYPE_SUBMIT_INFO,
 		nullptr,
@@ -666,7 +657,7 @@ ALResult Tr2PrimaryRenderContextAL::FlushAndSyncVulkan()
 	// on this. The wait is the acquire semaphore, and only if Present has not taken it --
 	// BeginFrame records a barrier against the acquired image, and that barrier is in the
 	// command buffer being submitted here.
-	VkPipelineStageFlags waitMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+	VkPipelineStageFlags waitMask = ACQUIRE_WAIT_STAGE;
 	VkSubmitInfo submitInfo = {
 		VK_STRUCTURE_TYPE_SUBMIT_INFO,
 		nullptr,
@@ -766,6 +757,12 @@ ALResult Tr2PrimaryRenderContextAL::BeginFrame()
 
 	CR_RETURN_HR( Vk2Al( vkAcquireNextImageKHR( m_device, m_swapChain, UINT64_MAX, m_frameData[m_frameIndex].imageAvailableSemaphore, VK_NULL_HANDLE, &m_currentImage ) ) );
 	m_defaultBackBuffer.m_texture->SetCurrentImageVulkan( m_currentImage );
+
+	// vkAcquireNextImageKHR gives no guarantee about the contents or the layout of the
+	// image it hands back, so the frame starts by declaring it UNDEFINED and transitioning
+	// from there. Carrying PRESENT_SRC_KHR over from the last frame would be a promise the
+	// presentation engine never made.
+	m_defaultBackBuffer.m_texture->SetLayoutVulkan( VK_IMAGE_LAYOUT_UNDEFINED );
 	m_commandBuffer = m_frameData[m_frameIndex].commandBuffer;
 
 	// Freshly signalled, and nothing has waited on it yet. See the member's comment.
@@ -780,20 +777,11 @@ ALResult Tr2PrimaryRenderContextAL::BeginFrame()
 
 	CR_RETURN_HR( Vk2Al( vkBeginCommandBuffer( m_commandBuffer, &cmd_buffer_begin_info ) ) );
 
-	VkImageSubresourceRange subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-	VkImageMemoryBarrier barrier = {
-		VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-		nullptr,
-		VK_ACCESS_MEMORY_READ_BIT,
-		VK_ACCESS_TRANSFER_WRITE_BIT,
-		VK_IMAGE_LAYOUT_UNDEFINED,
-		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		VK_QUEUE_FAMILY_IGNORED,
-		VK_QUEUE_FAMILY_IGNORED,
-		m_defaultBackBuffer.m_texture->GetImageVulkan(),
-		subresourceRange
-	};
-	vkCmdPipelineBarrier( m_commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier );
+	// Straight to COLOR_ATTACHMENT_OPTIMAL, which is where SetPass wants it and where the
+	// render pass now declares both its initial and final layout. It used to land in
+	// TRANSFER_DST_OPTIMAL, which only suited the clear path and left every pass claiming
+	// an initialLayout it did not have.
+	m_defaultBackBuffer.m_texture->TransitionVulkan( m_commandBuffer, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, ACQUIRE_WAIT_STAGE );
 
 	SetRenderTarget( m_defaultBackBuffer );
 
