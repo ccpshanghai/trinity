@@ -60,6 +60,7 @@ Tr2RenderContextAL::Tr2RenderContextAL() throw( )
 	m_computePipelineLayout( VK_NULL_HANDLE ),
 	m_primitiveToVertexCount( 0, 0 ),
 	m_topology( Tr2RenderContextEnum::TOP_TRIANGLES ),
+	m_separateAlphaBlend( false ),
 	m_viewportSet( false )
 {
 	memset( &m_pipelineSource, 0, sizeof( m_pipelineSource ) );
@@ -370,6 +371,61 @@ ALResult Tr2RenderContextAL::SetConstants( const Tr2ConstantBufferAL& buffer, Tr
 }
 
 
+namespace
+{
+	// Tr2RenderContextEnum::BlendMode is D3D9's D3DBLEND, numbered from 1. dx12 stores it
+	// into D3D12_BLEND unchanged because the two enumerations happen to agree;
+	// VkBlendFactor does not agree with either, so it needs a real table. Index 0 is unused
+	// and maps to ZERO so that a zero-initialised state is at least defined.
+	const VkBlendFactor s_blendFactorMap[] = {
+		VK_BLEND_FACTOR_ZERO,                        // (unused, BlendMode starts at 1)
+		VK_BLEND_FACTOR_ZERO,                        // BM_ZERO
+		VK_BLEND_FACTOR_ONE,                         // BM_ONE
+		VK_BLEND_FACTOR_SRC_COLOR,                   // BM_SRCCOLOR
+		VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR,         // BM_INVSRCCOLOR
+		VK_BLEND_FACTOR_SRC_ALPHA,                   // BM_SRCALPHA
+		VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,         // BM_INVSRCALPHA
+		VK_BLEND_FACTOR_DST_ALPHA,                   // BM_DESTALPHA
+		VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA,         // BM_INVDESTALPHA
+		VK_BLEND_FACTOR_DST_COLOR,                   // BM_DESTCOLOR
+		VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR,         // BM_INVDESTCOLOR
+		VK_BLEND_FACTOR_SRC_ALPHA_SATURATE,          // BM_SRCALPHASAT
+		VK_BLEND_FACTOR_SRC_ALPHA,                   // BM_BOTHSRCALPHA, a D3D9 legacy pair
+		VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,         // BM_BOTHINVSRCALPHA, likewise
+		VK_BLEND_FACTOR_CONSTANT_COLOR,              // BM_BLENDFACTOR
+		VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR     // BM_INVBLENDFACTOR
+	};
+
+	// What a colour factor becomes when it is applied to the alpha channel. D3D9 derives
+	// the alpha factors from the colour ones unless separate alpha blending is switched
+	// on, and dx12 does the same remap in GetPipelineState; this is that table, in
+	// VkBlendFactor terms.
+	VkBlendFactor AlphaFactorFor( VkBlendFactor colorFactor )
+	{
+		switch( colorFactor )
+		{
+		case VK_BLEND_FACTOR_SRC_COLOR:               return VK_BLEND_FACTOR_SRC_ALPHA;
+		case VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR:     return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+		case VK_BLEND_FACTOR_DST_COLOR:               return VK_BLEND_FACTOR_DST_ALPHA;
+		case VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR:     return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+		case VK_BLEND_FACTOR_CONSTANT_COLOR:          return VK_BLEND_FACTOR_CONSTANT_ALPHA;
+		case VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR:return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
+		default:                                      return colorFactor;
+		}
+	}
+
+	// BO_DISABLE is 0 and has no Vulkan equivalent -- disabling is blendEnable, not an
+	// operation -- so it maps to ADD, which is what a disabled attachment ignores anyway.
+	const VkBlendOp s_blendOpMap[] = {
+		VK_BLEND_OP_ADD,                             // BO_DISABLE
+		VK_BLEND_OP_ADD,                             // BO_ADD
+		VK_BLEND_OP_SUBTRACT,                        // BO_SUBTRACT
+		VK_BLEND_OP_REVERSE_SUBTRACT,                // BO_REVSUBTRACT
+		VK_BLEND_OP_MIN,                             // BO_MIN
+		VK_BLEND_OP_MAX                              // BO_MAX
+	};
+}
+
 ALResult Tr2RenderContextAL::SetRenderState( Tr2RenderContextEnum::RenderState state, uint32_t value ) throw( )
 {
 	switch( state )
@@ -404,6 +460,89 @@ ALResult Tr2RenderContextAL::SetRenderState( Tr2RenderContextEnum::RenderState s
 		m_pipelineSource.m_attachmentBlend[3].blendEnable = value != 0;
 		m_dirtyPso = true;
 		return S_OK;
+
+	// The blend factors and the operation apply to every attachment, which is what
+	// RS_ALPHABLENDENABLE above already assumes. Per-attachment blending would need the
+	// RS_COLORWRITEENABLE1..3 family, and nothing asks for it yet.
+	case Tr2RenderContextEnum::RS_SRCBLEND:
+	case Tr2RenderContextEnum::RS_DESTBLEND:
+	case Tr2RenderContextEnum::RS_SRCBLENDALPHA:
+	case Tr2RenderContextEnum::RS_DESTBLENDALPHA:
+	{
+		if( value >= _countof( s_blendFactorMap ) )
+		{
+			return E_INVALIDARG;
+		}
+		const VkBlendFactor factor = s_blendFactorMap[value];
+		const bool isAlphaState = ( state == Tr2RenderContextEnum::RS_SRCBLENDALPHA ) ||
+								  ( state == Tr2RenderContextEnum::RS_DESTBLENDALPHA );
+		const bool isSource = ( state == Tr2RenderContextEnum::RS_SRCBLEND ) ||
+							  ( state == Tr2RenderContextEnum::RS_SRCBLENDALPHA );
+		if( isAlphaState )
+		{
+			// An explicit alpha factor means the caller wants the two channels to differ,
+			// so stop deriving one from the other. dx12 tracks the same thing.
+			m_separateAlphaBlend = true;
+		}
+		for( uint32_t i = 0; i < RENDER_TARGET_COUNT; ++i )
+		{
+			VkPipelineColorBlendAttachmentState& blend = m_pipelineSource.m_attachmentBlend[i];
+			if( isAlphaState )
+			{
+				( isSource ? blend.srcAlphaBlendFactor : blend.dstAlphaBlendFactor ) = factor;
+			}
+			else
+			{
+				( isSource ? blend.srcColorBlendFactor : blend.dstColorBlendFactor ) = factor;
+				if( !m_separateAlphaBlend )
+				{
+					( isSource ? blend.srcAlphaBlendFactor : blend.dstAlphaBlendFactor ) = AlphaFactorFor( factor );
+				}
+			}
+		}
+		m_dirtyPso = true;
+		return S_OK;
+	}
+
+	case Tr2RenderContextEnum::RS_BLENDOP:
+	case Tr2RenderContextEnum::RS_BLENDOPALPHA:
+	{
+		if( value >= _countof( s_blendOpMap ) )
+		{
+			return E_INVALIDARG;
+		}
+		const VkBlendOp op = s_blendOpMap[value];
+		const bool isAlphaState = ( state == Tr2RenderContextEnum::RS_BLENDOPALPHA );
+		for( uint32_t i = 0; i < RENDER_TARGET_COUNT; ++i )
+		{
+			VkPipelineColorBlendAttachmentState& blend = m_pipelineSource.m_attachmentBlend[i];
+			if( isAlphaState )
+			{
+				blend.alphaBlendOp = op;
+			}
+			else
+			{
+				blend.colorBlendOp = op;
+				if( !m_separateAlphaBlend )
+				{
+					blend.alphaBlendOp = op;
+				}
+			}
+		}
+		m_dirtyPso = true;
+		return S_OK;
+	}
+
+	case Tr2RenderContextEnum::RS_COLORWRITEENABLE:
+		// D3D's channel bits are R=1, G=2, B=4, A=8, and VkColorComponentFlagBits uses the
+		// same values, so the mask carries over unchanged. dx12 masks with 0xf for the same
+		// reason.
+		for( uint32_t i = 0; i < RENDER_TARGET_COUNT; ++i )
+		{
+			m_pipelineSource.m_attachmentBlend[i].colorWriteMask = value & 0xf;
+		}
+		m_dirtyPso = true;
+		return S_OK;
 	default:
 		return E_NOTIMPL;
 	}
@@ -411,9 +550,17 @@ ALResult Tr2RenderContextAL::SetRenderState( Tr2RenderContextEnum::RenderState s
 
 ALResult Tr2RenderContextAL::SetRenderStates( const uint32_t* stateValuePairs, uint32_t count ) throw( )
 {
-	for( uint32_t i = 0; i < count; ++i )
+	// Two locals, deliberately. Both increments used to sit in one call as
+	// `SetRenderState( RenderState( *p++ ), *p++ )`, and the order in which a function's
+	// arguments are evaluated is unspecified -- MSVC evaluates right to left, so every
+	// pair arrived with the state and the value swapped. Rendering.CanUseViewport failed
+	// on E_NOTIMPL for a state it had not asked for, while the same two states set
+	// individually worked. dx12's version has always used locals.
+	while( count-- )
 	{
-		FORWARD_HR( SetRenderState( Tr2RenderContextEnum::RenderState( *stateValuePairs++ ), *stateValuePairs++ ) );
+		const uint32_t state = *stateValuePairs++;
+		const uint32_t value = *stateValuePairs++;
+		FORWARD_HR( SetRenderState( Tr2RenderContextEnum::RenderState( state ), value ) );
 	}
 	return S_OK;
 }

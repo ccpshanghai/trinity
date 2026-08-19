@@ -360,6 +360,11 @@ private:
 	Tr2RenderContextEnum::Topology m_topology;
 	TrinityALImpl::Tr2DrawUPHelper m_drawUPHelper;
 
+	// Set once anything names an alpha blend factor or operation explicitly. Until then the
+	// alpha channel follows the colour one, which is D3D9's rule and what the callers above
+	// this layer expect.
+	bool m_separateAlphaBlend;
+
 	bool m_dirtyPso;
 	bool m_dirtyPass;
 	std::pair<uint32_t, uint32_t> m_primitiveToVertexCount;
