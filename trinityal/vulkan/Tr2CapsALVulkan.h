@@ -27,9 +27,23 @@ public:
 	{
 		return true;
 	}
+	// false, and this is the honest answer rather than a convenient one. dx11, dx12, metal
+	// and the stub all report true; this backend reports false because Tr2SwapChainAL::Create
+	// returns E_NOTIMPL, and a capability query that says yes to something the create call
+	// refuses is simply wrong. The lie was the true.
+	//
+	// It is not implemented by decision, not by omission. A standalone swapchain is a second
+	// VkSurfaceKHR and a second VkSwapchainKHR with its own acquire/present handshake, and it
+	// exists for desktop tools with several top-level windows -- a phone has one surface, one
+	// swapchain, and no second window to open. Multiple viewports inside one window need none
+	// of it: that is render-to-texture composited into the one back buffer, which works.
+	//
+	// The six SwapChain tests guard their bodies on this query, so they now do nothing rather
+	// than fail. That is the capability contract working as designed, but it does mean those
+	// six are no longer coverage of anything -- see section 23.
 	bool SupportsStandaloneSwapChain() const
 	{
-		return true;
+		return false;
 	}
 	bool SupportsVertexShaderTextures() const
 	{
