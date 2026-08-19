@@ -118,6 +118,25 @@ namespace TrinityALImpl
 		}
 	}
 
+	Tr2RenderContextEnum::PixelFormat GetAlPixelFormat( VkFormat format )
+	{
+		switch( format )
+		{
+		case VK_FORMAT_B8G8R8A8_UNORM: return Tr2RenderContextEnum::PIXEL_FORMAT_B8G8R8A8_UNORM;
+		case VK_FORMAT_B8G8R8A8_SRGB: return Tr2RenderContextEnum::PIXEL_FORMAT_B8G8R8A8_UNORM_SRGB;
+		case VK_FORMAT_R8G8B8A8_UNORM: return Tr2RenderContextEnum::PIXEL_FORMAT_R8G8B8A8_UNORM;
+		case VK_FORMAT_R8G8B8A8_SRGB: return Tr2RenderContextEnum::PIXEL_FORMAT_R8G8B8A8_UNORM_SRGB;
+		case VK_FORMAT_R16G16B16A16_SFLOAT: return Tr2RenderContextEnum::PIXEL_FORMAT_R16G16B16A16_FLOAT;
+		case VK_FORMAT_R16G16B16A16_UNORM: return Tr2RenderContextEnum::PIXEL_FORMAT_R16G16B16A16_UNORM;
+		case VK_FORMAT_A2B10G10R10_UNORM_PACK32: return Tr2RenderContextEnum::PIXEL_FORMAT_R10G10B10A2_UNORM;
+		// The two a mobile surface is most likely to offer instead of an 8-bit ordering.
+		case VK_FORMAT_B5G6R5_UNORM_PACK16: return Tr2RenderContextEnum::PIXEL_FORMAT_B5G6R5_UNORM;
+		case VK_FORMAT_B5G5R5A1_UNORM_PACK16: return Tr2RenderContextEnum::PIXEL_FORMAT_B5G5R5A1_UNORM;
+		default:
+			return Tr2RenderContextEnum::PIXEL_FORMAT_UNKNOWN;
+		}
+	}
+
 	ALResult AllocateMemory( VkDeviceMemory& memory, const VkMemoryRequirements& memoryRequirements, VkMemoryPropertyFlagBits memoryProperty, Tr2PrimaryRenderContextAL& renderContext )
 	{
 		VkPhysicalDeviceMemoryProperties memoryProperties;

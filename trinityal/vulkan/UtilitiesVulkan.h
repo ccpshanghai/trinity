@@ -86,6 +86,12 @@ namespace TrinityALImpl
 
 	VkFormat GetVulkanFormat( Tr2RenderContextEnum::PixelFormat format );
 
+	// The presentable formats, named back the other way. GetVulkanFormat is many-to-one --
+	// TYPELESS and B8G8R8X8 collapse onto the same VkFormat -- so it has no inverse, and
+	// this is not one: it covers only the formats a surface can actually hand back, and
+	// returns PIXEL_FORMAT_UNKNOWN for anything else. Callers must check.
+	Tr2RenderContextEnum::PixelFormat GetAlPixelFormat( VkFormat format );
+
 	ALResult AllocateMemory( VkDeviceMemory& memory, const VkMemoryRequirements& memoryRequirements, VkMemoryPropertyFlagBits memoryProperty, Tr2PrimaryRenderContextAL& renderContext );
 	ALResult CreateBuffer( VkBuffer& buffer, VkDeviceMemory& memory, size_t size, VkBufferUsageFlags usage, VkMemoryPropertyFlagBits memoryProperty, Tr2PrimaryRenderContextAL& renderContext );
 	ALResult CreateImage( VkImage& image, VkDeviceMemory& memory, const Tr2BitmapDimensions& desc, const Tr2MsaaDesc& msaa, VkImageUsageFlags usage, VkMemoryPropertyFlagBits memoryProperty, Tr2PrimaryRenderContextAL& renderContext );

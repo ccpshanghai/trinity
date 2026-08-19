@@ -75,27 +75,57 @@ namespace
 		return count;
 	}
 
-	VkSurfaceFormatKHR GetSwapChainFormat( std::vector<VkSurfaceFormatKHR> &surfaceFormats ) 
+	// mode.format is the requested back buffer format, and dx11 honours it:
+	// SafeConvertD3DBackBufferFormat feeds it straight into DXGI_SWAP_CHAIN_DESC and only
+	// substitutes a default for UNKNOWN and B8G8R8X8.
+	//
+	// This used to ignore the request entirely and always prefer R8G8B8A8_UNORM, while
+	// AssignFromSwapChainVulkan went on building the back buffer image views -- and
+	// therefore the render pass attachment descriptions -- from mode.format, which the
+	// tests leave at the B8G8R8A8_UNORM that GetAdapterDisplayMode reports. A
+	// B8G8R8A8_UNORM view over an R8G8B8A8_UNORM image: 93 of the suite's 117 validation
+	// errors were VUID-VkImageViewCreateInfo-image-01762, and every one of them was this
+	// line. Undefined behaviour, and the shape it takes on a driver that lets it through is
+	// red and blue swapped in every presented frame -- which no test here could catch,
+	// because nothing on this backend compares back buffer pixels against a reference.
+	VkSurfaceFormatKHR GetSwapChainFormat( const std::vector<VkSurfaceFormatKHR>& surfaceFormats, Tr2RenderContextEnum::PixelFormat requested )
 	{
-		// If the list contains only one entry with undefined format
-		// it means that there are no preferred surface formats and any can be chosen
-		if( ( surfaceFormats.size() == 1 ) && ( surfaceFormats[0].format == VK_FORMAT_UNDEFINED ) ) 
+		const VkFormat requestedFormat = TrinityALImpl::GetVulkanFormat( requested );
+
+		// A single VK_FORMAT_UNDEFINED entry means the surface has no preference and
+		// anything goes, so the request wins outright.
+		if( ( surfaceFormats.size() == 1 ) && ( surfaceFormats[0].format == VK_FORMAT_UNDEFINED ) )
 		{
-			VkSurfaceFormatKHR fmt = { VK_FORMAT_R8G8B8A8_UNORM, VK_COLORSPACE_SRGB_NONLINEAR_KHR };
+			VkSurfaceFormatKHR fmt = {
+				requestedFormat != VK_FORMAT_UNDEFINED ? requestedFormat : VK_FORMAT_B8G8R8A8_UNORM,
+				VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
+			};
 			return fmt;
 		}
 
-		// Check if list contains most widely used R8 G8 B8 A8 format
-		// with nonlinear color space
-		for( auto surfaceFormat = begin( surfaceFormats ); surfaceFormat != end( surfaceFormats ); ++surfaceFormat )
+		// What was asked for, then the two ubiquitous 8-bit orderings, then whatever the
+		// surface listed first. Every fallback changes the format the back buffer reports,
+		// which is why the caller sets out.mode.format from the answer and not the request.
+		//
+		// The colour space is pinned as well as the format. This surface lists
+		// A2B10G10R10_UNORM_PACK32 twice, once for HDR10_ST2084 and once for
+		// SRGB_NONLINEAR, and matching on format alone would take whichever came first.
+		const VkFormat preferred[] = { requestedFormat, VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM };
+		for( size_t p = 0; p < sizeof( preferred ) / sizeof( preferred[0] ); ++p )
 		{
-			if( surfaceFormat->format == VK_FORMAT_R8G8B8A8_UNORM ) 
+			if( preferred[p] == VK_FORMAT_UNDEFINED )
 			{
-				return *surfaceFormat;
+				continue;
+			}
+			for( auto surfaceFormat = begin( surfaceFormats ); surfaceFormat != end( surfaceFormats ); ++surfaceFormat )
+			{
+				if( surfaceFormat->format == preferred[p] && surfaceFormat->colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR )
+				{
+					return *surfaceFormat;
+				}
 			}
 		}
 
-		// Return the first format from the list
 		return surfaceFormats[0];
 	}
 
@@ -245,7 +275,7 @@ namespace
 		}
 
 		const uint32_t desiredImageCount = GetSwapChainNumImages( surfaceCapabilities );
-		const VkSurfaceFormatKHR desiredFormat = GetSwapChainFormat( surfaceFormats );
+		const VkSurfaceFormatKHR desiredFormat = GetSwapChainFormat( surfaceFormats, parameters.mode.format );
 		const VkImageUsageFlags desiredUsage = GetSwapChainUsageFlags( surfaceCapabilities );
 		const VkSurfaceTransformFlagBitsKHR desiredTransform = GetSwapChainTransform( surfaceCapabilities );
 		const VkPresentModeKHR desiredPresentMode = GetSwapChainPresentMode( parameters.presentInterval, presentModes );
@@ -301,6 +331,19 @@ namespace
 		out.mode = parameters.mode;
 		out.mode.width = desiredExtent.width;
 		out.mode.height = desiredExtent.height;
+
+		// The back buffer image views, and every render pass attachment description that
+		// references them, are built from out.mode.format -- so it has to name the format
+		// the swapchain was actually created with rather than the one that was asked for.
+		out.mode.format = TrinityALImpl::GetAlPixelFormat( desiredFormat.format );
+		if( out.mode.format == Tr2RenderContextEnum::PIXEL_FORMAT_UNKNOWN )
+		{
+			// A presentable format the AL has no name for. Carrying on would build views
+			// from PIXEL_FORMAT_UNKNOWN and put back exactly the mismatch this replaced,
+			// so fail here instead. The preference list above chose the format, so this is
+			// a gap in GetAlPixelFormat and wants fixing there.
+			return E_FAIL;
+		}
 		return S_OK;
 	}
 }
