@@ -56,7 +56,8 @@ Tr2RenderContextAL::Tr2RenderContextAL() throw( )
 	m_constantsDirty( false ),
 	m_computePipeline( VK_NULL_HANDLE ),
 	m_computePipelineLayout( VK_NULL_HANDLE ),
-	m_primitiveToVertexCount( 0, 0 )
+	m_primitiveToVertexCount( 0, 0 ),
+	m_viewportSet( false )
 {
 	memset( &m_pipelineSource, 0, sizeof( m_pipelineSource ) );
 	memset( &m_renderPassSource, 0, sizeof( m_renderPassSource ) );
@@ -405,6 +406,89 @@ ALResult Tr2RenderContextAL::SetRenderTarget( const Tr2TextureAL& renderTarget, 
 	return S_OK;
 }
 
+ALResult Tr2RenderContextAL::SetDepthStencil( const Tr2TextureAL& depthStencil ) throw()
+{
+	if( depthStencil.IsValid() )
+	{
+		return E_NOTIMPL;
+	}
+	m_boundDepthStencil = depthStencil;
+	return S_OK;
+}
+
+ALResult Tr2RenderContextAL::PushRenderTarget( uint32_t slot ) throw()
+{
+	if( slot >= RENDER_TARGET_COUNT )
+	{
+		return E_INVALIDARG;
+	}
+	m_rtStack[slot].push_back( m_boundRenderTargets[slot] );
+	return S_OK;
+}
+
+ALResult Tr2RenderContextAL::PopRenderTarget( uint32_t slot ) throw()
+{
+	if( slot >= RENDER_TARGET_COUNT )
+	{
+		return E_INVALIDARG;
+	}
+	if( m_rtStack[slot].empty() )
+	{
+		return E_INVALIDCALL;
+	}
+	Tr2TextureAL rt = m_rtStack[slot].back();
+	m_rtStack[slot].pop_back();
+	return SetRenderTarget( rt, slot );
+}
+
+ALResult Tr2RenderContextAL::PushDepthStencil() throw()
+{
+	m_dsStack.push_back( m_boundDepthStencil );
+	return S_OK;
+}
+
+ALResult Tr2RenderContextAL::PopDepthStencil() throw()
+{
+	if( m_dsStack.empty() )
+	{
+		return E_INVALIDCALL;
+	}
+	Tr2TextureAL ds = m_dsStack.back();
+	m_dsStack.pop_back();
+	return SetDepthStencil( ds );
+}
+
+ALResult Tr2RenderContextAL::SetViewport( const Tr2Viewport& viewport ) throw()
+{
+	m_viewport = viewport;
+	m_viewportSet = true;
+
+	// Nothing is recorded here. The viewport is dynamic state, but it is set from SetPass
+	// alongside the scissor, and SetPass runs before every draw that needs a pass. Doing
+	// it in both places would be two vkCmdSetViewport calls for one value, and doing it
+	// only here would lose the value to the next pass restart -- which the clear path and
+	// the query pools both cause.
+	return S_OK;
+}
+
+ALResult Tr2RenderContextAL::GetViewport( Tr2Viewport& viewport ) throw()
+{
+	if( m_viewportSet )
+	{
+		viewport = m_viewport;
+		return S_OK;
+	}
+
+	// Nobody has set one, so report the default: the whole of render target 0. Returning a
+	// stored copy instead would be wrong the moment the render target changed size.
+	if( !m_boundRenderTargets[0].IsValid() )
+	{
+		return E_FAIL;
+	}
+	viewport = Tr2Viewport( m_boundRenderTargets[0].GetWidth(), m_boundRenderTargets[0].GetHeight() );
+	return S_OK;
+}
+
 ALResult Tr2RenderContextAL::DrawIndexedPrimitive(
 	uint32_t numVertices,
 	uint32_t startIndex,
@@ -432,6 +516,7 @@ ALResult Tr2RenderContextAL::SetPass()
 		return S_OK;
 	}
 
+
 	auto hash = m_renderPassSource.GetHash();
 	auto found = m_owner->m_renderPasses.find( hash );
 	if( found == m_owner->m_renderPasses.end() )
@@ -457,13 +542,24 @@ ALResult Tr2RenderContextAL::SetPass()
 
 	vkCmdBeginRenderPass( m_commandBuffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE );
 
+	// Trinity's viewport has y down from the top left; Vulkan's has y up, and this
+	// backend flips it by giving the viewport a negative height and moving the origin to
+	// the bottom edge -- which is what VK_KHR_MAINTENANCE1, in the device extension list,
+	// exists to allow. Both branches below apply the same flip; only the source of the
+	// rectangle differs.
+	const bool haveViewport = m_viewportSet;
+	const float vpX = haveViewport ? m_viewport.m_x : 0.0f;
+	const float vpY = haveViewport ? m_viewport.m_y : 0.0f;
+	const float vpWidth = haveViewport ? m_viewport.m_width : float( m_boundRenderTargets[0].GetWidth() );
+	const float vpHeight = haveViewport ? m_viewport.m_height : float( m_boundRenderTargets[0].GetHeight() );
+
 	VkViewport viewport = {
-		0.0f,
-		float( m_boundRenderTargets[0].GetHeight() ),
-		float( m_boundRenderTargets[0].GetWidth() ),
-		-float( m_boundRenderTargets[0].GetHeight() ),
-		0.0f,
-		1.0f
+		vpX,
+		vpY + vpHeight,
+		vpWidth,
+		-vpHeight,
+		haveViewport ? m_viewport.m_minZ : 0.0f,
+		haveViewport ? m_viewport.m_maxZ : 1.0f
 	};
 
 	VkRect2D scissor = {

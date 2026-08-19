@@ -7,6 +7,7 @@
 
 #include <map>
 
+#include "../Tr2HalHelperStructures.h"
 #include "../Tr2RenderContextEnum.h"
 #include "../Tr2DrawUPHelper.h"
 #include "../include/Tr2ConstantBufferAL.h"
@@ -176,10 +177,12 @@ public:
 		uint32_t registerIndex,
 		uint32_t unusedArgument = 0 ) throw( );
 
-	ALResult SetDepthStencil( const Tr2TextureAL& depthStencil ) throw( )
-	{
-		return E_NOTIMPL;
-	}
+	// Unbinding is implemented, binding is not. Clearing the depth attachment is a
+	// no-op on the render pass source -- m_rt[0] is already VK_FORMAT_UNDEFINED and
+	// nothing else references it -- so PopDepthStencil can restore "no depth stencil"
+	// truthfully. Binding a real one needs a depth attachment in the framebuffer, and
+	// UpdateFramebuffer is still hardcoded to a single colour view.
+	ALResult SetDepthStencil( const Tr2TextureAL& depthStencil ) throw( );
 	void SetReadOnlyDepth( bool enable ) throw( )
 	{
 
@@ -206,34 +209,27 @@ public:
 		uint32_t stencil = 0,
 		uint32_t slot = 0 ) throw( );
 
-	ALResult SetViewport( const Tr2Viewport& viewport ) throw( )
-	{
-		return E_NOTIMPL;
-	}
-	ALResult GetViewport( Tr2Viewport& viewport ) throw( )
-	{
-		return E_NOTIMPL;
-	}
+	ALResult SetViewport( const Tr2Viewport& viewport ) throw( );
+	ALResult GetViewport( Tr2Viewport& viewport ) throw( );
 
-	ALResult PushRenderTarget( uint32_t slot = 0 ) throw( )
-	{
-		return E_NOTIMPL;
-	}
-	ALResult PopRenderTarget( uint32_t slot = 0 ) throw( )
-	{
-		return E_NOTIMPL;
-	}
-	ALResult PushDepthStencil() throw( )
-	{
-		return E_NOTIMPL;
-	}
-	ALResult PopDepthStencil() throw( )
-	{
-		return E_NOTIMPL;
-	}
+	// Save/restore of what is bound, nothing more -- the same shape as dx12's. Pop goes
+	// back through SetRenderTarget rather than assigning m_boundRenderTargets directly,
+	// so that the render pass source is marked dirty exactly as it would be on any other
+	// rebind.
+	ALResult PushRenderTarget( uint32_t slot = 0 ) throw( );
+	ALResult PopRenderTarget( uint32_t slot = 0 ) throw( );
+	ALResult PushDepthStencil() throw( );
+	ALResult PopDepthStencil() throw( );
+
 	ALResult GetRenderTargetSize( uint32_t& width, uint32_t& height, uint32_t slot = 0 ) throw( )
 	{
-		return E_NOTIMPL;
+		if( slot >= RENDER_TARGET_COUNT || !m_boundRenderTargets[slot].IsValid() )
+		{
+			return E_FAIL;
+		}
+		width = m_boundRenderTargets[slot].GetWidth();
+		height = m_boundRenderTargets[slot].GetHeight();
+		return S_OK;
 	}
 
 	Tr2RenderContextEnum::PixelFormat GetBackBufferFormat() const throw( )
@@ -390,6 +386,19 @@ public:
 protected:
 	static const uint32_t RENDER_TARGET_COUNT = 4;
 	Tr2TextureAL m_boundRenderTargets[RENDER_TARGET_COUNT];
+	std::vector<Tr2TextureAL> m_rtStack[RENDER_TARGET_COUNT];
+
+	// Tracked even though binding one is still E_NOTIMPL, so that the push/pop pairing is
+	// already correct when SetDepthStencil grows a real implementation.
+	Tr2TextureAL m_boundDepthStencil;
+	std::vector<Tr2TextureAL> m_dsStack;
+
+	// The viewport last handed to SetViewport, in Trinity's coordinates: y down from the
+	// top left, height positive. m_viewportSet distinguishes "the caller chose this" from
+	// "nobody has asked", because the default has to track the render target's size and a
+	// stored copy would go stale the moment the target changes.
+	Tr2Viewport m_viewport;
+	bool m_viewportSet;
 	Tr2PrimaryRenderContextAL* m_owner;
 	VkRenderPass m_renderPass;
 
