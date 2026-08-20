@@ -8,8 +8,8 @@
     {
       "kind": "git",
       "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
-      "reference": "m6-android-vulkan",
-      "baseline": "96694a2e2afb58fa7ecdb6b5f59dfcb3c6744964",
+      "reference": "mobile-exp",
+      "baseline": "a00be131e1d19afe53ec8c8014b8fcb0451587c2",
       "packages": [
         "python3",
         "carbon-*",
