@@ -196,7 +196,7 @@ ALResult Tr2RenderContextAL::Clear(
 			// COLOR_ATTACHMENT_OPTIMAL, which was only true if a pass had just been open;
 			// the tracker knows where it actually is.
 			EndRenderPassVulkan();
-			m_boundRenderTargets[slot].m_texture->TransitionVulkan( m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
+			m_boundRenderTargets[slot].m_texture->TransitionForTransferWriteVulkan( m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
 
 			VkImageSubresourceRange subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 			vkCmdClearColorImage( m_commandBuffer, m_boundRenderTargets[slot].m_texture->GetImageVulkan(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearColor, 1, &subresourceRange );
@@ -239,7 +239,7 @@ ALResult Tr2RenderContextAL::Clear(
 		}
 
 		EndRenderPassVulkan();
-		m_boundDepthStencil.m_texture->TransitionVulkan( m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
+		m_boundDepthStencil.m_texture->TransitionForTransferWriteVulkan( m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
 
 		VkClearDepthStencilValue clearValue = { depth, stencil };
 		VkImageSubresourceRange subresourceRange = { aspect, 0, 1, 0, 1 };
@@ -834,7 +834,7 @@ ALResult Tr2RenderContextAL::ClearUav( Tr2TextureAL& rt, uint32_t mip, const flo
 	memcpy( clearColor.float32, values, sizeof( clearColor.float32 ) );
 
 	EndRenderPassVulkan();
-	rt.m_texture->TransitionVulkan( m_commandBuffer, UAV_CLEAR_LAYOUT );
+	rt.m_texture->TransitionForTransferWriteVulkan( m_commandBuffer, UAV_CLEAR_LAYOUT );
 
 	VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, VK_REMAINING_ARRAY_LAYERS };
 	vkCmdClearColorImage( m_commandBuffer, rt.m_texture->GetImageVulkan(), UAV_CLEAR_LAYOUT, &clearColor, 1, &range );
@@ -851,7 +851,7 @@ ALResult Tr2RenderContextAL::ClearUav( Tr2TextureAL& rt, uint32_t mip, const uin
 	memcpy( clearColor.uint32, values, sizeof( clearColor.uint32 ) );
 
 	EndRenderPassVulkan();
-	rt.m_texture->TransitionVulkan( m_commandBuffer, UAV_CLEAR_LAYOUT );
+	rt.m_texture->TransitionForTransferWriteVulkan( m_commandBuffer, UAV_CLEAR_LAYOUT );
 
 	VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, VK_REMAINING_ARRAY_LAYERS };
 	vkCmdClearColorImage( m_commandBuffer, rt.m_texture->GetImageVulkan(), UAV_CLEAR_LAYOUT, &clearColor, 1, &range );

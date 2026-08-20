@@ -741,7 +741,7 @@ namespace TrinityALImpl
 
 		const VkImageLayout restore = GetLayoutVulkan();
 		renderContext.EndRenderPassVulkan();
-		TransitionVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
+		TransitionForTransferWriteVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
 
 		VkBufferImageCopy copy = {
 			0,
@@ -799,7 +799,7 @@ namespace TrinityALImpl
 
 		renderContext.EndRenderPassVulkan();
 		source.TransitionVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
-		TransitionVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
+		TransitionForTransferWriteVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
 
 		vkCmdCopyImage(
 			renderContext.m_commandBuffer,
@@ -839,7 +839,7 @@ namespace TrinityALImpl
 
 		renderContext.EndRenderPassVulkan();
 		TransitionVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
-		destination.TransitionVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
+		destination.TransitionForTransferWriteVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
 
 		vkCmdResolveImage(
 			renderContext.m_commandBuffer,
@@ -879,7 +879,7 @@ namespace TrinityALImpl
 		// caller that would justify writing one.
 		renderContext.EndRenderPassVulkan();
 		const VkImageLayout restore = GetLayoutVulkan();
-		TransitionVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_GENERAL );
+		TransitionForTransferWriteVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_GENERAL );
 
 		const VkImageAspectFlags aspect = GetAspectMaskVulkan( m_format );
 		for( uint32_t level = 1; level < mipCount; ++level )
@@ -985,6 +985,45 @@ namespace TrinityALImpl
 		m_owner->m_vkCmdPipelineBarrier2( commandBuffer, &dependencyInfo );
 
 		m_layouts[m_currentIndex] = newLayout;
+	}
+
+	void Tr2TextureAL::TransitionForTransferWriteVulkan( VkCommandBuffer commandBuffer, VkImageLayout newLayout )
+	{
+		if( m_currentIndex >= m_images.size() || m_currentIndex >= m_layouts.size() )
+		{
+			return;
+		}
+		if( m_layouts[m_currentIndex] != newLayout )
+		{
+			TransitionVulkan( commandBuffer, newLayout );
+			return;
+		}
+
+		// Same layout, so TransitionVulkan would record nothing -- but the caller is
+		// about to write with a transfer command, and whatever wrote the image last is
+		// unordered against it without a barrier. The source scope comes from the same
+		// table the transitions use, which covers the writes possible in this layout;
+		// the destination is the transfer that follows. READ joins WRITE only where the
+		// layout permits a transfer read at all -- GENERAL, where mip generation reads
+		// level i-1 while writing level i. TRANSFER_DST_OPTIMAL cannot be read, and a
+		// read bit there is BestPractices-ImageBarrierAccessLayout.
+		VkImageMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+		GetLayoutStageAccessVulkan( newLayout, barrier.srcStageMask, barrier.srcAccessMask );
+		barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+		barrier.dstAccessMask = newLayout == VK_IMAGE_LAYOUT_GENERAL
+			? VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT
+			: VK_ACCESS_2_TRANSFER_WRITE_BIT;
+		barrier.oldLayout = newLayout;
+		barrier.newLayout = newLayout;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = m_images[m_currentIndex];
+		barrier.subresourceRange = { GetAspectMaskVulkan( m_format ), 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS };
+
+		VkDependencyInfo dependencyInfo = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+		dependencyInfo.imageMemoryBarrierCount = 1;
+		dependencyInfo.pImageMemoryBarriers = &barrier;
+		m_owner->m_vkCmdPipelineBarrier2( commandBuffer, &dependencyInfo );
 	}
 
 	VkImage Tr2TextureAL::GetImageVulkan() const

@@ -96,6 +96,15 @@ namespace TrinityALImpl
 		// is what every caller but BeginFrame wants.
 		void TransitionVulkan( VkCommandBuffer commandBuffer, VkImageLayout newLayout, VkPipelineStageFlags2 srcStageOverride = 0 );
 
+		// TransitionVulkan for a transfer command about to write this image. The
+		// difference is what happens when the image is already in newLayout: a layout
+		// transition doubles as the ordering between the last write and the next one, so
+		// the early-out that makes TransitionVulkan cheap for reads silently drops that
+		// ordering for writes -- a second ClearUav on the same texture, or a copy into a
+		// texture that was just cleared, raced its predecessor. In the same-layout case
+		// this records a barrier with no layout change instead of nothing.
+		void TransitionForTransferWriteVulkan( VkCommandBuffer commandBuffer, VkImageLayout newLayout );
+
 		ALResult AssignFromSwapChainVulkan( const std::vector<VkImage>& backBuffers, const Tr2DisplayModeInfo& mode, Tr2PrimaryRenderContextAL& renderContext );
 		void SetCurrentImageVulkan( uint32_t index );
 		VkImage GetImageVulkan() const;
