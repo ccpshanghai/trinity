@@ -30,6 +30,15 @@ inline ALResult Vk2Al( VkResult result )
 	{
 		return S_FALSE;
 	}
+	// The one error a caller can meaningfully distinguish. ALResult.h has carried
+	// E_DEVICELOST since the dx9 days and the other backends return it; mapping
+	// VK_ERROR_DEVICE_LOST to plain E_FAIL cost the section 26 investigation a real
+	// signal -- a device loss recorded ~500 validation messages into a dead context
+	// because nothing upstream could tell it apart from any other failure.
+	if( result == VK_ERROR_DEVICE_LOST )
+	{
+		return E_DEVICELOST;
+	}
 	return E_FAIL;
 }
 

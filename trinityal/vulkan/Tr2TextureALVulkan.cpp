@@ -543,8 +543,45 @@ namespace TrinityALImpl
 			views.push_back( view );
 		}
 
+		// The sRGB siblings, only when the swapchain was actually created mutable -- the
+		// same two-part check BuildSwapChain made, or these vkCreateImageView calls would
+		// be the failure the flag exists to prevent.
+		std::vector<VkImageView> srgbViews;
+		const VkFormat srgbFormat = GetSrgbCounterpartVulkan( GetVulkanFormat( mode.format ) );
+		if( renderContext.m_swapChainMutableFormat && srgbFormat != VK_FORMAT_UNDEFINED )
+		{
+			for( auto it = begin( backBuffers ); it != end( backBuffers ); ++it )
+			{
+				VkImageViewCreateInfo srgbViewInfo = {
+					VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+					nullptr,
+					0,
+					*it,
+					VK_IMAGE_VIEW_TYPE_2D,
+					srgbFormat,
+					{
+						VK_COMPONENT_SWIZZLE_IDENTITY,
+						VK_COMPONENT_SWIZZLE_IDENTITY,
+						VK_COMPONENT_SWIZZLE_IDENTITY,
+						VK_COMPONENT_SWIZZLE_IDENTITY
+					},
+					{
+						VK_IMAGE_ASPECT_COLOR_BIT,
+						0,
+						1,
+						0,
+						1
+					}
+				};
+				VkImageView srgbView;
+				CR_RETURN_HR( Vk2Al( vkCreateImageView( renderContext.m_device, &srgbViewInfo, nullptr, &srgbView ) ) );
+				srgbViews.push_back( srgbView );
+			}
+		}
+
 		m_images = backBuffers;
 		m_imageViews = views;
+		m_srgbImageViews = srgbViews;
 
 		// Acquired swapchain images carry no guarantee about their contents or layout, and
 		// BeginFrame transitions each one from UNDEFINED every frame, so UNDEFINED is the
@@ -1077,7 +1114,16 @@ namespace TrinityALImpl
 		return m_imageViews[m_currentIndex];
 	}
 
-	VkImageView Tr2TextureAL::GetAttachmentViewVulkan( uint32_t mip, uint32_t layer )
+	bool Tr2TextureAL::HasSrgbAttachmentViewVulkan() const
+	{
+		// Constrained to the shapes the fast path below serves: the stored sRGB views
+		// are whole-image views, so a per-mip or per-layer attachment cannot use them.
+		return m_desc.GetTrueMipCount() <= 1 && m_desc.GetArraySize() <= 1
+			&& m_currentIndex < m_srgbImageViews.size()
+			&& m_srgbImageViews[m_currentIndex] != VK_NULL_HANDLE;
+	}
+
+	VkImageView Tr2TextureAL::GetAttachmentViewVulkan( uint32_t mip, uint32_t layer, bool srgb )
 	{
 		if( m_currentIndex >= m_images.size() || !m_owner )
 		{
@@ -1092,6 +1138,12 @@ namespace TrinityALImpl
 		if( mip == 0 && layer == 0 && m_desc.GetTrueMipCount() <= 1 && m_desc.GetArraySize() <= 1
 			&& SampledAspectVulkan( m_format ) == GetAspectMaskVulkan( m_format ) )
 		{
+			// srgb only through the predicate: a caller that asked without checking gets
+			// the linear view, which is also what CreatePipeline declared for it.
+			if( srgb && HasSrgbAttachmentViewVulkan() )
+			{
+				return m_srgbImageViews[m_currentIndex];
+			}
 			return m_imageViews[m_currentIndex];
 		}
 

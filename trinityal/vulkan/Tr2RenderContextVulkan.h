@@ -324,6 +324,12 @@ private:
 
 	ALResult SetPipeline();
 	ALResult CreatePipeline( VkPipeline& pipeline );
+
+	// One bit per colour slot where sRGB write is on AND the bound texture can honour
+	// it. SetPass picks the attachment view by it, CreatePipeline declares the
+	// attachment format by it, and SetPipeline folds it into the pipeline key -- three
+	// places that must agree, so it is one function.
+	uint32_t SrgbWriteMaskVulkan() const;
 	ALResult BindConstantBuffers( VkPipelineBindPoint bindPoint );
 
 	// Four, matching Tr2VertexLayoutAL::m_streamRates. The two arrays are indexed by the
@@ -371,6 +377,10 @@ private:
 	bool m_dirtyPso;
 	bool m_dirtyPass;
 	bool m_readOnlyDepth;
+
+	// RS_SRGBWRITEENABLE. Which slots it actually takes effect on is a per-texture
+	// question -- see SrgbWriteMaskVulkan.
+	bool m_srgbWrite;
 	std::pair<uint32_t, uint32_t> m_primitiveToVertexCount;
 
 	Tr2ResourceSetAL m_resourceSet;

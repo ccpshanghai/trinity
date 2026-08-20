@@ -106,6 +106,11 @@ namespace TrinityALImpl
 		void TransitionForTransferWriteVulkan( VkCommandBuffer commandBuffer, VkImageLayout newLayout );
 
 		ALResult AssignFromSwapChainVulkan( const std::vector<VkImage>& backBuffers, const Tr2DisplayModeInfo& mode, Tr2PrimaryRenderContextAL& renderContext );
+
+		// Whether GetAttachmentViewVulkan( 0, 0, true ) would return a genuine sRGB view.
+		// SetPass and CreatePipeline both ask, and they must agree: the attachment's view
+		// format and the pipeline's declared format are the same decision made twice.
+		bool HasSrgbAttachmentViewVulkan() const;
 		void SetCurrentImageVulkan( uint32_t index );
 		VkImage GetImageVulkan() const;
 
@@ -128,7 +133,7 @@ namespace TrinityALImpl
 		// Created on demand and cached, because most textures never become attachments and
 		// the ones that do usually need only level 0 of layer 0 -- for which the
 		// shader-resource view is already the right shape and is returned unchanged.
-		VkImageView GetAttachmentViewVulkan( uint32_t mip, uint32_t layer );
+		VkImageView GetAttachmentViewVulkan( uint32_t mip, uint32_t layer, bool srgb = false );
 		void Describe( Tr2DeviceResourceDescriptionAL& description ) const;
 		ALResult SetName( const char* name );
 		const char* GetName() const;

@@ -274,6 +274,13 @@ public:
 	PFN_vkCmdPipelineBarrier2 m_vkCmdPipelineBarrier2;
 	PFN_vkQueueSubmit2 m_vkQueueSubmit2;
 
+	// True when the device was created with VK_KHR_swapchain_mutable_format, which is
+	// what lets the swapchain carry an sRGB view alongside its UNORM one -- the whole
+	// mechanism behind RS_SRGBWRITEENABLE on the default back buffer. Where the
+	// extension is absent that render state is E_NOTIMPL, the honest answer: there is
+	// no fallback for writing through a view of a different transfer function.
+	bool m_swapChainMutableFormat;
+
 	std::map<unsigned, VkPipeline> m_pipelines;
 };
 

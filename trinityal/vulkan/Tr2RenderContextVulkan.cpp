@@ -49,6 +49,7 @@ Tr2RenderContextAL::Tr2RenderContextAL() throw( )
 	m_dirtyPass( true ),
 	m_owner( nullptr ),
 	m_readOnlyDepth( false ),
+	m_srgbWrite( false ),
 	m_renderingActive( false ),
 	m_commandBuffer( VK_NULL_HANDLE ),
 	m_constantPool( VK_NULL_HANDLE ),
@@ -537,9 +538,41 @@ ALResult Tr2RenderContextAL::SetRenderState( Tr2RenderContextEnum::RenderState s
 		}
 		m_dirtyPso = true;
 		return S_OK;
+	case Tr2RenderContextEnum::RS_SRGBWRITEENABLE:
+		// Honest degradation, not a stub (section 24e): without
+		// VK_KHR_swapchain_mutable_format the default back buffer has no sRGB view to
+		// write through, and there is no second implementation to fall back to.
+		if( value != 0 && ( !m_owner || !m_owner->m_swapChainMutableFormat ) )
+		{
+			return E_NOTIMPL;
+		}
+		if( m_srgbWrite != ( value != 0 ) )
+		{
+			m_srgbWrite = value != 0;
+			m_dirtyPass = true;
+			m_dirtyPso = true;
+		}
+		return S_OK;
 	default:
 		return E_NOTIMPL;
 	}
+}
+
+uint32_t Tr2RenderContextAL::SrgbWriteMaskVulkan() const
+{
+	if( !m_srgbWrite )
+	{
+		return 0;
+	}
+	uint32_t mask = 0;
+	for( uint32_t i = 0; i < RENDER_TARGET_COUNT; ++i )
+	{
+		if( m_boundRenderTargets[i].IsValid() && m_boundRenderTargets[i].m_texture->HasSrgbAttachmentViewVulkan() )
+		{
+			mask |= 1u << i;
+		}
+	}
+	return mask;
 }
 
 ALResult Tr2RenderContextAL::SetRenderStates( const uint32_t* stateValuePairs, uint32_t count ) throw( )
@@ -939,6 +972,7 @@ ALResult Tr2RenderContextAL::SetPass()
 	// SetDepthStencil have always written. On a tiler those ops are where bandwidth goes,
 	// and 1.3 relocates them into VkRenderingAttachmentInfo without changing what they
 	// mean.
+	const uint32_t srgbMask = SrgbWriteMaskVulkan();
 	VkRenderingAttachmentInfo colorAttachments[RENDER_TARGET_COUNT];
 	uint32_t colorAttachmentCount = 0;
 	uint32_t width = 0;
@@ -952,7 +986,7 @@ ALResult Tr2RenderContextAL::SetPass()
 			// Mip 0, slice 0: nothing in the AL binds a render target at another level yet,
 			// and the slice argument to SetRenderTarget is not plumbed through either. Both
 			// belong with mip generation, which is a separate cluster.
-			attachment.imageView = m_boundRenderTargets[i].m_texture->GetAttachmentViewVulkan( 0, 0 );
+			attachment.imageView = m_boundRenderTargets[i].m_texture->GetAttachmentViewVulkan( 0, 0, ( srgbMask & ( 1u << i ) ) != 0 );
 			attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 			attachment.loadOp = m_renderPassSource.m_rt[i + 1].loadOp;
 			attachment.storeOp = m_renderPassSource.m_rt[i + 1].storeOp;
@@ -1081,7 +1115,10 @@ ALResult Tr2RenderContextAL::SetPipeline()
 	// friends) exactly as VkRenderPass compatibility was before -- and PipelineSource does
 	// not describe the attachments at all. Without this, the first pipeline built for a
 	// colour-only pass was handed straight back for a pass that also had depth.
-	auto hash = m_pipelineSource.GetHash() ^ ( m_renderPassSource.GetHash() * 0x9e3779b9u );
+	auto hash = m_pipelineSource.GetHash() ^ ( m_renderPassSource.GetHash() * 0x9e3779b9u )
+		// The sRGB write mask changes the attachment formats the pipeline is created
+		// against without touching either source struct, so it has to be in the key.
+		^ ( size_t( SrgbWriteMaskVulkan() ) * 0x85ebca6bu );
 	auto found = m_owner->m_pipelines.find( hash );
 	VkPipeline pipeline;
 	if( found == m_owner->m_pipelines.end() )
@@ -1412,11 +1449,18 @@ ALResult Tr2RenderContextAL::CreatePipeline( VkPipeline& pipeline )
 	// attachments. The stencil format is set only when the depth format actually has a
 	// stencil aspect (VUID-VkGraphicsPipelineCreateInfo-renderPass-06054's dynamic-
 	// rendering counterpart works per aspect).
+	const uint32_t srgbMask = SrgbWriteMaskVulkan();
 	VkFormat colorFormats[RENDER_TARGET_COUNT];
 	uint32_t colorAttachmentCount = 0;
 	for( uint32_t i = 0; i < RENDER_TARGET_COUNT; ++i )
 	{
 		colorFormats[i] = m_renderPassSource.m_rt[i + 1].format;
+		if( ( srgbMask & ( 1u << i ) ) != 0 )
+		{
+			// The same decision SetPass made when it picked the attachment view; the
+			// pipeline must declare the view's format, not the image's.
+			colorFormats[i] = TrinityALImpl::GetSrgbCounterpartVulkan( colorFormats[i] );
+		}
 		if( colorFormats[i] != VK_FORMAT_UNDEFINED )
 		{
 			colorAttachmentCount = i + 1;

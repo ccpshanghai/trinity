@@ -234,6 +234,7 @@ namespace
 		VkSurfaceKHR surface,
 		const Tr2PresentParametersAL& parameters,
 		VkSwapchainKHR oldSwapChain,
+		bool mutableFormat,
 		SwapChainObjects& out )
 	{
 		VkSurfaceCapabilitiesKHR surfaceCapabilities;
@@ -314,6 +315,22 @@ namespace
 			oldSwapChain
 		};
 
+		// RS_SRGBWRITEENABLE's mechanism (section 24e): the swapchain images get an sRGB
+		// sibling view, so writes through it encode on the way out while presentation
+		// still sees the UNORM format it chose. MUTABLE_FORMAT_BIT requires the complete
+		// list of view formats up front, which is also what lets the driver keep its
+		// framebuffer compression. Skipped when the format has no same-class sibling;
+		// AssignFromSwapChainVulkan makes the same two-part check when it builds views.
+		VkFormat viewFormats[2] = { desiredFormat.format, TrinityALImpl::GetSrgbCounterpartVulkan( desiredFormat.format ) };
+		VkImageFormatListCreateInfo formatList = { VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO };
+		formatList.viewFormatCount = 2;
+		formatList.pViewFormats = viewFormats;
+		if( mutableFormat && viewFormats[1] != VK_FORMAT_UNDEFINED )
+		{
+			swapChainCreateInfo.flags |= VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR;
+			swapChainCreateInfo.pNext = &formatList;
+		}
+
 		CR_RETURN_HR( Vk2Al( vkCreateSwapchainKHR( device, &swapChainCreateInfo, nullptr, &out.swapChain ) ) );
 
 		CR_RETURN_HR( TrinityALImpl::QueryArray( &vkGetSwapchainImagesKHR, device, out.swapChain, out.backBuffers ) );
@@ -384,7 +401,8 @@ Tr2PrimaryRenderContextAL::Tr2PrimaryRenderContextAL()
 	m_vkCmdBeginRendering( nullptr ),
 	m_vkCmdEndRendering( nullptr ),
 	m_vkCmdPipelineBarrier2( nullptr ),
-	m_vkQueueSubmit2( nullptr )
+	m_vkQueueSubmit2( nullptr ),
+	m_swapChainMutableFormat( false )
 {
 	m_defaultBackBuffer.m_texture = std::make_shared<TrinityALImpl::Tr2TextureAL>();
 }
@@ -505,6 +523,33 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		extensions.push_back( VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME );
 	}
 
+	// Optional, unlike the two above: RS_SRGBWRITEENABLE degrades to E_NOTIMPL without
+	// it rather than failing device creation. Its dependencies (maintenance2,
+	// image_format_list) are core from 1.2, which every device past the two required
+	// features has.
+	bool swapChainMutableFormat = false;
+	{
+		uint32_t extensionCount = 0;
+		vkEnumerateDeviceExtensionProperties( physicalDevice.device, nullptr, &extensionCount, nullptr );
+		std::vector<VkExtensionProperties> availableExtensions( extensionCount );
+		if( extensionCount )
+		{
+			vkEnumerateDeviceExtensionProperties( physicalDevice.device, nullptr, &extensionCount, availableExtensions.data() );
+		}
+		for( auto it = begin( availableExtensions ); it != end( availableExtensions ); ++it )
+		{
+			if( strcmp( it->extensionName, VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME ) == 0 )
+			{
+				swapChainMutableFormat = physicalDevice.properties.apiVersion >= VK_API_VERSION_1_2;
+				break;
+			}
+		}
+	}
+	if( swapChainMutableFormat )
+	{
+		extensions.push_back( VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME );
+	}
+
 	VkPhysicalDeviceSynchronization2Features enabledSynchronization2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES };
 	enabledSynchronization2.synchronization2 = VK_TRUE;
 	VkPhysicalDeviceDynamicRenderingFeatures enabledDynamicRendering = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES, &enabledSynchronization2 };
@@ -587,7 +632,7 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	if( !isWindowless )
 	{
 		SwapChainObjects created;
-		CR_RETURN_HR( BuildSwapChain( device, physicalDevice.device, surface, presentationParameters, VK_NULL_HANDLE, created ) );
+		CR_RETURN_HR( BuildSwapChain( device, physicalDevice.device, surface, presentationParameters, VK_NULL_HANDLE, swapChainMutableFormat, created ) );
 		swapChain = created.swapChain;
 		backBuffers = created.backBuffers;
 		finishedRenderingSemaphores = created.finishedRenderingSemaphores;
@@ -657,6 +702,9 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	m_vkCmdEndRendering = endRendering;
 	m_vkCmdPipelineBarrier2 = pipelineBarrier2;
 	m_vkQueueSubmit2 = queueSubmit2;
+	// Before AssignFromSwapChainVulkan below, which reads it to decide whether the back
+	// buffer gets sRGB views.
+	m_swapChainMutableFormat = swapChainMutableFormat;
 	m_presentParameters = presentationParameters;
 	m_needsSwapChainRebuild = false;
 	m_surface = surface;
@@ -831,7 +879,7 @@ ALResult Tr2PrimaryRenderContextAL::RebuildSwapChainVulkan()
 	// what it can. Nothing is destroyed until this succeeds, so a failure here leaves a
 	// working swapchain in place rather than a half-torn-down one.
 	SwapChainObjects created;
-	ALResult built = BuildSwapChain( m_device, m_physicalDevice, m_surface, m_presentParameters, m_swapChain, created );
+	ALResult built = BuildSwapChain( m_device, m_physicalDevice, m_surface, m_presentParameters, m_swapChain, m_swapChainMutableFormat, created );
 	if( FAILED( built ) )
 	{
 		return built;
