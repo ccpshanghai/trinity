@@ -6,6 +6,8 @@
 
 #include "../include/Tr2BufferAL.h"
 
+class Tr2RenderContextAL;
+
 namespace TrinityALImpl
 {
 	class Tr2BufferAL : public Tr2DeviceResourceAL<Tr2BufferAL>
@@ -50,7 +52,10 @@ namespace TrinityALImpl
 		// Map that failed, and vkUnmapMemory on unmapped memory is undefined behaviour.
 		void* m_mapped;
 
-		friend class Tr2RenderContextAL;
+		// ::-qualified: inside namespace TrinityALImpl an unqualified friend declaration
+		// names a new TrinityALImpl::Tr2RenderContextAL instead of the global class --
+		// MSVC resolved it to the global anyway, clang does not.
+		friend class ::Tr2RenderContextAL;
 		friend class Tr2ResourceSetAL;
 	};
 }

@@ -10,7 +10,13 @@
 #include "ALLog.h"
 #include "UtilitiesVulkan.h"
 
+// The Windows build enumerates adapters and display modes through DXGI and matches
+// them to Vulkan physical devices by vendor/device id; everywhere else the Vulkan
+// physical device list IS the adapter list, and "display modes" collapse to a single
+// fallback entry because the surface dictates the extent (see GetSwapChainExtent).
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
 #include <dxgi.h>
+#endif
 
 extern bool g_requestDeviceDebugLayer;
 
@@ -20,6 +26,8 @@ namespace
 		VK_KHR_SURFACE_EXTENSION_NAME,
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
 		VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+#elif defined(VK_USE_PLATFORM_ANDROID_KHR)
+		VK_KHR_ANDROID_SURFACE_EXTENSION_NAME,
 #elif defined(VK_USE_PLATFORM_XCB_KHR)
 		VK_KHR_XCB_SURFACE_EXTENSION_NAME,
 #elif defined(VK_USE_PLATFORM_XLIB_KHR)
@@ -262,6 +270,8 @@ using namespace Tr2RenderContextEnum;
 namespace
 {
 
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+
 	//TODO does this survive a driver crash?
 
 	CComPtr<IDXGIFactory1> s_factory;
@@ -280,6 +290,17 @@ namespace
 		size_t m_deviceInfoIndex;
 	};
 
+#else
+
+	bool s_adaptersInitialized = false;
+
+	struct AdapterInfo
+	{
+		size_t m_deviceInfoIndex;
+	};
+
+#endif
+
 	struct DeviceInfo
 	{
 		static const unsigned FORMAT_COUNT = 100;
@@ -293,6 +314,8 @@ namespace
 
 	std::vector<AdapterInfo> s_adapters;
 	std::vector<DeviceInfo> s_deviceInfo;
+
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
 
 	HRESULT GetFallbackMode( DXGI_MODE_DESC &desc )
 	{
@@ -456,10 +479,52 @@ namespace
 		return S_OK;
 	}
 
+#else
+
+	// The name is kept so every CHECK_INIT site reads the same on both platforms.
+	// One adapter per Vulkan physical device; PopulateDeviceInfo has already filtered
+	// for a graphics queue and the required device extensions.
+	ALResult InitializeDirect3D()
+	{
+		s_adapters.resize( 0 );
+		s_deviceInfo.resize( 0 );
+		s_adaptersInitialized = false;
+
+		std::vector<TrinityALImpl::VulkanDeviceInfo> vulkanDevices;
+		FORWARD_HR( PopulateDeviceInfo( vulkanDevices ) );
+
+		for( uint32_t i = 0; i < uint32_t( vulkanDevices.size() ); ++i )
+		{
+			CCP_LOG( "Found Vulkan device \"%s\"", vulkanDevices[i].properties.deviceName );
+
+			DeviceInfo deviceInfo;
+			memset( deviceInfo.m_formatSupport, 0, sizeof( deviceInfo.m_formatSupport ) );
+			memset( deviceInfo.m_qualityLevels, 0, sizeof( deviceInfo.m_qualityLevels ) );
+			deviceInfo.vulkanDevice = vulkanDevices[i];
+
+			AdapterInfo adapter;
+			adapter.m_deviceInfoIndex = s_deviceInfo.size();
+
+			s_deviceInfo.push_back( deviceInfo );
+			s_adapters.push_back( adapter );
+		}
+
+		s_adaptersInitialized = true;
+		return S_OK;
+	}
+
+#endif
+
 }
 
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+#define ADAPTERS_INITIALIZED ( !!s_factory )
+#else
+#define ADAPTERS_INITIALIZED ( s_adaptersInitialized )
+#endif
+
 #define	CHECK_INIT	\
-	if( !s_factory )							\
+	if( !ADAPTERS_INITIALIZED )					\
 	{											\
 		CR_RETURN_HR( InitializeDirect3D() );	\
 	}
@@ -471,9 +536,9 @@ namespace
 	}
 
 #define	CHECK_INIT_BOOL	\
-	if( !s_factory && !SUCCEEDED( InitializeDirect3D() ) )	\
-	{														\
-		return false;										\
+	if( !ADAPTERS_INITIALIZED && !SUCCEEDED( InitializeDirect3D() ) )	\
+	{																	\
+		return false;													\
 	}
 
 #define CHECK_VALID_ADAPTER_BOOL	\
@@ -496,6 +561,7 @@ ALResult Tr2VideoAdapterInfo::GetAdapterInfo( unsigned adapterIndex,
 	CHECK_INIT;
 	CHECK_VALID_ADAPTER;
 
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
 	auto & desc = s_adapters[adapterIndex].m_desc;
 	auto & outp = s_adapters[adapterIndex].m_outputDesc;
 
@@ -508,6 +574,21 @@ ALResult Tr2VideoAdapterInfo::GetAdapterInfo( unsigned adapterIndex,
 	info.subSystemID = desc.SubSysId;
 	info.revision = desc.Revision;
 	memset( &info.deviceIdentifier, 0, sizeof( info.deviceIdentifier ) );
+#else
+	// Everything DXGI reported on Windows that Vulkan also knows; what it does not
+	// know (subsystem, revision) is zero rather than invented.
+	auto & properties = s_deviceInfo[s_adapters[adapterIndex].m_deviceInfoIndex].vulkanDevice.properties;
+
+	info.driver = "";
+	info.description.assign( properties.deviceName, properties.deviceName + strlen( properties.deviceName ) );
+	info.deviceName = properties.deviceName;
+	info.driverVersion = properties.driverVersion;
+	info.vendorID = properties.vendorID;
+	info.deviceID = properties.deviceID;
+	info.subSystemID = 0;
+	info.revision = 0;
+	memset( &info.deviceIdentifier, 0, sizeof( info.deviceIdentifier ) );
+#endif
 
 	return S_OK;
 }
@@ -518,7 +599,14 @@ ALResult Tr2VideoAdapterInfo::GetAdapterMonitor( unsigned adapterIndex,
 	CHECK_INIT;
 	CHECK_VALID_ADAPTER;
 
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
 	monitor = s_adapters[adapterIndex].m_outputDesc.Monitor;
+#else
+	// There is no monitor handle to give. Null with S_OK rather than a failure: the
+	// callers that want one treat it as an opaque identity, and every adapter here
+	// shares the one display.
+	monitor = nullptr;
+#endif
 	return S_OK;
 }
 
@@ -528,6 +616,7 @@ ALResult Tr2VideoAdapterInfo::GetAdapterDisplayMode( unsigned adapterIndex,
 	CHECK_INIT;
 	CHECK_VALID_ADAPTER;
 
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
 	auto & mm = s_adapters[adapterIndex].m_displayModes[DXGI_FORMAT_B8G8R8A8_UNORM][0];
 	mode.format = static_cast<PixelFormat>( mm.Format );
 	mode.refreshRateDenominator = mm.RefreshRate.Denominator;
@@ -550,6 +639,19 @@ ALResult Tr2VideoAdapterInfo::GetAdapterDisplayMode( unsigned adapterIndex,
 	mode.width = devMode.dmPelsWidth;
 	mode.height = devMode.dmPelsHeight;
 #endif
+#else
+	// No desktop, so no desktop mode. The format fallback matches what
+	// GetSwapChainFormat prefers; width and height are zero on purpose -- the surface
+	// dictates the real extent, GetSwapChainExtent always takes currentExtent on
+	// Android, and a made-up 1080p here would only masquerade as information.
+	mode.format = PIXEL_FORMAT_B8G8R8A8_UNORM;
+	mode.refreshRateNumerator = 60;
+	mode.refreshRateDenominator = 1;
+	mode.scaling = static_cast<DisplayScaling>( 0 );
+	mode.scanlineOrdering = static_cast<ScanlineOrdering>( 0 );
+	mode.width = 0;
+	mode.height = 0;
+#endif
 
 	return S_OK;
 }
@@ -563,10 +665,16 @@ ALResult Tr2VideoAdapterInfo::GetAdapterModeCount( unsigned adapterIndex,
 
 	count = 0;
 
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
 	auto & output = s_adapters[adapterIndex];
 	CR_RETURN_HR( PopulateDisplayModes( output, static_cast<DXGI_FORMAT>( backBufferFormat ) ) );
 
 	count = unsigned( output.m_displayModes[static_cast<DXGI_FORMAT>( backBufferFormat )].size() );
+#else
+	// One: the fallback mode GetAdapterDisplayMode returns.
+	( backBufferFormat );
+	count = 1;
+#endif
 	return S_OK;
 }
 
@@ -578,6 +686,7 @@ ALResult Tr2VideoAdapterInfo::GetAdapterMode( unsigned adapterIndex,
 	CHECK_INIT;
 	CHECK_VALID_ADAPTER;
 
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
 	auto & output = s_adapters[adapterIndex];
 	CR_RETURN_HR( PopulateDisplayModes( output, static_cast<DXGI_FORMAT>( backBufferFormat ) ) );
 	auto& displayModes = output.m_displayModes[static_cast<DXGI_FORMAT>( backBufferFormat )];
@@ -596,6 +705,14 @@ ALResult Tr2VideoAdapterInfo::GetAdapterMode( unsigned adapterIndex,
 	mode.scaling = static_cast<DisplayScaling>( mm.Scaling );
 	mode.scanlineOrdering = static_cast<ScanlineOrdering>( mm.ScanlineOrdering );
 	mode.width = mm.Width;
+#else
+	( backBufferFormat );
+	if( modeIndex >= 1 )
+	{
+		return E_INVALIDARG;
+	}
+	FORWARD_HR( GetAdapterDisplayMode( adapterIndex, mode ) );
+#endif
 	return S_OK;
 }
 
@@ -703,7 +820,12 @@ bool Tr2VideoAdapterInfo::AreAdaptersDifferent( unsigned adapter1,
 		return true;
 	}
 
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
 	return s_adapters[adapter1].m_adapter != s_adapters[adapter2].m_adapter;
+#else
+	return s_deviceInfo[s_adapters[adapter1].m_deviceInfoIndex].vulkanDevice.device
+		!= s_deviceInfo[s_adapters[adapter2].m_deviceInfoIndex].vulkanDevice.device;
+#endif
 }
 
 namespace TrinityALImpl

@@ -452,6 +452,21 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		};
 
 		CR_RETURN_HR( Vk2Al( vkCreateWin32SurfaceKHR( instance, &surfacecreateInfo, nullptr, &surface ) ) );
+#elif defined(VK_USE_PLATFORM_ANDROID_KHR)
+
+		// Tr2WindowHandle is uintptr_t off Windows (StdAfx.h); on Android the host layer
+		// hands the ANativeWindow* it got from the Java Surface through it. Lifetime is
+		// the caller's problem exactly as an HWND's is: the window must outlive the
+		// surface, and surface loss (rotate, background) arrives as a swapchain rebuild,
+		// not as a new device.
+		VkAndroidSurfaceCreateInfoKHR surfacecreateInfo = {
+			VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
+			nullptr,
+			0,
+			reinterpret_cast<ANativeWindow*>( focusWindow )
+		};
+
+		CR_RETURN_HR( Vk2Al( vkCreateAndroidSurfaceKHR( instance, &surfacecreateInfo, nullptr, &surface ) ) );
 #else
 		static_assert( false, "Define swapchain creation for this platform here" );
 #endif

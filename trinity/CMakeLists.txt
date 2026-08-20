@@ -8,6 +8,15 @@ endif()
 
 project(trinity VERSION 1.0.0)
 
+if(ANDROID)
+    # No trinity_* engine target on Android yet: this milestone carries the abstraction
+    # layer (TrinityAL_vulkan) to the NDK, and everything below -- the find_packages
+    # included -- is the engine's dependency surface, which vcpkg.json gates off android
+    # to match. Both lift together when the engine library follows the AL on-device.
+    return()
+endif()
+
+
 if(BUILD_FOR_PYTHON_2)
     find_package(libSquish REQUIRED)
     add_library(unofficial::libsquish::squish ALIAS SQUISH::SQUISH)
