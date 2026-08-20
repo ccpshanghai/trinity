@@ -67,6 +67,21 @@
       "hidden": true
     },
     {
+      "name": "x64-windows-vulkan",
+      "displayName": "M4 Vulkan verification (v141, Release, AL tests)",
+      "inherits": "x64-windows-release",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "BUILD_VULKAN": "ON",
+        "BUILD_DX11": "OFF",
+        "BUILD_DX12": "OFF",
+        "BUILD_METAL": "OFF",
+        "BUILD_SHADER_COMPILER": "OFF",
+        "BUILD_TESTING": "ON",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "OFF"
+      }
+    },
+    {
       "name": "x64-windows-internal",
       "inherits": "x64-windows",
       "cacheVariables": {

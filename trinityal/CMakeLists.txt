@@ -322,6 +322,40 @@ set(_SOURCES
     stub/Tr2VideoAdapterInfoALStub.h
     stub/upscaling/Tr2UpscalingALStub.cpp
     stub/upscaling/Tr2UpscalingALStub.h
+    vulkan/Tr2BufferALVulkan.cpp
+    vulkan/Tr2BufferALVulkan.h
+    vulkan/Tr2CapsALVulkan.h
+    vulkan/Tr2ConstantBufferALVulkan.cpp
+    vulkan/Tr2ConstantBufferALVulkan.h
+    vulkan/Tr2FenceALVulkan.h
+    vulkan/Tr2GpuTimerALVulkan.h
+    vulkan/Tr2OcclusionQueryALVulkan.h
+    vulkan/Tr2PipelineStatsQueryALVulkan.cpp
+    vulkan/Tr2PipelineStatsQueryALVulkan.h
+    vulkan/Tr2PrimaryRenderContextVulkan.cpp
+    vulkan/Tr2PrimaryRenderContextVulkan.h
+    vulkan/Tr2RenderContextVulkan.cpp
+    vulkan/Tr2RenderContextVulkan.h
+    vulkan/Tr2ResourceSetALVulkan.cpp
+    vulkan/Tr2ResourceSetALVulkan.h
+    vulkan/Tr2SamplerStateALVulkan.cpp
+    vulkan/Tr2SamplerStateALVulkan.h
+    vulkan/Tr2ShaderALVulkan.cpp
+    vulkan/Tr2ShaderALVulkan.h
+    vulkan/Tr2ShaderProgramALVulkan.cpp
+    vulkan/Tr2ShaderProgramALVulkan.h
+    vulkan/Tr2SwapChainALVulkan.h
+    vulkan/Tr2TextureALVulkan.cpp
+    vulkan/Tr2TextureALVulkan.h
+    vulkan/Tr2VertexLayoutALVulkan.cpp
+    vulkan/Tr2VertexLayoutALVulkan.h
+    vulkan/Tr2VideoAdapterInfoALVulkan.cpp
+    vulkan/Tr2VideoAdapterInfoALVulkan.h
+    vulkan/upscaling/Tr2UpscalingALVulkan.cpp
+    vulkan/upscaling/Tr2UpscalingALVulkan.h
+    vulkan/UtilitiesVulkan.cpp
+    vulkan/UtilitiesVulkan.h
+    vulkan/VkResult.h
 )
 
 # Ensure that we have a sane file grouping for XCode and VS project files
@@ -479,6 +513,34 @@ if(WIN32)
         endif()
 
         set_shared_trinityal_properties(dx12)
+    endif()
+
+    if (BUILD_VULKAN)
+
+        #[[
+            Modelled on TrinityAL_stub, NOT on TrinityAL_dx11/dx12. Those targets
+            link the NVIDIA Streamline/Aftermath, AMD FidelityFX and Intel XeSS
+            packages, and their vcpkg features drag in fxc, which fetches from an
+            internal-only host. Keeping this target clear of all of them is what
+            lets a Vulkan configuration build outside the CCP network -- the only
+            Windows configuration that can. Do not "align" it with dx12 later.
+            vulkan-loader is the one addition here: it is a public port (built
+            from the upstream KhronosGroup/Vulkan-Loader release, matched to the
+            vulkan-headers version pinned above), so it does not reopen that
+            property.
+        ]]
+        find_package(VulkanHeaders CONFIG REQUIRED)
+        find_package(VulkanMemoryAllocator CONFIG REQUIRED)
+        find_package(VulkanLoader CONFIG REQUIRED)
+
+        ccp_add_library(TrinityAL_vulkan STATIC)
+        target_compile_definitions(TrinityAL_vulkan PUBLIC TRINITY_PLATFORM=TRINITY_VULKAN VK_USE_PLATFORM_WIN32_KHR)
+        target_link_libraries(TrinityAL_vulkan PUBLIC
+                                                    Vulkan::Headers
+                                                    GPUOpen::VulkanMemoryAllocator
+                                                    Vulkan::Loader
+                                                    dxgi)
+        set_shared_trinityal_properties(vulkan)
     endif()
 
 elseif(APPLE)
