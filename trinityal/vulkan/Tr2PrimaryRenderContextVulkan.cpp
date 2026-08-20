@@ -382,7 +382,9 @@ Tr2PrimaryRenderContextAL::Tr2PrimaryRenderContextAL()
 	m_flushedFrame( 0 ),
 	m_needsSwapChainRebuild( false ),
 	m_vkCmdBeginRendering( nullptr ),
-	m_vkCmdEndRendering( nullptr )
+	m_vkCmdEndRendering( nullptr ),
+	m_vkCmdPipelineBarrier2( nullptr ),
+	m_vkQueueSubmit2( nullptr )
 {
 	m_defaultBackBuffer.m_texture = std::make_shared<TrinityALImpl::Tr2TextureAL>();
 }
@@ -480,7 +482,11 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	// VK_KHR_create_renderpass2 spelled out, and no target of this backend is in that
 	// bracket -- Android's floor is 1.3-or-extension-on-1.2 in practice, and desktop
 	// drivers this century are 1.3.
-	VkPhysicalDeviceDynamicRenderingFeatures supportedDynamicRendering = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES };
+	// synchronization2 rides the same policy: every barrier and submit in the backend is
+	// the 2 form, so it is required, not preferred. Same version bracket, same clean
+	// failure.
+	VkPhysicalDeviceSynchronization2Features supportedSynchronization2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES };
+	VkPhysicalDeviceDynamicRenderingFeatures supportedDynamicRendering = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES, &supportedSynchronization2 };
 	VkPhysicalDeviceFeatures2 supportedFeatures2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &supportedDynamicRendering };
 	vkGetPhysicalDeviceFeatures2( physicalDevice.device, &supportedFeatures2 );
 	if( !supportedDynamicRendering.dynamicRendering )
@@ -488,12 +494,20 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		CCP_AL_LOGERR( "Vulkan device does not support dynamic rendering (core 1.3 or VK_KHR_dynamic_rendering); the Vulkan backend requires it" );
 		return E_FAIL;
 	}
+	if( !supportedSynchronization2.synchronization2 )
+	{
+		CCP_AL_LOGERR( "Vulkan device does not support synchronization2 (core 1.3 or VK_KHR_synchronization2); the Vulkan backend requires it" );
+		return E_FAIL;
+	}
 	if( physicalDevice.properties.apiVersion < VK_API_VERSION_1_3 )
 	{
 		extensions.push_back( VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME );
+		extensions.push_back( VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME );
 	}
 
-	VkPhysicalDeviceDynamicRenderingFeatures enabledDynamicRendering = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES };
+	VkPhysicalDeviceSynchronization2Features enabledSynchronization2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES };
+	enabledSynchronization2.synchronization2 = VK_TRUE;
+	VkPhysicalDeviceDynamicRenderingFeatures enabledDynamicRendering = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES, &enabledSynchronization2 };
 	enabledDynamicRendering.dynamicRendering = VK_TRUE;
 
 	// pEnabledFeatures was null, which enables nothing at all -- and a Vulkan feature that
@@ -552,9 +566,19 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	{
 		endRendering = reinterpret_cast<PFN_vkCmdEndRendering>( vkGetDeviceProcAddr( device, "vkCmdEndRenderingKHR" ) );
 	}
-	if( !beginRendering || !endRendering )
+	PFN_vkCmdPipelineBarrier2 pipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>( vkGetDeviceProcAddr( device, "vkCmdPipelineBarrier2" ) );
+	if( !pipelineBarrier2 )
 	{
-		CCP_AL_LOGERR( "vkCmdBeginRendering/vkCmdEndRendering not resolvable despite the dynamicRendering feature" );
+		pipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>( vkGetDeviceProcAddr( device, "vkCmdPipelineBarrier2KHR" ) );
+	}
+	PFN_vkQueueSubmit2 queueSubmit2 = reinterpret_cast<PFN_vkQueueSubmit2>( vkGetDeviceProcAddr( device, "vkQueueSubmit2" ) );
+	if( !queueSubmit2 )
+	{
+		queueSubmit2 = reinterpret_cast<PFN_vkQueueSubmit2>( vkGetDeviceProcAddr( device, "vkQueueSubmit2KHR" ) );
+	}
+	if( !beginRendering || !endRendering || !pipelineBarrier2 || !queueSubmit2 )
+	{
+		CCP_AL_LOGERR( "dynamic rendering / synchronization2 entry points not resolvable despite the features" );
 		return E_FAIL;
 	}
 
@@ -631,6 +655,8 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	m_enabledFeatures = enabledFeatures;
 	m_vkCmdBeginRendering = beginRendering;
 	m_vkCmdEndRendering = endRendering;
+	m_vkCmdPipelineBarrier2 = pipelineBarrier2;
+	m_vkQueueSubmit2 = queueSubmit2;
 	m_presentParameters = presentationParameters;
 	m_needsSwapChainRebuild = false;
 	m_surface = surface;
@@ -938,18 +964,23 @@ ALResult Tr2PrimaryRenderContextAL::Present()
 
 	// A FlushAndSyncVulkan earlier in the frame will already have consumed the acquire
 	// semaphore; waiting on it a second time would wait for a signal that never comes.
-	VkPipelineStageFlags waitMask = ACQUIRE_WAIT_STAGE;
-	VkSubmitInfo submitInfo = {
-		VK_STRUCTURE_TYPE_SUBMIT_INFO,
-		nullptr,
-		m_acquireWaited ? 0u : 1u,
-		m_acquireWaited ? nullptr : &m_frameData[m_frameIndex].imageAvailableSemaphore,
-		&waitMask,
-		1,
-		&m_commandBuffer,
-		1,
-		&renderFinishedSemaphore
-	};
+	VkSemaphoreSubmitInfo waitInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+	waitInfo.semaphore = m_frameData[m_frameIndex].imageAvailableSemaphore;
+	waitInfo.stageMask = ACQUIRE_WAIT_STAGE;
+	VkCommandBufferSubmitInfo commandBufferInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+	commandBufferInfo.commandBuffer = m_commandBuffer;
+	// Signalled once everything in the batch completes, which is what VkSubmitInfo
+	// meant by pSignalSemaphores; ALL_COMMANDS is that meaning spelled as a stage.
+	VkSemaphoreSubmitInfo signalInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+	signalInfo.semaphore = renderFinishedSemaphore;
+	signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	VkSubmitInfo2 submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+	submitInfo.waitSemaphoreInfoCount = m_acquireWaited ? 0u : 1u;
+	submitInfo.pWaitSemaphoreInfos = m_acquireWaited ? nullptr : &waitInfo;
+	submitInfo.commandBufferInfoCount = 1;
+	submitInfo.pCommandBufferInfos = &commandBufferInfo;
+	submitInfo.signalSemaphoreInfoCount = 1;
+	submitInfo.pSignalSemaphoreInfos = &signalInfo;
 	// This fence now stands for this frame. Recorded before the submit so that a submit
 	// failure cannot leave the slot claiming a frame that was never sent.
 	// Nothing below returns early on failure. Present used to bail through CR_RETURN_HR
@@ -959,7 +990,7 @@ ALResult Tr2PrimaryRenderContextAL::Present()
 	// recorded against a buffer that was not recording, which is the section 13 cascade
 	// arrived at from a routine window resize instead of a lost device.
 	m_frameData[m_frameIndex].submittedFrame = m_recordingFrame;
-	const VkResult submitResult = vkQueueSubmit( m_presentQueue, 1, &submitInfo, m_frameData[m_frameIndex].fence );
+	const VkResult submitResult = m_vkQueueSubmit2( m_presentQueue, 1, &submitInfo, m_frameData[m_frameIndex].fence );
 	m_acquireWaited = true;
 
 	// Only a submit that was accepted will ever signal the fence. A rejected one leaves it
@@ -1041,19 +1072,17 @@ ALResult Tr2PrimaryRenderContextAL::FlushAndSyncVulkan()
 	// on this. The wait is the acquire semaphore, and only if Present has not taken it --
 	// BeginFrame records a barrier against the acquired image, and that barrier is in the
 	// command buffer being submitted here.
-	VkPipelineStageFlags waitMask = ACQUIRE_WAIT_STAGE;
-	VkSubmitInfo submitInfo = {
-		VK_STRUCTURE_TYPE_SUBMIT_INFO,
-		nullptr,
-		m_acquireWaited ? 0u : 1u,
-		m_acquireWaited ? nullptr : &m_frameData[m_frameIndex].imageAvailableSemaphore,
-		&waitMask,
-		1,
-		&m_commandBuffer,
-		0,
-		nullptr
-	};
-	CR_RETURN_HR( Vk2Al( vkQueueSubmit( m_presentQueue, 1, &submitInfo, VK_NULL_HANDLE ) ) );
+	VkSemaphoreSubmitInfo waitInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+	waitInfo.semaphore = m_frameData[m_frameIndex].imageAvailableSemaphore;
+	waitInfo.stageMask = ACQUIRE_WAIT_STAGE;
+	VkCommandBufferSubmitInfo commandBufferInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+	commandBufferInfo.commandBuffer = m_commandBuffer;
+	VkSubmitInfo2 submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+	submitInfo.waitSemaphoreInfoCount = m_acquireWaited ? 0u : 1u;
+	submitInfo.pWaitSemaphoreInfos = m_acquireWaited ? nullptr : &waitInfo;
+	submitInfo.commandBufferInfoCount = 1;
+	submitInfo.pCommandBufferInfos = &commandBufferInfo;
+	CR_RETURN_HR( Vk2Al( m_vkQueueSubmit2( m_presentQueue, 1, &submitInfo, VK_NULL_HANDLE ) ) );
 	m_acquireWaited = true;
 
 	// vkQueueWaitIdle rather than a fence: the frame fences belong to Present, and this

@@ -322,36 +322,40 @@ namespace TrinityALImpl
 			vkUnmapMemory( renderContext.m_device, stagingMemory );
 
 
-			VkImageMemoryBarrier barrier = {
-				VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-				nullptr,
+			VkImageMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+			barrier.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+			barrier.srcAccessMask = 0;
+			barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+			barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+			barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.image = image;
+			barrier.subresourceRange = {
+				VK_IMAGE_ASPECT_COLOR_BIT,
 				0,
-				VK_ACCESS_TRANSFER_WRITE_BIT,
-				VK_IMAGE_LAYOUT_UNDEFINED,
-				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-				VK_QUEUE_FAMILY_IGNORED,
-				VK_QUEUE_FAMILY_IGNORED,
-				image,
-				{
-					VK_IMAGE_ASPECT_COLOR_BIT,
-					0,
-					desc.GetTrueMipCount(),
-					0,
-					desc.GetArraySize()
-				}
+				desc.GetTrueMipCount(),
+				0,
+				desc.GetArraySize()
 			};
+			VkDependencyInfo dependencyInfo = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+			dependencyInfo.imageMemoryBarrierCount = 1;
+			dependencyInfo.pImageMemoryBarriers = &barrier;
 			// The whole upload -- two barriers and the copy between them -- has to be
 			// outside any render pass instance. See the note in Tr2BufferALVulkan.cpp.
 			renderContext.EndRenderPassVulkan();
-			vkCmdPipelineBarrier( renderContext.m_commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier );
+			renderContext.m_vkCmdPipelineBarrier2( renderContext.m_commandBuffer, &dependencyInfo );
 
 			vkCmdCopyBufferToImage( renderContext.m_commandBuffer, stagingBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, uint32_t( copyInfo.size() ), copyInfo.data() );
 
-			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+			barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+			barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+			barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
 			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			vkCmdPipelineBarrier( renderContext.m_commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier );
+			renderContext.m_vkCmdPipelineBarrier2( renderContext.m_commandBuffer, &dependencyInfo );
 
 			renderContext.DestroyLaterVulkan( stagingBuffer, vkDestroyBuffer );
 			renderContext.DestroyLaterVulkan( stagingMemory, vkFreeMemory );
@@ -880,21 +884,27 @@ namespace TrinityALImpl
 		const VkImageAspectFlags aspect = GetAspectMaskVulkan( m_format );
 		for( uint32_t level = 1; level < mipCount; ++level )
 		{
-			VkImageMemoryBarrier barrier = {
-				VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-				nullptr,
-				VK_ACCESS_TRANSFER_WRITE_BIT,
-				VK_ACCESS_TRANSFER_READ_BIT,
-				VK_IMAGE_LAYOUT_GENERAL,
-				VK_IMAGE_LAYOUT_GENERAL,
-				VK_QUEUE_FAMILY_IGNORED,
-				VK_QUEUE_FAMILY_IGNORED,
-				m_images[m_currentIndex],
-				{ aspect, level - 1, 1, 0, VK_REMAINING_ARRAY_LAYERS }
-			};
+			VkImageMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+			barrier.srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+			barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+			barrier.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+			barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+			barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+			barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.image = m_images[m_currentIndex];
+			barrier.subresourceRange = { aspect, level - 1, 1, 0, VK_REMAINING_ARRAY_LAYERS };
+			VkDependencyInfo dependencyInfo = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+			dependencyInfo.imageMemoryBarrierCount = 1;
+			dependencyInfo.pImageMemoryBarriers = &barrier;
 			// Level i-1 was written by the previous iteration's blit and is about to be
 			// read by this one. No layout change, only the write-then-read ordering.
-			vkCmdPipelineBarrier( renderContext.m_commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier );
+			// BLIT rather than ALL_TRANSFER on both sides: synchronization2's finer
+			// stages let the barrier say exactly which transfer command it orders.
+			// m_owner, not renderContext: GenerateMipMaps takes the base render context,
+			// which does not carry the entry points.
+			m_owner->m_vkCmdPipelineBarrier2( renderContext.m_commandBuffer, &dependencyInfo );
 
 			VkImageBlit blit = {
 				{ aspect, level - 1, 0, 1 },
@@ -937,7 +947,7 @@ namespace TrinityALImpl
 		}
 	}
 
-	void Tr2TextureAL::TransitionVulkan( VkCommandBuffer commandBuffer, VkImageLayout newLayout, VkPipelineStageFlags srcStageOverride )
+	void Tr2TextureAL::TransitionVulkan( VkCommandBuffer commandBuffer, VkImageLayout newLayout, VkPipelineStageFlags2 srcStageOverride )
 	{
 		if( m_currentIndex >= m_images.size() || m_currentIndex >= m_layouts.size() )
 		{
@@ -949,38 +959,30 @@ namespace TrinityALImpl
 			return;
 		}
 
-		VkPipelineStageFlags srcStage, dstStage;
-		VkAccessFlags srcAccess, dstAccess;
-		GetLayoutStageAccessVulkan( oldLayout, srcStage, srcAccess );
-		GetLayoutStageAccessVulkan( newLayout, dstStage, dstAccess );
+		// synchronization2: the stages ride in the barrier itself rather than as
+		// vkCmdPipelineBarrier arguments shared by every barrier in the call.
+		VkImageMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+		GetLayoutStageAccessVulkan( oldLayout, barrier.srcStageMask, barrier.srcAccessMask );
+		GetLayoutStageAccessVulkan( newLayout, barrier.dstStageMask, barrier.dstAccessMask );
 		if( srcStageOverride != 0 )
 		{
-			srcStage = srcStageOverride;
+			barrier.srcStageMask = srcStageOverride;
 		}
+		barrier.oldLayout = oldLayout;
+		barrier.newLayout = newLayout;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = m_images[m_currentIndex];
+		// Every mip and every layer. A per-mip tracker would let mip generation
+		// transition one level at a time, which is what Tr2TextureAL::GenerateMips
+		// will want; until that exists, transitioning the whole image keeps the
+		// tracker honest, which a partial transition would not.
+		barrier.subresourceRange = { GetAspectMaskVulkan( m_format ), 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS };
 
-		VkImageMemoryBarrier barrier = {
-			VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-			nullptr,
-			srcAccess,
-			dstAccess,
-			oldLayout,
-			newLayout,
-			VK_QUEUE_FAMILY_IGNORED,
-			VK_QUEUE_FAMILY_IGNORED,
-			m_images[m_currentIndex],
-			{
-				GetAspectMaskVulkan( m_format ),
-				0,
-				// Every mip and every layer. A per-mip tracker would let mip generation
-				// transition one level at a time, which is what Tr2TextureAL::GenerateMips
-				// will want; until that exists, transitioning the whole image keeps the
-				// tracker honest, which a partial transition would not.
-				VK_REMAINING_MIP_LEVELS,
-				0,
-				VK_REMAINING_ARRAY_LAYERS
-			}
-		};
-		vkCmdPipelineBarrier( commandBuffer, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier );
+		VkDependencyInfo dependencyInfo = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+		dependencyInfo.imageMemoryBarrierCount = 1;
+		dependencyInfo.pImageMemoryBarriers = &barrier;
+		m_owner->m_vkCmdPipelineBarrier2( commandBuffer, &dependencyInfo );
 
 		m_layouts[m_currentIndex] = newLayout;
 	}

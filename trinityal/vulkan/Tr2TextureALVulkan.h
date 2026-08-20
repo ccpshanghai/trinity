@@ -94,7 +94,7 @@ namespace TrinityALImpl
 		// that has to be ordered after a semaphore wait rather than after earlier work in
 		// this command buffer. Leaving it 0 derives the stage from the old layout, which
 		// is what every caller but BeginFrame wants.
-		void TransitionVulkan( VkCommandBuffer commandBuffer, VkImageLayout newLayout, VkPipelineStageFlags srcStageOverride = 0 );
+		void TransitionVulkan( VkCommandBuffer commandBuffer, VkImageLayout newLayout, VkPipelineStageFlags2 srcStageOverride = 0 );
 
 		ALResult AssignFromSwapChainVulkan( const std::vector<VkImage>& backBuffers, const Tr2DisplayModeInfo& mode, Tr2PrimaryRenderContextAL& renderContext );
 		void SetCurrentImageVulkan( uint32_t index );

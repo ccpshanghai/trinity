@@ -114,7 +114,7 @@ namespace TrinityALImpl
 	// These are the conservative pairings, not the tightest ones. A tighter srcStage for
 	// a known producer would be faster; getting it wrong is a data race that validation
 	// cannot always see, so the wide mask is the right default until something measures.
-	void GetLayoutStageAccessVulkan( VkImageLayout layout, VkPipelineStageFlags& stage, VkAccessFlags& access );
+	void GetLayoutStageAccessVulkan( VkImageLayout layout, VkPipelineStageFlags2& stage, VkAccessFlags2& access );
 
 	// Colour formats get the colour aspect, depth formats get depth (plus stencil where
 	// the format has one). Barriers and image views both need this and both used to

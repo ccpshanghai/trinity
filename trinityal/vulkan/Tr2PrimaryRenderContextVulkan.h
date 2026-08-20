@@ -163,7 +163,7 @@ private:
 	// presentation engine's read -- SYNC-HAZARD-WRITE-AFTER-READ, one per frame, which is
 	// what happened the moment the barrier stopped naming this stage by hand. Two places
 	// have to agree and neither can see the other, so the constant is the agreement.
-	static const VkPipelineStageFlags ACQUIRE_WAIT_STAGE = VK_PIPELINE_STAGE_TRANSFER_BIT;
+	static const VkPipelineStageFlags2 ACQUIRE_WAIT_STAGE = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
 
 	static const uint32_t VIRTUAL_FRAMES = 3;
 	FrameData m_frameData[VIRTUAL_FRAMES];
@@ -269,6 +269,10 @@ public:
 	// GetDeviceProcAddr works identically in both worlds.
 	PFN_vkCmdBeginRendering m_vkCmdBeginRendering;
 	PFN_vkCmdEndRendering m_vkCmdEndRendering;
+
+	// synchronization2's entry points, fetched the same way and for the same reason.
+	PFN_vkCmdPipelineBarrier2 m_vkCmdPipelineBarrier2;
+	PFN_vkQueueSubmit2 m_vkQueueSubmit2;
 
 	std::map<unsigned, VkPipeline> m_pipelines;
 };

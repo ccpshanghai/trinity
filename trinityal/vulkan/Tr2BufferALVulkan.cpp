@@ -164,18 +164,24 @@ namespace TrinityALImpl
 			renderContext.EndRenderPassVulkan();
 			vkCmdCopyBuffer( renderContext.m_commandBuffer, stagingBuffer, buffer, 1, &copyInfo );
 
-			VkBufferMemoryBarrier barrier = {
-				VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-				nullptr,
-				VK_ACCESS_MEMORY_WRITE_BIT,
-				VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT,
-				VK_QUEUE_FAMILY_IGNORED,
-				VK_QUEUE_FAMILY_IGNORED,
-				buffer,
-				0,
-				VK_WHOLE_SIZE
-			};
-			vkCmdPipelineBarrier( renderContext.m_commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 0, nullptr, 1, &barrier, 0, nullptr );
+			VkBufferMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
+			barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+			barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+			// Vertex and index input, and the indirect-argument read: a buffer created
+			// with INDIRECT_BUFFER usage is consumed by vkCmdDrawIndirect at a stage the
+			// old VERTEX_INPUT-only barrier never covered. The 1.0 barrier had the same
+			// gap; synchronization2's finer stages are what made the validator name it.
+			barrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+			barrier.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT | VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.buffer = buffer;
+			barrier.offset = 0;
+			barrier.size = VK_WHOLE_SIZE;
+			VkDependencyInfo dependencyInfo = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+			dependencyInfo.bufferMemoryBarrierCount = 1;
+			dependencyInfo.pBufferMemoryBarriers = &barrier;
+			renderContext.m_vkCmdPipelineBarrier2( renderContext.m_commandBuffer, &dependencyInfo );
 			}
 		}
 
@@ -304,25 +310,23 @@ namespace TrinityALImpl
 		// Make those writes available to the host, then submit and wait. Without the
 		// wait the map returns memory the GPU has not touched yet, which is what made
 		// every Compute test read back zeros while reporting S_OK.
-		VkBufferMemoryBarrier barrier = {
-			VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-			nullptr,
-			VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
-			VK_ACCESS_HOST_READ_BIT,
-			VK_QUEUE_FAMILY_IGNORED,
-			VK_QUEUE_FAMILY_IGNORED,
-			m_buffer,
-			0,
-			VK_WHOLE_SIZE
-		};
+		VkBufferMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
+		barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+		barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+		barrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+		barrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.buffer = m_buffer;
+		barrier.offset = 0;
+		barrier.size = VK_WHOLE_SIZE;
+		VkDependencyInfo dependencyInfo = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+		dependencyInfo.bufferMemoryBarrierCount = 1;
+		dependencyInfo.pBufferMemoryBarriers = &barrier;
 		// Outside the pass for the same reason as the staging copies above; the
 		// FlushAndSyncVulkan below would close it anyway, but not before this barrier.
 		m_owner->EndRenderPassVulkan();
-		vkCmdPipelineBarrier(
-			m_owner->m_commandBuffer,
-			VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-			VK_PIPELINE_STAGE_HOST_BIT,
-			0, 0, nullptr, 1, &barrier, 0, nullptr );
+		m_owner->m_vkCmdPipelineBarrier2( m_owner->m_commandBuffer, &dependencyInfo );
 
 		FORWARD_HR( m_owner->FlushAndSyncVulkan() );
 
@@ -443,18 +447,21 @@ namespace TrinityALImpl
 		m_owner->EndRenderPassVulkan();
 		vkCmdCopyBuffer( m_owner->m_commandBuffer, stagingBuffer, m_buffer, 1, &copyInfo );
 
-		VkBufferMemoryBarrier barrier = {
-			VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-			nullptr,
-			VK_ACCESS_MEMORY_WRITE_BIT,
-			VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT,
-			VK_QUEUE_FAMILY_IGNORED,
-			VK_QUEUE_FAMILY_IGNORED,
-			m_buffer,
-			0,
-			VK_WHOLE_SIZE
-		};
-		vkCmdPipelineBarrier( m_owner->m_commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 0, nullptr, 1, &barrier, 0, nullptr );
+		VkBufferMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
+		barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+		barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+		// Same scope as Create's staging barrier, for the same reason.
+		barrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+		barrier.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT | VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.buffer = m_buffer;
+		barrier.offset = 0;
+		barrier.size = VK_WHOLE_SIZE;
+		VkDependencyInfo dependencyInfo = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+		dependencyInfo.bufferMemoryBarrierCount = 1;
+		dependencyInfo.pBufferMemoryBarriers = &barrier;
+		m_owner->m_vkCmdPipelineBarrier2( m_owner->m_commandBuffer, &dependencyInfo );
 		return S_OK;
 	}
 
