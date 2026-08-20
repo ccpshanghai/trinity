@@ -1133,7 +1133,12 @@ ALResult Tr2RenderContextAL::SetPipeline()
 	vkCmdBindPipeline( m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline );
 
 	auto* program = m_pipelineSource.m_shaderProgram.m_program.get();
-	if( m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet && program && program->m_resourceLayout )
+	// The layout comparison is load-bearing: the AL's state machine carries a bound
+	// resource set across shader program changes, and a set is only legal with the
+	// layout it was allocated against. Drawing CanSampleVolumeTexture's set with
+	// CanSampleUnassignedTexture's 2D-sampling program was this suite's one flaky test.
+	if( m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet && program && program->m_resourceLayout
+		&& m_resourceSet.m_resourceSet->m_layout == program->m_resourceLayout )
 	{
 		vkCmdBindDescriptorSets( 
 			m_commandBuffer, 
@@ -1142,6 +1147,25 @@ ALResult Tr2RenderContextAL::SetPipeline()
 			1, 
 			1,
 			&m_resourceSet.m_resourceSet->m_descriptorSet, 0, nullptr );
+	}
+	else if( program && program->m_resourceLayout )
+	{
+		// The program statically uses set 1 and the caller bound nothing. Without this
+		// the draw consumed whatever the recycled pool last held -- a stale set from an
+		// unrelated test, surfacing as viewType-07752 / layout-08600 at a rate that made
+		// Rendering.CanSampleUnassignedTexture the suite's one flaky test. The default
+		// set binds the dummies, so sampling an unassigned slot reads opaque black.
+		VkDescriptorSet defaultSet = program->GetDefaultResourceSetVulkan( *m_owner );
+		if( defaultSet != VK_NULL_HANDLE )
+		{
+			vkCmdBindDescriptorSets(
+				m_commandBuffer,
+				VK_PIPELINE_BIND_POINT_GRAPHICS,
+				program->m_pipelineLayout,
+				1,
+				1,
+				&defaultSet, 0, nullptr );
+		}
 	}
 
 	FORWARD_HR( BindConstantBuffers( VK_PIPELINE_BIND_POINT_GRAPHICS ) );

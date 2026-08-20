@@ -34,6 +34,17 @@ namespace TrinityALImpl
 
 		std::vector<VkDescriptorPoolSize> m_poolSizes;
 
+		// The set SetPipeline binds when this program declares set-1 resources and the
+		// caller bound no resource set: every sampled texture is the primary context's
+		// dummy and every sampler its dummy sampler. Built lazily on first need; a
+		// program whose unbound slots include anything the dummies cannot stand in for
+		// (buffers, UAVs, non-2D textures) gets no default set and behaves as before.
+		VkDescriptorSet GetDefaultResourceSetVulkan( Tr2PrimaryRenderContextAL& renderContext );
+	private:
+		VkDescriptorPool m_defaultPool;
+		VkDescriptorSet m_defaultSet;
+		bool m_defaultSetTried;
+
 		VkPipelineLayout m_pipelineLayout;
 
 		VkDescriptorSetLayout m_resourceLayout;

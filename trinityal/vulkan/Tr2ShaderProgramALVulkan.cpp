@@ -76,7 +76,10 @@ namespace TrinityALImpl
 		m_resourceLayout( VK_NULL_HANDLE ),
 		m_constantLayout( VK_NULL_HANDLE ),
 		m_emptyLayout( VK_NULL_HANDLE ),
-		m_pipelineLayout( VK_NULL_HANDLE )
+		m_pipelineLayout( VK_NULL_HANDLE ),
+		m_defaultPool( VK_NULL_HANDLE ),
+		m_defaultSet( VK_NULL_HANDLE ),
+		m_defaultSetTried( false )
 	{
 	}
 
@@ -266,10 +269,107 @@ namespace TrinityALImpl
 	}
 
 
+	VkDescriptorSet Tr2ShaderProgramAL::GetDefaultResourceSetVulkan( Tr2PrimaryRenderContextAL& renderContext )
+	{
+		if( m_defaultSetTried )
+		{
+			return m_defaultSet;
+		}
+		m_defaultSetTried = true;
+
+		if( !m_resourceLayout )
+		{
+			return VK_NULL_HANDLE;
+		}
+		if( !renderContext.m_dummyTexture.IsValid() || renderContext.m_dummySampler == VK_NULL_HANDLE )
+		{
+			return VK_NULL_HANDLE;
+		}
+		// Only slots the dummies can stand in for. A buffer, UAV or non-2D texture slot
+		// left unbound keeps today's behaviour -- there is no honest 1x1 stand-in for a
+		// structured buffer, and inventing one would hide a real binding bug.
+		for( auto it = begin( m_registerInput ); it != end( m_registerInput ); ++it )
+		{
+			if( it->type != Tr2ShaderRegisterAL::CONSTANT_BUFFER
+				&& it->type != Tr2ShaderRegisterAL::SAMPLER
+				&& it->type != Tr2ShaderRegisterAL::SRV_TEXTURE2D )
+			{
+				return VK_NULL_HANDLE;
+			}
+		}
+
+		VkDescriptorPoolCreateInfo poolDesc = {
+			VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+			nullptr,
+			0,
+			1,
+			uint32_t( m_poolSizes.size() ),
+			m_poolSizes.data()
+		};
+		if( FAILED( Vk2Al( vkCreateDescriptorPool( renderContext.m_device, &poolDesc, nullptr, &m_defaultPool ) ) ) )
+		{
+			return VK_NULL_HANDLE;
+		}
+
+		VkDescriptorSetAllocateInfo allocateInfo = {
+			VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+			nullptr,
+			m_defaultPool,
+			1,
+			&m_resourceLayout
+		};
+		if( FAILED( Vk2Al( vkAllocateDescriptorSets( renderContext.m_device, &allocateInfo, &m_defaultSet ) ) ) )
+		{
+			m_defaultSet = VK_NULL_HANDLE;
+			return VK_NULL_HANDLE;
+		}
+
+		std::vector<VkWriteDescriptorSet> writes;
+		writes.reserve( m_registerInput.size() );
+		std::vector<VkDescriptorImageInfo> imageInfos;
+		imageInfos.reserve( m_registerInput.size() );
+		for( auto it = begin( m_registerInput ); it != end( m_registerInput ); ++it )
+		{
+			if( it->type == Tr2ShaderRegisterAL::CONSTANT_BUFFER )
+			{
+				continue;
+			}
+			VkWriteDescriptorSet d = {
+				VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				nullptr,
+				m_defaultSet,
+				it->binding,
+				0,
+				1,
+			};
+			VkDescriptorImageInfo imageInfo = {};
+			if( it->type == Tr2ShaderRegisterAL::SAMPLER )
+			{
+				imageInfo.sampler = renderContext.m_dummySampler;
+				d.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+			}
+			else
+			{
+				imageInfo.imageView = renderContext.GetDummyImageViewVulkan();
+				imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				d.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+			}
+			imageInfos.push_back( imageInfo );
+			d.pImageInfo = &imageInfos.back();
+			writes.push_back( d );
+		}
+		vkUpdateDescriptorSets( renderContext.m_device, uint32_t( writes.size() ), writes.data(), 0, nullptr );
+		return m_defaultSet;
+	}
+
 	void Tr2ShaderProgramAL::Destroy()
 	{
 		if( m_owner )
 		{
+			m_owner->DestroyLaterVulkan( m_defaultPool, vkDestroyDescriptorPool );
+			m_defaultPool = VK_NULL_HANDLE;
+			m_defaultSet = VK_NULL_HANDLE;
+			m_defaultSetTried = false;
 			m_owner->DestroyLaterVulkan( m_resourceLayout, vkDestroyDescriptorSetLayout );
 			m_owner->DestroyLaterVulkan( m_constantLayout, vkDestroyDescriptorSetLayout );
 			m_owner->DestroyLaterVulkan( m_emptyLayout, vkDestroyDescriptorSetLayout );

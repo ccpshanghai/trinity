@@ -402,7 +402,8 @@ Tr2PrimaryRenderContextAL::Tr2PrimaryRenderContextAL()
 	m_vkCmdEndRendering( nullptr ),
 	m_vkCmdPipelineBarrier2( nullptr ),
 	m_vkQueueSubmit2( nullptr ),
-	m_swapChainMutableFormat( false )
+	m_swapChainMutableFormat( false ),
+	m_dummySampler( VK_NULL_HANDLE )
 {
 	m_defaultBackBuffer.m_texture = std::make_shared<TrinityALImpl::Tr2TextureAL>();
 }
@@ -735,6 +736,24 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 
 	{
 		TrinityALImpl::CreateBuffer( m_zeroBuffer, m_zeroBufferMemory, 4, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, *this );
+
+		// See the members' comment. Opaque black, matching what D3D9 samples from an
+		// unassigned stage.
+		static const uint32_t BLACK = 0xff000000;
+		Tr2SubresourceData dummyData = { &BLACK, sizeof( BLACK ), sizeof( BLACK ) };
+		m_dummyTexture.Create(
+			Tr2BitmapDimensions( 1, 1, 1, Tr2RenderContextEnum::PIXEL_FORMAT_B8G8R8A8_UNORM ),
+			Tr2GpuUsage::SHADER_RESOURCE,
+			&dummyData,
+			*this );
+
+		VkSamplerCreateInfo dummySamplerInfo = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+		dummySamplerInfo.magFilter = VK_FILTER_NEAREST;
+		dummySamplerInfo.minFilter = VK_FILTER_NEAREST;
+		// LOD_CLAMP_NONE, not 0: a maxLod of zero reads as deliberate lod clamping and
+		// draws a best-practices advisory per device; the dummy has one mip either way.
+		dummySamplerInfo.maxLod = VK_LOD_CLAMP_NONE;
+		vkCreateSampler( m_device, &dummySamplerInfo, nullptr, &m_dummySampler );
 	}
 
 	if( m_events )
@@ -764,6 +783,13 @@ void Tr2PrimaryRenderContextAL::Destroy()
 		vkDestroyPipeline( m_device, it->second, nullptr );
 	}
 	m_pipelines.clear();
+
+	m_dummyTexture = Tr2TextureAL();
+	if( m_dummySampler != VK_NULL_HANDLE )
+	{
+		vkDestroySampler( m_device, m_dummySampler, nullptr );
+		m_dummySampler = VK_NULL_HANDLE;
+	}
 
 	m_defaultBackBuffer.m_texture->Destroy();
 
@@ -973,6 +999,13 @@ ALResult Tr2PrimaryRenderContextAL::SetPresentParameters( unsigned, const Tr2Pre
 
 	FORWARD_HR( BeginFrame() );
 	return S_OK;
+}
+
+VkImageView Tr2PrimaryRenderContextAL::GetDummyImageViewVulkan() const
+{
+	return m_dummyTexture.IsValid()
+		? m_dummyTexture.m_texture->GetImageView( Tr2RenderContextEnum::COLOR_SPACE_LINEAR )
+		: VK_NULL_HANDLE;
 }
 
 ALResult Tr2PrimaryRenderContextAL::Present()

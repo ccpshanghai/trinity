@@ -281,6 +281,19 @@ public:
 	// no fallback for writing through a view of a different transfer function.
 	bool m_swapChainMutableFormat;
 
+	// What the default descriptor set binds for slots a shader declares but the caller
+	// never set: a 1x1 black texture and a plain sampler, so sampling an unassigned
+	// slot reads something defined -- D3D9's answer -- instead of whatever the
+	// descriptor pool last held. Created at device creation, next to m_zeroBuffer,
+	// because texture creation records upload commands and cannot run mid-pass.
+	Tr2TextureAL m_dummyTexture;
+	VkSampler m_dummySampler;
+
+	// The dummy's sampled view, for writers that are not friends of the texture wrapper
+	// (the shader program's default descriptor set). Defined in the .cpp because it
+	// needs the texture impl's full type.
+	VkImageView GetDummyImageViewVulkan() const;
+
 	std::map<unsigned, VkPipeline> m_pipelines;
 };
 

@@ -17,7 +17,8 @@ namespace TrinityALImpl
 	Tr2ResourceSetAL::Tr2ResourceSetAL()
 		:m_owner( nullptr ),
 		m_pool( VK_NULL_HANDLE ),
-		m_descriptorSet( VK_NULL_HANDLE )
+		m_descriptorSet( VK_NULL_HANDLE ),
+		m_layout( VK_NULL_HANDLE )
 	{
 	}
 
@@ -62,6 +63,7 @@ namespace TrinityALImpl
 			};
 
 			CR_RETURN_HR( Vk2Al( vkAllocateDescriptorSets( renderContext.m_device, &allocateInfo, &m_descriptorSet ) ) );
+			m_layout = program.m_program->m_resourceLayout;
 
 			std::vector<VkWriteDescriptorSet> descriptorWrites;
 			descriptorWrites.reserve( program.m_program->m_registerInput.size() );
@@ -219,6 +221,7 @@ namespace TrinityALImpl
 			m_owner = nullptr;
 			m_pool = VK_NULL_HANDLE;
 			m_descriptorSet = VK_NULL_HANDLE;
+		m_layout = VK_NULL_HANDLE;
 		}
 	}
 

@@ -44,6 +44,12 @@ namespace TrinityALImpl
 		VkDescriptorPool m_pool;
 		VkDescriptorSet m_descriptorSet;
 
+		// The layout m_descriptorSet was allocated against. A set is only legal with the
+		// pipeline layout it was created for, and the AL's state machine happily carries
+		// a bound set across a shader program change -- SetPipeline compares this against
+		// the current program's layout and falls back to the default set on mismatch.
+		VkDescriptorSetLayout m_layout;
+
 		friend class ::Tr2RenderContextAL;
 	};
 }
