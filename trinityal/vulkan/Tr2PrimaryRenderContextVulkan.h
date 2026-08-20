@@ -127,7 +127,6 @@ private:
 
 	struct FrameData 
 	{
-		//VkFramebuffer framebuffer;
 		VkCommandBuffer commandBuffer;
 		VkSemaphore imageAvailableSemaphore;
 		VkFence fence;
@@ -262,7 +261,15 @@ public:
 	// here rather than assuming it got what it asked for.
 	VkPhysicalDeviceFeatures m_enabledFeatures;
 
-	std::map<unsigned, VkRenderPass> m_renderPasses;
+	// Fetched with vkGetDeviceProcAddr at device creation, core name first and the KHR
+	// alias second. The loader's statically-exported vkCmdBeginRendering symbol is not
+	// used because it only dispatches on devices where the *loader* knows 1.3 -- Android's
+	// libvulkan exports core 1.3 entry points only from API level 33, while the same
+	// devices commonly ship VK_KHR_dynamic_rendering well below that. Going through
+	// GetDeviceProcAddr works identically in both worlds.
+	PFN_vkCmdBeginRendering m_vkCmdBeginRendering;
+	PFN_vkCmdEndRendering m_vkCmdEndRendering;
+
 	std::map<unsigned, VkPipeline> m_pipelines;
 };
 

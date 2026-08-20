@@ -48,8 +48,7 @@ Tr2RenderContextAL::Tr2RenderContextAL() throw( )
 	:m_dirtyPso( true ),
 	m_dirtyPass( true ),
 	m_owner( nullptr ),
-	m_renderPass( 0 ),
-	m_framebuffer( VK_NULL_HANDLE ),
+	m_renderingActive( false ),
 	m_commandBuffer( VK_NULL_HANDLE ),
 	m_constantPool( VK_NULL_HANDLE ),
 	m_constantSet( VK_NULL_HANDLE ),
@@ -113,12 +112,6 @@ Tr2RenderContextAL::~Tr2RenderContextAL() throw( )
 
 void Tr2RenderContextAL::Destroy() throw( )
 {
-	if( m_framebuffer != VK_NULL_HANDLE )
-	{
-		m_owner->DestroyLaterVulkan( m_framebuffer, vkDestroyFramebuffer );
-		m_framebuffer = VK_NULL_HANDLE;
-	}
-
 	// Release device resources held by this render context while the device is
 	// still live. m_pipelineSource.m_shaderProgram is a member destroyed by the
 	// base-class destructor, which runs after Tr2PrimaryRenderContextAL::Destroy()
@@ -931,30 +924,97 @@ ALResult Tr2RenderContextAL::SetPass()
 		}
 	}
 
-	auto hash = m_renderPassSource.GetHash();
-	auto found = m_owner->m_renderPasses.find( hash );
-	if( found == m_owner->m_renderPasses.end() )
+	// Dynamic rendering: the attachments are named directly, no VkRenderPass or
+	// VkFramebuffer objects and no cache keyed on either. Slot 0 of the source is depth,
+	// slots 1-4 the colour slots; colorAttachmentCount is the highest bound slot plus one,
+	// with any gap below it declared as an unused attachment (null imageView, format
+	// UNDEFINED in the pipeline), because a fragment shader's output locations index this
+	// array positionally.
+	//
+	// The loadOp/storeOp discipline is unchanged from the render-pass version -- LOAD and
+	// STORE, taken from the same attachment descriptions SetRenderTarget and
+	// SetDepthStencil have always written. On a tiler those ops are where bandwidth goes,
+	// and 1.3 relocates them into VkRenderingAttachmentInfo without changing what they
+	// mean.
+	VkRenderingAttachmentInfo colorAttachments[RENDER_TARGET_COUNT];
+	uint32_t colorAttachmentCount = 0;
+	uint32_t width = 0;
+	uint32_t height = 0;
+	for( uint32_t i = 0; i < RENDER_TARGET_COUNT; ++i )
 	{
-		FORWARD_HR( CreateRenderPass( m_renderPass ) );
-		m_owner->m_renderPasses[hash] = m_renderPass;
+		VkRenderingAttachmentInfo attachment = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+		attachment.resolveMode = VK_RESOLVE_MODE_NONE;
+		if( m_renderPassSource.m_rt[i + 1].format != VK_FORMAT_UNDEFINED && m_boundRenderTargets[i].IsValid() )
+		{
+			// Mip 0, slice 0: nothing in the AL binds a render target at another level yet,
+			// and the slice argument to SetRenderTarget is not plumbed through either. Both
+			// belong with mip generation, which is a separate cluster.
+			attachment.imageView = m_boundRenderTargets[i].m_texture->GetAttachmentViewVulkan( 0, 0 );
+			attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+			attachment.loadOp = m_renderPassSource.m_rt[i + 1].loadOp;
+			attachment.storeOp = m_renderPassSource.m_rt[i + 1].storeOp;
+			colorAttachmentCount = i + 1;
+			if( width == 0 )
+			{
+				width = m_boundRenderTargets[i].GetWidth();
+				height = m_boundRenderTargets[i].GetHeight();
+			}
+		}
+		colorAttachments[i] = attachment;
 	}
-	else
+
+	VkRenderingAttachmentInfo depthAttachment = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+	depthAttachment.resolveMode = VK_RESOLVE_MODE_NONE;
+	VkRenderingAttachmentInfo stencilAttachment = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+	stencilAttachment.resolveMode = VK_RESOLVE_MODE_NONE;
+	bool haveDepth = false;
+	bool haveStencil = false;
+	if( m_renderPassSource.m_rt[0].format != VK_FORMAT_UNDEFINED && m_boundDepthStencil.IsValid() )
 	{
-		m_renderPass = found->second;
+		const VkImageAspectFlags aspect = TrinityALImpl::GetAspectMaskVulkan( m_renderPassSource.m_rt[0].format );
+		if( aspect & VK_IMAGE_ASPECT_DEPTH_BIT )
+		{
+			depthAttachment.imageView = m_boundDepthStencil.m_texture->GetAttachmentViewVulkan( 0, 0 );
+			depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+			depthAttachment.loadOp = m_renderPassSource.m_rt[0].loadOp;
+			depthAttachment.storeOp = m_renderPassSource.m_rt[0].storeOp;
+			haveDepth = true;
+		}
+		if( aspect & VK_IMAGE_ASPECT_STENCIL_BIT )
+		{
+			// The stencil aspect is governed by the stencil ops, exactly as the
+			// VkAttachmentDescription's stencilLoadOp/stencilStoreOp governed it before.
+			stencilAttachment.imageView = m_boundDepthStencil.m_texture->GetAttachmentViewVulkan( 0, 0 );
+			stencilAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+			stencilAttachment.loadOp = m_renderPassSource.m_rt[0].stencilLoadOp;
+			stencilAttachment.storeOp = m_renderPassSource.m_rt[0].stencilStoreOp;
+			haveStencil = true;
+		}
+		if( width == 0 )
+		{
+			width = m_boundDepthStencil.GetWidth();
+			height = m_boundDepthStencil.GetHeight();
+		}
 	}
-	UpdateFramebuffer();
 
-	VkRenderPassBeginInfo render_pass_begin_info = {
-		VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-		nullptr,
-		m_renderPass,
-		m_framebuffer,
-		{ { 0, 0 }, { m_boundRenderTargets[0].GetWidth(), m_boundRenderTargets[0].GetHeight() } },
-		0,
-		nullptr
-	};
+	if( colorAttachmentCount == 0 && !haveDepth && !haveStencil )
+	{
+		// Nothing bound at all. The render-pass version reached vkCmdBeginRenderPass with a
+		// null framebuffer here, which no draw survives either; saying so is strictly
+		// better than recording an invalid begin.
+		return E_INVALIDCALL;
+	}
 
-	vkCmdBeginRenderPass( m_commandBuffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE );
+	VkRenderingInfo renderingInfo = { VK_STRUCTURE_TYPE_RENDERING_INFO };
+	renderingInfo.renderArea = { { 0, 0 }, { width, height } };
+	renderingInfo.layerCount = 1;
+	renderingInfo.colorAttachmentCount = colorAttachmentCount;
+	renderingInfo.pColorAttachments = colorAttachmentCount ? colorAttachments : nullptr;
+	renderingInfo.pDepthAttachment = haveDepth ? &depthAttachment : nullptr;
+	renderingInfo.pStencilAttachment = haveStencil ? &stencilAttachment : nullptr;
+
+	m_owner->m_vkCmdBeginRendering( m_commandBuffer, &renderingInfo );
+	m_renderingActive = true;
 
 	// Trinity's viewport has y down from the top left; Vulkan's has y up, and this
 	// backend flips it by giving the viewport a negative height and moving the origin to
@@ -964,8 +1024,8 @@ ALResult Tr2RenderContextAL::SetPass()
 	const bool haveViewport = m_viewportSet;
 	const float vpX = haveViewport ? m_viewport.m_x : 0.0f;
 	const float vpY = haveViewport ? m_viewport.m_y : 0.0f;
-	const float vpWidth = haveViewport ? m_viewport.m_width : float( m_boundRenderTargets[0].GetWidth() );
-	const float vpHeight = haveViewport ? m_viewport.m_height : float( m_boundRenderTargets[0].GetHeight() );
+	const float vpWidth = haveViewport ? m_viewport.m_width : float( width );
+	const float vpHeight = haveViewport ? m_viewport.m_height : float( height );
 
 	VkViewport viewport = {
 		vpX,
@@ -978,7 +1038,7 @@ ALResult Tr2RenderContextAL::SetPass()
 
 	VkRect2D scissor = {
 		{ 0, 0 },
-		{ m_boundRenderTargets[0].GetWidth(), m_boundRenderTargets[0].GetHeight() }
+		{ width, height }
 	};
 
 	vkCmdSetViewport( m_commandBuffer, 0, 1, &viewport );
@@ -987,125 +1047,6 @@ ALResult Tr2RenderContextAL::SetPass()
 	m_dirtyPass = false;
 	m_dirtyPso = true;
 	return S_OK;
-}
-
-ALResult Tr2RenderContextAL::CreateRenderPass( VkRenderPass& renderPass )
-{
-	VkAttachmentDescription attachments[5];
-	VkAttachmentReference ds = { 0xffffffff };
-	VkAttachmentReference rts[4];
-
-	uint32_t count = 0;
-	uint32_t rtCount = 0;
-
-	for( uint32_t i = 0; i < 5; ++i )
-	{
-		if( m_renderPassSource.m_rt[i].format != VK_FORMAT_UNDEFINED )
-		{
-			if( i == 0 )
-			{
-				ds.attachment = count;
-				// Never set before, so it defaulted to VK_IMAGE_LAYOUT_UNDEFINED (0) from
-				// the initialiser. Harmless only for as long as nothing could put a format
-				// in slot 0, which SetDepthStencil now can.
-				ds.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-			}
-			else
-			{
-				rts[i - 1].attachment = count;
-				rts[i - 1].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-				rtCount = i;
-			}
-			attachments[count++] = m_renderPassSource.m_rt[i];
-		}
-	}
-
-	VkSubpassDescription subpass = {
-		0,
-		VK_PIPELINE_BIND_POINT_GRAPHICS,
-		0,
-		nullptr,
-		rtCount,
-		rts,
-		nullptr,
-		ds.attachment != 0xffffffff ? &ds : nullptr,
-		0,
-		nullptr
-	};
-
-	VkRenderPassCreateInfo renderPassInfo = {
-		VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-		nullptr,
-		0,
-		count,
-		attachments,
-		1,
-		&subpass,
-		0,
-		nullptr
-	};
-
-	return Vk2Al( vkCreateRenderPass( m_owner->m_device, &renderPassInfo, nullptr, &renderPass ) );
-}
-
-void Tr2RenderContextAL::UpdateFramebuffer()
-{
-	if( m_framebuffer != VK_NULL_HANDLE )
-	{
-		m_owner->DestroyLaterVulkan( m_framebuffer, vkDestroyFramebuffer );
-		m_framebuffer = VK_NULL_HANDLE;
-	}
-
-	// The attachment array has to be in the same order CreateRenderPass built the pass
-	// from, or the framebuffer describes a different pass than the one it is used with:
-	// depth at index 0 when there is one, then the bound colour slots in order. This used
-	// to be hardcoded to a single view taken from render target 0, which was wrong the
-	// moment a second slot could be bound and wrong for depth from the start.
-	uint32_t width = 0;
-	uint32_t height = 0;
-	uint32_t count = 0;
-	VkImageView views[5] = {};
-
-	for( uint32_t i = 0; i < 5; ++i )
-	{
-		if( m_renderPassSource.m_rt[i].format == VK_FORMAT_UNDEFINED )
-		{
-			continue;
-		}
-		const Tr2TextureAL& attachment = ( i == 0 ) ? m_boundDepthStencil : m_boundRenderTargets[i - 1];
-		if( !attachment.IsValid() )
-		{
-			continue;
-		}
-		// Mip 0: nothing in the AL binds a render target at another level yet, and the
-		// slice argument to SetRenderTarget is not plumbed through either. Both belong
-		// with mip generation, which is a separate cluster.
-		views[count++] = attachment.m_texture->GetAttachmentViewVulkan( 0, 0 );
-		if( width == 0 )
-		{
-			width = attachment.GetWidth();
-			height = attachment.GetHeight();
-		}
-	}
-
-	if( count == 0 )
-	{
-		return;
-	}
-
-	VkFramebufferCreateInfo framebufferInfo = {
-		VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-		nullptr,
-		0,
-		m_renderPass,
-		count,
-		views,
-		width,
-		height,
-		1
-	};
-
-	Vk2Al( vkCreateFramebuffer( m_owner->m_device, &framebufferInfo, nullptr, &m_framebuffer ) );
 }
 
 ALResult Tr2RenderContextAL::SetPipeline()
@@ -1128,11 +1069,12 @@ ALResult Tr2RenderContextAL::SetPipeline()
 		return S_OK;
 	}
 
-	// The render pass is part of the key, not just the pipeline state. A pipeline is
-	// created against a specific VkRenderPass and may only be used with a compatible one
-	// (VUID-vkCmdDraw-renderPass-02684), and PipelineSource does not describe the
-	// attachments at all -- so without this, the first pipeline built for a colour-only
-	// pass was handed straight back for a pass that also had depth.
+	// The attachments are part of the key, not just the pipeline state. A pipeline is
+	// created against specific attachment formats -- VkPipelineRenderingCreateInfo under
+	// dynamic rendering (VUID-vkCmdDraw-dynamicRenderingUnusedAttachments-08911 and
+	// friends) exactly as VkRenderPass compatibility was before -- and PipelineSource does
+	// not describe the attachments at all. Without this, the first pipeline built for a
+	// colour-only pass was handed straight back for a pass that also had depth.
 	auto hash = m_pipelineSource.GetHash() ^ ( m_renderPassSource.GetHash() * 0x9e3779b9u );
 	auto found = m_owner->m_pipelines.find( hash );
 	VkPipeline pipeline;
@@ -1163,15 +1105,19 @@ ALResult Tr2RenderContextAL::SetPipeline()
 	return S_OK;
 }
 
-void Tr2RenderContextAL::InvalidateFramebufferVulkan()
+void Tr2RenderContextAL::InvalidateAttachmentsVulkan()
 {
-	if( m_framebuffer != VK_NULL_HANDLE && m_owner )
-	{
-		vkDestroyFramebuffer( m_owner->m_device, m_framebuffer, nullptr );
-		m_framebuffer = VK_NULL_HANDLE;
-	}
-	m_renderPass = VK_NULL_HANDLE;
 	m_dirtyPass = true;
+}
+
+void Tr2RenderContextAL::EndRenderPassVulkan()
+{
+	if( m_renderingActive )
+	{
+		m_owner->m_vkCmdEndRendering( m_commandBuffer );
+		m_renderingActive = false;
+		m_dirtyPass = true;
+	}
 }
 
 void Tr2RenderContextAL::ResetConstantPoolVulkan()
@@ -1453,9 +1399,47 @@ ALResult Tr2RenderContextAL::CreatePipeline( VkPipeline& pipeline )
 		dynamicStates
 	};
 
+	// Dynamic rendering: the pipeline is created against attachment formats, not a
+	// VkRenderPass. The formats come from the same attachment descriptions SetPass builds
+	// its VkRenderingAttachmentInfo from, so the two cannot disagree; the array is
+	// positional with UNDEFINED marking an unbound slot, matching SetPass's unused
+	// attachments. The stencil format is set only when the depth format actually has a
+	// stencil aspect (VUID-VkGraphicsPipelineCreateInfo-renderPass-06054's dynamic-
+	// rendering counterpart works per aspect).
+	VkFormat colorFormats[RENDER_TARGET_COUNT];
+	uint32_t colorAttachmentCount = 0;
+	for( uint32_t i = 0; i < RENDER_TARGET_COUNT; ++i )
+	{
+		colorFormats[i] = m_renderPassSource.m_rt[i + 1].format;
+		if( colorFormats[i] != VK_FORMAT_UNDEFINED )
+		{
+			colorAttachmentCount = i + 1;
+		}
+	}
+	const VkFormat depthStencilFormat = m_renderPassSource.m_rt[0].format;
+	const VkImageAspectFlags depthStencilAspect = depthStencilFormat != VK_FORMAT_UNDEFINED
+		? TrinityALImpl::GetAspectMaskVulkan( depthStencilFormat )
+		: 0;
+
+	VkPipelineRenderingCreateInfo renderingCreateInfo = { VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+	renderingCreateInfo.viewMask = 0;
+	renderingCreateInfo.colorAttachmentCount = colorAttachmentCount;
+	renderingCreateInfo.pColorAttachmentFormats = colorAttachmentCount ? colorFormats : nullptr;
+	renderingCreateInfo.depthAttachmentFormat = ( depthStencilAspect & VK_IMAGE_ASPECT_DEPTH_BIT ) ? depthStencilFormat : VK_FORMAT_UNDEFINED;
+	renderingCreateInfo.stencilAttachmentFormat = ( depthStencilAspect & VK_IMAGE_ASPECT_STENCIL_BIT ) ? depthStencilFormat : VK_FORMAT_UNDEFINED;
+
+	// The blend state's attachmentCount has to equal colorAttachmentCount under dynamic
+	// rendering (VUID-VkGraphicsPipelineCreateInfo-renderPass-06060). The stored state is
+	// written by SetRenderState with a fixed count of one, so it is corrected on a local
+	// copy here rather than at every write site; pAttachments already points at all four
+	// per-attachment blends.
+	VkPipelineColorBlendStateCreateInfo colorBlendState = m_pipelineSource.m_colorBlendState;
+	colorBlendState.attachmentCount = colorAttachmentCount;
+	colorBlendState.pAttachments = m_pipelineSource.m_attachmentBlend;
+
 	VkGraphicsPipelineCreateInfo pipelineCreateInfo = {
 		VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-		nullptr,
+		&renderingCreateInfo,
 		0,
 		static_cast<uint32_t>( m_pipelineSource.m_shaderProgram.m_program->m_shaderInfo.size() ),
 		m_pipelineSource.m_shaderProgram.m_program->m_shaderInfo.data(),
@@ -1466,15 +1450,15 @@ ALResult Tr2RenderContextAL::CreatePipeline( VkPipeline& pipeline )
 		&m_pipelineSource.m_rasterizationState,
 		&msaa,
 		// pDepthStencilState was null unconditionally, which is legal only while no
-		// subpass has a depth attachment -- true for as long as SetDepthStencil could not
+		// pass has a depth attachment -- true for as long as SetDepthStencil could not
 		// bind one. With one bound it is VUID-VkGraphicsPipelineCreateInfo-renderPass-09028.
 		// The state itself has been carried in m_pipelineSource since before this backend
 		// could use it; SetRenderState is what fills it in.
 		m_renderPassSource.m_rt[0].format != VK_FORMAT_UNDEFINED ? &m_pipelineSource.m_depthStencilState : nullptr,
-		&m_pipelineSource.m_colorBlendState,
+		&colorBlendState,
 		&dynamicInfo,
 		m_pipelineSource.m_shaderProgram.m_program->m_pipelineLayout,
-		m_renderPass,
+		VK_NULL_HANDLE,
 		0,
 		VK_NULL_HANDLE,
 		-1

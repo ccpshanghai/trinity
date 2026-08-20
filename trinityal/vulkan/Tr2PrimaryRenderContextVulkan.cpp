@@ -380,7 +380,9 @@ Tr2PrimaryRenderContextAL::Tr2PrimaryRenderContextAL()
 	m_commandBufferRecording( false ),
 	m_recordingFrame( 0 ),
 	m_flushedFrame( 0 ),
-	m_needsSwapChainRebuild( false )
+	m_needsSwapChainRebuild( false ),
+	m_vkCmdBeginRendering( nullptr ),
+	m_vkCmdEndRendering( nullptr )
 {
 	m_defaultBackBuffer.m_texture = std::make_shared<TrinityALImpl::Tr2TextureAL>();
 }
@@ -465,10 +467,34 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		queueCreateInfos.push_back( presentQueueInfo );
 	}
 
-	const char* extensions[] = {
-		VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-		VK_KHR_MAINTENANCE1_EXTENSION_NAME
-	};
+	std::vector<const char*> extensions;
+	extensions.push_back( VK_KHR_SWAPCHAIN_EXTENSION_NAME );
+	extensions.push_back( VK_KHR_MAINTENANCE1_EXTENSION_NAME );
+
+	// Dynamic rendering is how every pass is recorded -- there is no VkRenderPass path to
+	// fall back to, so a device that cannot do it cannot run this backend, and the honest
+	// answer is a clean failure here rather than an invalid begin later. It is core in
+	// 1.3; below that it is VK_KHR_dynamic_rendering and has to be named at device
+	// creation. Its dependencies are core from 1.2, which is as far down as this reaches:
+	// a 1.1 device that has the extension also needs VK_KHR_depth_stencil_resolve and
+	// VK_KHR_create_renderpass2 spelled out, and no target of this backend is in that
+	// bracket -- Android's floor is 1.3-or-extension-on-1.2 in practice, and desktop
+	// drivers this century are 1.3.
+	VkPhysicalDeviceDynamicRenderingFeatures supportedDynamicRendering = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES };
+	VkPhysicalDeviceFeatures2 supportedFeatures2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &supportedDynamicRendering };
+	vkGetPhysicalDeviceFeatures2( physicalDevice.device, &supportedFeatures2 );
+	if( !supportedDynamicRendering.dynamicRendering )
+	{
+		CCP_AL_LOGERR( "Vulkan device does not support dynamic rendering (core 1.3 or VK_KHR_dynamic_rendering); the Vulkan backend requires it" );
+		return E_FAIL;
+	}
+	if( physicalDevice.properties.apiVersion < VK_API_VERSION_1_3 )
+	{
+		extensions.push_back( VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME );
+	}
+
+	VkPhysicalDeviceDynamicRenderingFeatures enabledDynamicRendering = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES };
+	enabledDynamicRendering.dynamicRendering = VK_TRUE;
 
 	// pEnabledFeatures was null, which enables nothing at all -- and a Vulkan feature that
 	// is not enabled is not merely slower, it is illegal to use. Four validation findings
@@ -500,18 +526,37 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 
 	VkDeviceCreateInfo device_create_info = {
 		VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-		nullptr,
+		&enabledDynamicRendering,
 		0,
 		uint32_t( queueCreateInfos.size() ),
 		&queueCreateInfos[0],
 		0,
 		nullptr,
-		_countof( extensions ),
-		extensions,
+		uint32_t( extensions.size() ),
+		extensions.data(),
 		&enabledFeatures
 	};
 
 	CR_RETURN_HR( Vk2Al( vkCreateDevice( physicalDevice.device, &device_create_info, nullptr, &device ) ) );
+
+	// Core name first, KHR alias second -- see the member's comment for why the loader's
+	// exported symbol is not used. Fetched immediately after device creation so nothing
+	// below can run without them.
+	PFN_vkCmdBeginRendering beginRendering = reinterpret_cast<PFN_vkCmdBeginRendering>( vkGetDeviceProcAddr( device, "vkCmdBeginRendering" ) );
+	if( !beginRendering )
+	{
+		beginRendering = reinterpret_cast<PFN_vkCmdBeginRendering>( vkGetDeviceProcAddr( device, "vkCmdBeginRenderingKHR" ) );
+	}
+	PFN_vkCmdEndRendering endRendering = reinterpret_cast<PFN_vkCmdEndRendering>( vkGetDeviceProcAddr( device, "vkCmdEndRendering" ) );
+	if( !endRendering )
+	{
+		endRendering = reinterpret_cast<PFN_vkCmdEndRendering>( vkGetDeviceProcAddr( device, "vkCmdEndRenderingKHR" ) );
+	}
+	if( !beginRendering || !endRendering )
+	{
+		CCP_AL_LOGERR( "vkCmdBeginRendering/vkCmdEndRendering not resolvable despite the dynamicRendering feature" );
+		return E_FAIL;
+	}
 
 	Tr2DisplayModeInfo actualMode = presentationParameters.mode;
 
@@ -584,6 +629,8 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	m_physicalDevice = physicalDevice.device;
 	m_physicalDeviceProperties = physicalDevice.properties;
 	m_enabledFeatures = enabledFeatures;
+	m_vkCmdBeginRendering = beginRendering;
+	m_vkCmdEndRendering = endRendering;
 	m_presentParameters = presentationParameters;
 	m_needsSwapChainRebuild = false;
 	m_surface = surface;
@@ -643,12 +690,6 @@ void Tr2PrimaryRenderContextAL::Destroy()
 		vkDestroyPipeline( m_device, it->second, nullptr );
 	}
 	m_pipelines.clear();
-
-	for( auto it = begin( m_renderPasses ); it != end( m_renderPasses ); ++it )
-	{
-		vkDestroyRenderPass( m_device, it->second, nullptr );
-	}
-	m_renderPasses.clear();
 
 	m_defaultBackBuffer.m_texture->Destroy();
 
@@ -757,9 +798,8 @@ ALResult Tr2PrimaryRenderContextAL::RebuildSwapChainVulkan()
 	// swapchain and Tr2TextureAL::Destroy already knows not to touch those.
 	m_defaultBackBuffer.m_texture->Destroy();
 
-	// The framebuffer references image views that have just been destroyed. The render pass
-	// cache can stay -- a VkRenderPass describes formats, not images.
-	InvalidateFramebufferVulkan();
+	// The next pass must not begin against image views that have just been destroyed.
+	InvalidateAttachmentsVulkan();
 
 	// Build the replacement first, handing the old swapchain over so the driver can reuse
 	// what it can. Nothing is destroyed until this succeeds, so a failure here leaves a
@@ -847,11 +887,7 @@ ALResult Tr2PrimaryRenderContextAL::SetPresentParameters( unsigned, const Tr2Pre
 	// The command buffer is mid-recording here, and RebuildSwapChainVulkan waits the device
 	// idle -- which is legal, but whatever was recorded for this frame is discarded along
 	// with the framebuffer it referenced. BeginFrame starts a clean one.
-	if( m_renderPass )
-	{
-		vkCmdEndRenderPass( m_commandBuffer );
-		m_renderPass = VK_NULL_HANDLE;
-	}
+	EndRenderPassVulkan();
 	vkEndCommandBuffer( m_commandBuffer );
 	m_commandBufferRecording = false;
 
@@ -882,11 +918,7 @@ ALResult Tr2PrimaryRenderContextAL::Present()
 		return S_FALSE;
 	}
 
-	if( m_renderPass )
-	{
-		vkCmdEndRenderPass( m_commandBuffer );
-		m_renderPass = VK_NULL_HANDLE;
-	}
+	EndRenderPassVulkan();
 
 	// Whatever the frame left it in -- COLOR_ATTACHMENT_OPTIMAL after a draw,
 	// TRANSFER_DST_OPTIMAL after a clear -- into PRESENT_SRC_KHR. The old barrier named
@@ -1000,11 +1032,7 @@ ALResult Tr2PrimaryRenderContextAL::FlushAndSyncVulkan()
 	// but it does mean a caller that flushes mid-pass pays a pass restart, which on a
 	// tiler is a resolve and a reload. That is the tile-GPU cost this backend's design
 	// notes warn about, and it is why this is a readback path and not a general one.
-	if( m_renderPass )
-	{
-		vkCmdEndRenderPass( m_commandBuffer );
-		m_renderPass = VK_NULL_HANDLE;
-	}
+	EndRenderPassVulkan();
 
 	CR_RETURN_HR( Vk2Al( vkEndCommandBuffer( m_commandBuffer ) ) );
 	m_commandBufferRecording = false;

@@ -313,8 +313,6 @@ public:
 
 private:
 	ALResult SetPass();
-	ALResult CreateRenderPass( VkRenderPass& renderPass );
-	void UpdateFramebuffer();
 
 	ALResult SetPipeline();
 	ALResult CreatePipeline( VkPipeline& pipeline );
@@ -340,6 +338,11 @@ private:
 		size_t GetHash() const;
 	} m_pipelineSource;
 
+	// Still an array of VkAttachmentDescription even though no VkRenderPass is created
+	// from it any more: the struct carries exactly the fields dynamic rendering needs
+	// (format, samples, the four ops, the layouts), SetRenderTarget/SetDepthStencil
+	// already fill it in, and its hash doubles as the attachment half of the pipeline
+	// key. Slot 0 is the depth attachment, slots 1-4 the colour slots.
 	struct RenderPassSource
 	{
 		VkAttachmentDescription m_rt[5]; //  0 - ds
@@ -360,8 +363,6 @@ private:
 	bool m_dirtyPso;
 	bool m_dirtyPass;
 	std::pair<uint32_t, uint32_t> m_primitiveToVertexCount;
-
-	VkFramebuffer m_framebuffer;
 
 	Tr2ResourceSetAL m_resourceSet;
 
@@ -403,10 +404,27 @@ protected:
 	Tr2Viewport m_viewport;
 	bool m_viewportSet;
 	Tr2PrimaryRenderContextAL* m_owner;
-	VkRenderPass m_renderPass;
+
+	// True between vkCmdBeginRendering and vkCmdEndRendering. Dynamic rendering has no
+	// handle to test the way the old VkRenderPass member doubled as one, so the state is
+	// tracked explicitly.
+	bool m_renderingActive;
 
 public:
-	// Close any render pass instance that is open, so that a command which is illegal
+	// Recycle the frame's constant descriptor sets. Only safe once the frame's fence has
+	// been waited on, which is why the primary render context calls it from BeginFrame and
+	// nothing else calls it at all.
+	void ResetConstantPoolVulkan();
+
+	// Force the next draw to re-begin rendering. Needed when the images the attachments
+	// referenced have been destroyed under it -- a swapchain rebuild is the only thing
+	// that does that. With dynamic rendering nothing caches an image view between passes,
+	// so all this has to do is mark the pass dirty; it exists as a named operation because
+	// the rebuild's contract ("the next frame must not touch the old images") is easier to
+	// see at the call site than a bare flag assignment.
+	void InvalidateAttachmentsVulkan();
+
+	// Close any rendering instance that is open, so that a command which is illegal
 	// inside one can be recorded. vkCmdResetQueryPool is the case that needs it; the
 	// clear path in Tr2RenderContextVulkan.cpp does the same thing inline for
 	// vkCmdClearColorImage. Setting m_dirtyPass is what makes SetPipeline re-open the
@@ -414,29 +432,7 @@ public:
 	//
 	// On a tiler this is a resolve and a reload, so it is not free; it is here because
 	// Vulkan 1.0 has no host-side vkResetQueryPool, which arrived in 1.2.
-	// Recycle the frame's constant descriptor sets. Only safe once the frame's fence has
-	// been waited on, which is why the primary render context calls it from BeginFrame and
-	// nothing else calls it at all.
-	void ResetConstantPoolVulkan();
-
-	// Throw away the cached framebuffer and force the next draw to rebuild the pass. Needed
-	// when the images the framebuffer referenced have been destroyed under it -- a swapchain
-	// rebuild is the only thing that does that, and a VkFramebuffer naming a destroyed
-	// VkImageView is not something the next vkCmdBeginRenderPass survives.
-	//
-	// The render pass cache is deliberately left alone: a VkRenderPass describes formats and
-	// layouts, not images, so it stays valid across a rebuild.
-	void InvalidateFramebufferVulkan();
-
-	void EndRenderPassVulkan()
-	{
-		if( m_renderPass )
-		{
-			vkCmdEndRenderPass( m_commandBuffer );
-			m_renderPass = VK_NULL_HANDLE;
-			m_dirtyPass = true;
-		}
-	}
+	void EndRenderPassVulkan();
 
 	VkCommandBuffer m_commandBuffer;
 
