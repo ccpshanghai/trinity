@@ -48,6 +48,7 @@ Tr2RenderContextAL::Tr2RenderContextAL() throw( )
 	:m_dirtyPso( true ),
 	m_dirtyPass( true ),
 	m_owner( nullptr ),
+	m_readOnlyDepth( false ),
 	m_renderingActive( false ),
 	m_commandBuffer( VK_NULL_HANDLE ),
 	m_constantPool( VK_NULL_HANDLE ),
@@ -914,7 +915,9 @@ ALResult Tr2RenderContextAL::SetPass()
 	}
 	if( m_boundDepthStencil.IsValid() )
 	{
-		m_boundDepthStencil.m_texture->TransitionVulkan( m_commandBuffer, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
+		m_boundDepthStencil.m_texture->TransitionVulkan( m_commandBuffer, m_readOnlyDepth
+			? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+			: VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
 	}
 	for( uint32_t i = 0; i < RENDER_TARGET_COUNT; ++i )
 	{
@@ -972,10 +975,13 @@ ALResult Tr2RenderContextAL::SetPass()
 	if( m_renderPassSource.m_rt[0].format != VK_FORMAT_UNDEFINED && m_boundDepthStencil.IsValid() )
 	{
 		const VkImageAspectFlags aspect = TrinityALImpl::GetAspectMaskVulkan( m_renderPassSource.m_rt[0].format );
+		const VkImageLayout depthLayout = m_readOnlyDepth
+			? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+			: VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		if( aspect & VK_IMAGE_ASPECT_DEPTH_BIT )
 		{
 			depthAttachment.imageView = m_boundDepthStencil.m_texture->GetAttachmentViewVulkan( 0, 0 );
-			depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+			depthAttachment.imageLayout = depthLayout;
 			depthAttachment.loadOp = m_renderPassSource.m_rt[0].loadOp;
 			depthAttachment.storeOp = m_renderPassSource.m_rt[0].storeOp;
 			haveDepth = true;
@@ -985,7 +991,7 @@ ALResult Tr2RenderContextAL::SetPass()
 			// The stencil aspect is governed by the stencil ops, exactly as the
 			// VkAttachmentDescription's stencilLoadOp/stencilStoreOp governed it before.
 			stencilAttachment.imageView = m_boundDepthStencil.m_texture->GetAttachmentViewVulkan( 0, 0 );
-			stencilAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+			stencilAttachment.imageLayout = depthLayout;
 			stencilAttachment.loadOp = m_renderPassSource.m_rt[0].stencilLoadOp;
 			stencilAttachment.storeOp = m_renderPassSource.m_rt[0].stencilStoreOp;
 			haveStencil = true;

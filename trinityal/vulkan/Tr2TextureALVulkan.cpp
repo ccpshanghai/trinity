@@ -105,6 +105,22 @@ namespace TrinityALImpl
 		Destroy();
 	}
 
+	namespace
+	{
+		// The aspect a sampled-image view may name. A combined depth/stencil format has
+		// two aspects and a descriptor view must pick one; depth is the one anything
+		// here samples. Everything else passes through unchanged.
+		VkImageAspectFlags SampledAspectVulkan( VkFormat format )
+		{
+			const VkImageAspectFlags aspect = GetAspectMaskVulkan( format );
+			if( ( aspect & VK_IMAGE_ASPECT_DEPTH_BIT ) && ( aspect & VK_IMAGE_ASPECT_STENCIL_BIT ) )
+			{
+				return VK_IMAGE_ASPECT_DEPTH_BIT;
+			}
+			return aspect;
+		}
+	}
+
 	ALResult Tr2TextureAL::Create( const Tr2BitmapDimensions& desc, const Tr2MsaaDesc& msaa, Tr2GpuUsage::Type gpuUsage, Tr2CpuUsage::Type cpuUsage, Tr2SubresourceData* initialData, Tr2PrimaryRenderContextAL& renderContext )
 	{
 		Destroy();
@@ -194,9 +210,16 @@ namespace TrinityALImpl
 		VkImage image;
 		VkDeviceMemory memory;
 
-		const VkImageCreateFlags imageFlags = srgbFormat != VK_FORMAT_UNDEFINED
+		VkImageCreateFlags imageFlags = srgbFormat != VK_FORMAT_UNDEFINED
 			? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT
 			: 0;
+		if( desc.GetType() == Tr2RenderContextEnum::TEX_TYPE_CUBE )
+		{
+			// Without this a cube view over the image is illegal, and the 2D view that
+			// stood in for one was VUID-VkImageViewCreateInfo-imageViewType-04973 -- a 2D
+			// view is one layer, and this one claimed six.
+			imageFlags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+		}
 
 		CR_RETURN_HR( CreateImage( image, memory, desc, msaa, usage, imageFlags, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, renderContext ) );
 
@@ -205,7 +228,13 @@ namespace TrinityALImpl
 			nullptr,
 			0,
 			image,
-			desc.GetType() == Tr2RenderContextEnum::TEX_TYPE_3D ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D,
+			desc.GetType() == Tr2RenderContextEnum::TEX_TYPE_3D ? VK_IMAGE_VIEW_TYPE_3D
+				: desc.GetType() == Tr2RenderContextEnum::TEX_TYPE_CUBE ? VK_IMAGE_VIEW_TYPE_CUBE
+				// A 2D view is one layer by definition; a texture with more is an array
+				// and its view has to say so (04973). A shader that samples it declares
+				// Texture2DArray, so the descriptor's view type matches either way.
+				: desc.GetArraySize() > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+				: VK_IMAGE_VIEW_TYPE_2D,
 			GetVulkanFormat( desc.GetFormat() ),
 			{
 				VK_COMPONENT_SWIZZLE_IDENTITY,
@@ -217,7 +246,13 @@ namespace TrinityALImpl
 				// Not COLOR unconditionally: a depth format has no colour aspect, and
 				// vkCreateImageView rejects the mismatch. This is the first thing that has
 				// to be right before a depth buffer can be created at all.
-				GetAspectMaskVulkan( GetVulkanFormat( desc.GetFormat() ) ),
+				//
+				// And for a combined depth/stencil format, DEPTH alone: this view is what
+				// descriptors sample through, and a sampled view of such a format must
+				// name exactly one aspect (VUID-VkDescriptorImageInfo-imageView-01976).
+				// The attachment views keep both aspects -- they are built separately in
+				// GetAttachmentViewVulkan, where both are required.
+				SampledAspectVulkan( GetVulkanFormat( desc.GetFormat() ) ),
 				0,
 				desc.GetTrueMipCount(),
 				0,
@@ -1050,8 +1085,12 @@ namespace TrinityALImpl
 		}
 
 		// The common case, and the only one the swapchain ever hits: a texture with one
-		// level and one layer already has a view of exactly the right shape.
-		if( mip == 0 && layer == 0 && m_desc.GetTrueMipCount() <= 1 && m_desc.GetArraySize() <= 1 )
+		// level and one layer already has a view of exactly the right shape. Except a
+		// combined depth/stencil format: its main view names the depth aspect alone so
+		// descriptors can sample it (01976), and an attachment view has to carry both
+		// aspects -- the shapes diverged, so the shortcut no longer applies there.
+		if( mip == 0 && layer == 0 && m_desc.GetTrueMipCount() <= 1 && m_desc.GetArraySize() <= 1
+			&& SampledAspectVulkan( m_format ) == GetAspectMaskVulkan( m_format ) )
 		{
 			return m_imageViews[m_currentIndex];
 		}

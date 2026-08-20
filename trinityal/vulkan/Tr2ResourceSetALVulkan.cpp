@@ -176,9 +176,19 @@ namespace TrinityALImpl
 						// first. Identical for every single-image texture, which is all the
 						// suite exercises.
 						imageInfo.imageView = resource.texture.m_texture->GetImageView( resource.colorSpace );
-						imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+						// A depth-format SRV lives in DEPTH_STENCIL_READ_ONLY_OPTIMAL, not
+						// SHADER_READ_ONLY: that is the one layout that is simultaneously
+						// legal to sample and legal as a read-only depth attachment, so a
+						// depth buffer sampled while still bound (SetReadOnlyDepth) needs
+						// no per-draw layout juggling -- the descriptor, the transition
+						// target and the attachment all agree on it.
+						const VkImageLayout srvLayout =
+							( GetAspectMaskVulkan( resource.texture.m_texture->m_format ) & VK_IMAGE_ASPECT_DEPTH_BIT )
+								? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+								: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+						imageInfo.imageLayout = srvLayout;
 						imageInfos.push_back( imageInfo );
-						BoundImageVulkan bound = { resource.texture, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+						BoundImageVulkan bound = { resource.texture, srvLayout };
 						m_boundImages.push_back( bound );
 						d.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 						d.pImageInfo = &imageInfos.back();

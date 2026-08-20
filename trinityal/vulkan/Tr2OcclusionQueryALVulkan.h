@@ -99,6 +99,12 @@ namespace TrinityALImpl
 			{
 				return E_INVALIDARG;
 			}
+
+			// Begin ran outside any rendering instance (it has to -- vkCmdResetQueryPool
+			// is illegal inside one), and a query begun outside must end outside
+			// (VUID-vkCmdEndQuery-None-07007). The draws between Begin and End opened a
+			// pass lazily; close it, the same way Begin does.
+			renderContext.EndRenderPassVulkan();
 			vkCmdEndQuery( renderContext.m_commandBuffer, m_queryPool, 0 );
 
 			// The result belongs to the frame that recorded it, and cannot be read before

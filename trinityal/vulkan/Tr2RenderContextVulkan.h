@@ -163,13 +163,21 @@ public:
 		uint32_t unusedArgument = 0 ) throw( );
 
 	ALResult SetDepthStencil( const Tr2TextureAL& depthStencil ) throw( );
+	// Real, not the stub it was: with this set the depth attachment is bound in
+	// DEPTH_STENCIL_READ_ONLY_OPTIMAL, which is what lets the same depth buffer be
+	// sampled by the very draw that is depth-testing against it -- the only reason a
+	// caller sets this.
 	void SetReadOnlyDepth( bool enable ) throw( )
 	{
-
+		if( m_readOnlyDepth != enable )
+		{
+			m_readOnlyDepth = enable;
+			m_dirtyPass = true;
+		}
 	}
 	bool GetReadOnlyDepth() const
 	{
-		return false;
+		return m_readOnlyDepth;
 	}
 	ALResult SetRenderTarget( const Tr2TextureAL& renderTarget, uint32_t slot = 0, uint32_t slice = 0 ) throw();
 
@@ -362,6 +370,7 @@ private:
 
 	bool m_dirtyPso;
 	bool m_dirtyPass;
+	bool m_readOnlyDepth;
 	std::pair<uint32_t, uint32_t> m_primitiveToVertexCount;
 
 	Tr2ResourceSetAL m_resourceSet;
