@@ -2,8 +2,7 @@
   "dependencies": [
     {
       "name": "gtest",
-      "version>=": "1.16.0",
-      "host": true
+      "version>=": "1.16.0"
     },
     {
       "name": "carbon-core",
@@ -15,19 +14,23 @@
     },
     {
       "name": "libsquish",
-      "version>=": "1.15"
+      "version>=": "1.15",
+      "platform": "!ios"
     },
     {
       "name": "amd-fidelityfx-cas",
-      "version>=": "1.0"
+      "version>=": "1.0",
+      "platform": "!ios"
     },
     {
       "name": "amd-fidelityfx-cacao",
-      "version>=": "1.2"
+      "version>=": "1.2",
+      "platform": "!ios"
     },
     {
       "name": "tbb",
-      "version>=": "2021.5.0#1"
+      "version>=": "2021.5.0#1",
+      "platform": "!ios"
     },
     {
       "name": "vulkan-headers",
@@ -39,27 +42,33 @@
     },
     {
       "name": "carbon-trinityaudioapi",
-      "version>=": "2.0.3"
+      "version>=": "2.0.3",
+      "platform": "!ios"
     },
     {
       "name": "freetype",
-      "version>=": "2.13.3"
+      "version>=": "2.13.3",
+      "platform": "!ios"
     },
     {
       "name": "carbon-pdmprotowrapper",
-      "version>=": "2.0.4"
+      "version>=": "2.0.4",
+      "platform": "!ios"
     },
     {
       "name": "carbon-blue",
-      "version>=": "6.0.0"
+      "version>=": "6.0.0",
+      "platform": "!ios"
     },
     {
       "name": "carbon-math",
-      "version>=": "1.2.1"
+      "version>=": "1.2.1",
+      "platform": "!ios"
     },
     {
       "name": "carbon-parser",
-      "version>=": "1.0.2"
+      "version>=": "1.0.2",
+      "platform": "!ios"
     },
     {
       "name": "libpng",
@@ -75,7 +84,8 @@
     },
     {
       "name": "carbon-mesh",
-      "version>=": "1.0.1"
+      "version>=": "1.0.1",
+      "platform": "!ios"
     }
   ],
   "features": {
@@ -164,7 +174,7 @@
     },
     "metal": {
       "description": "Create Metal targets",
-      "supports": "osx",
+      "supports": "osx | ios",
       "dependencies": [
         {
           "name": "amd-fidelityfx-fsr",

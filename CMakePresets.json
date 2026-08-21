@@ -94,6 +94,30 @@
       }
     },
     {
+      "name": "arm64-ios-simulator-metal",
+      "displayName": "M3 Metal AL for the iOS simulator (Release, AL tests)",
+      "inherits": "arm64-ios-simulator-release",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "BUILD_METAL": "ON",
+        "BUILD_SHADER_COMPILER": "OFF",
+        "BUILD_TESTING": "ON",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "OFF"
+      }
+    },
+    {
+      "name": "arm64-ios-metal",
+      "displayName": "M3 Metal AL for iOS devices (Release, AL tests)",
+      "inherits": "arm64-ios-release",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "BUILD_METAL": "ON",
+        "BUILD_SHADER_COMPILER": "OFF",
+        "BUILD_TESTING": "ON",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "OFF"
+      }
+    },
+    {
       "name": "x64-windows-internal",
       "inherits": "x64-windows",
       "cacheVariables": {
