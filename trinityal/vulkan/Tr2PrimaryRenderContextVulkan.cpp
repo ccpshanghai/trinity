@@ -730,8 +730,17 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	// buffer gets sRGB views.
 	m_swapChainMutableFormat = swapChainMutableFormat;
 	m_presentParameters = presentationParameters;
-	// The surface was created from focusWindow, which is the handle RecreateSurfaceVulkan
-	// must compare against. Callers usually set outputWindow to the same value.
+	// CreatePresentationSurface above was built from focusWindow, not from
+	// presentationParameters.outputWindow -- verified every current caller passes the
+	// same handle for both (trinityal/tests/RenderContextCreation.cpp,
+	// WithValidRenderContextFixture.cpp and SwapChainResizing.cpp; trinity/TriDevice.cpp
+	// CreateSimpleDevice and ChangeDevice/ResetDevice; trinity/UI/Tr2MainWindow.cpp), so
+	// this line changes nothing any of them observe today. It is kept because
+	// RecreateSurfaceVulkan and SetPresentParameters's windowChanged check both read
+	// m_presentParameters.outputWindow as the record of what the live VkSurfaceKHR was
+	// actually built from -- that has to be focusWindow regardless of what a future
+	// caller writes into presentationParameters.outputWindow, or the window-change
+	// detection and the surface rebuild it drives would work off a value nobody used.
 	m_presentParameters.outputWindow = focusWindow;
 	m_needsSwapChainRebuild = false;
 	m_surface = surface;
@@ -1024,10 +1033,11 @@ ALResult Tr2PrimaryRenderContextAL::RecreateSurfaceVulkan()
 		m_swapChain = VK_NULL_HANDLE;
 	}
 
+	VkInstance instance;
+	FORWARD_HR( TrinityALImpl::GetVulkanInstance( instance ) );
+
 	if( m_surface != VK_NULL_HANDLE )
 	{
-		VkInstance instance;
-		TrinityALImpl::GetVulkanInstance( instance );
 		vkDestroySurfaceKHR( instance, m_surface, nullptr );
 		m_surface = VK_NULL_HANDLE;
 	}
@@ -1038,8 +1048,6 @@ ALResult Tr2PrimaryRenderContextAL::RecreateSurfaceVulkan()
 		return S_OK;
 	}
 
-	VkInstance instance;
-	FORWARD_HR( TrinityALImpl::GetVulkanInstance( instance ) );
 	FORWARD_HR( CreatePresentationSurface( instance, m_presentParameters.outputWindow, m_surface ) );
 	return S_OK;
 }
