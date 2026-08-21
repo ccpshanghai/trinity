@@ -22,6 +22,19 @@
 namespace TrinityALImpl
 {
 
+// Managed exists only where CPU and GPU memory are separate. On unified-memory
+// devices (every iPhone, Apple-silicon Macs still accept Managed) Shared is the
+// mode with the same "CPU writes, GPU reads" meaning and no didModifyRange
+// obligation. Asked per device, never per OS (spec D7).
+MTLResourceOptions MetalDefaultUploadStorageMode( id<MTLDevice> device );
+
+// Depth24Unorm_Stencil8 is a macOS-only pixel format, and even there optional
+// (emulated on Intel/AMD, unsupported on Apple Silicon -- see the HACK comment
+// this replaces in MetalUtils.mm). Fall back per capability, not per OS
+// (spec D7): iOS devices always answer NO, since the query itself is
+// macOS-only API.
+MTLPixelFormat MetalDefaultDepthStencilPixelFormat( id<MTLDevice> device );
+
 struct MetalColor
 {
 	float red;
@@ -33,7 +46,7 @@ struct MetalColor
 class MetalUtils
 {
 public:
-	MetalUtils();
+	MetalUtils( id<MTLDevice> device );
 	~MetalUtils();
 
 	MTLPixelFormat GetMTLPixelFormat( Tr2RenderContextEnum::PixelFormat pixelFormat );
@@ -52,7 +65,7 @@ private:
 	// Uh, this array size is a little sketchy
 	MTLVertexFormat VertexFormatConversionTable[METAL_SIZEOF_VERTEX_FORMAT_TABLE];
 
-	void SetupPixelFormatConversionTable();
+	void SetupPixelFormatConversionTable( id<MTLDevice> device );
 	void SetupVertexFormatConversionTable();
 };
 

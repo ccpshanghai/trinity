@@ -2,6 +2,7 @@
 
 #if TRINITY_PLATFORM == TRINITY_METAL
 #import <Foundation/Foundation.h>
+#include <TargetConditionals.h>
 #include "MetalContext.h"
 #include "ALLog.h"
 
@@ -26,8 +27,10 @@ MetalContext::MetalContext() :
 	m_beginGpuTime( 0 ),
 	m_gpuTimerRateMeasured( false )
 {
-	m_utils = new MetalUtils;
+	// MetalUtils' pixel-format table needs the device to query D24S8 support
+	// (spec D7), so the device must exist before MetalUtils does.
 	m_device = MTLCreateSystemDefaultDevice();
+	m_utils = new MetalUtils( m_device );
 	m_commandQueue = [m_device newCommandQueueWithMaxCommandBufferCount:1024];
 
 	bool isNvidia = [m_device.name rangeOfString:@"NVidia" options:NSCaseInsensitiveSearch].location != NSNotFound;
@@ -109,9 +112,12 @@ id<MTLBuffer> MetalContext::CreateMetalBuffer( MetalWorkQueue* workQueue,
 	{
 		if( storageMode == MTLStorageModePrivate )
 		{
+			// Write-once via newBufferWithBytes: the initial contents are synced by
+			// the allocator itself; this staging buffer is blitted to `buffer` below
+			// and destroyed right after, so no didModifyRange is needed.
 			id<MTLBuffer> staging = [m_device newBufferWithBytes:data
 														  length:sizeInBytes
-														 options:MTLResourceStorageModeManaged];
+														 options:MetalDefaultUploadStorageMode( m_device )];
 			buffer = [m_device newBufferWithLength:sizeInBytes options:options];
 			workQueue->CopyBufferToBuffer( buffer, 0, staging, 0, sizeInBytes );
 			DestroyMetalBuffer( staging );
@@ -152,7 +158,16 @@ void MetalContext::DestroyVertexLayout( MTLVertexDescriptor* vertexDescriptor )
 
 void MetalContext::IndicateBufferModified( id<MTLBuffer> buffer, size_t offset, size_t length )
 {
-	[buffer didModifyRange:NSMakeRange( offset, length )];
+	// Central sync point for every CPU-written buffer created through
+	// CreateMetalBuffer (Tr2BufferAL and Tr2TextureAL's write-mapped buffers).
+	// Managed needs the explicit sync after a CPU write; Shared (everywhere
+	// else, spec D7) makes it a no-op, and didModifyRange itself is macOS-only API.
+#if TARGET_OS_OSX
+	if( buffer.storageMode == MTLStorageModeManaged )
+	{
+		[buffer didModifyRange:NSMakeRange( offset, length )];
+	}
+#endif
 }
 
 void MetalContext::DestroyConstantBuffer( void* buffer )

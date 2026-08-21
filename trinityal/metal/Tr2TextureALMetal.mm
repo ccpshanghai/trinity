@@ -450,10 +450,13 @@ ALResult Tr2TextureAL::MapForReading( const Tr2TextureSubresource& region,
 	auto mipPitch = m_desc.GetMipPitch( readMipLevel );
 	auto bufferSize = m_desc.GetMipSize( readMipLevel );
 
+	// GPU-written only: filled by CopyTextureToMTLBuffer's blit below, then the
+	// CPU reads m_mtlReadBackBuffer.contents directly. No CPU write ever happens
+	// to this buffer, so no didModifyRange is needed for either allocation of it.
 	if( !m_mtlReadBackBuffer )
 	{
 		m_mtlReadBackBuffer = metalContext->CreateMetalBuffer(
-			renderContext.GetMetalWorkQueue(), bufferSize, MTLResourceStorageModeManaged, nil );
+			renderContext.GetMetalWorkQueue(), bufferSize, MetalDefaultUploadStorageMode( metalContext->GetDevice() ), nil );
 		m_memory.Grow( bufferSize );
 	}
 	// We recreate the buffer if it's not an exact match but we could just do this for larger buffers if performance is an issue
@@ -462,7 +465,7 @@ ALResult Tr2TextureAL::MapForReading( const Tr2TextureSubresource& region,
 		m_memory.Shrink( m_mtlReadBackBuffer.length );
 		metalContext->DestroyMetalBuffer( m_mtlReadBackBuffer );
 		m_mtlReadBackBuffer = metalContext->CreateMetalBuffer(
-			renderContext.GetMetalWorkQueue(), bufferSize, MTLResourceStorageModeManaged, nil );
+			renderContext.GetMetalWorkQueue(), bufferSize, MetalDefaultUploadStorageMode( metalContext->GetDevice() ), nil );
 		m_memory.Grow( bufferSize );
 	}
 
@@ -564,10 +567,14 @@ ALResult Tr2TextureAL::MapForWriting( const Tr2TextureSubresource& region,
 		}
 	}
 
+	// CPU-write-mapped staging buffer for all three allocations below; synced by
+	// UnmapForWriting's IndicateBufferModified call, guarded by storage mode there.
 	if( !m_mtlWriteBuffer )
 	{
-		m_mtlWriteBuffer = metalContext->CreateMetalBuffer(
-			renderContext.GetMetalWorkQueue(), m_desc.GetMipSize( 0 ), MTLResourceStorageModeManaged, nil );
+		m_mtlWriteBuffer = metalContext->CreateMetalBuffer( renderContext.GetMetalWorkQueue(),
+															 m_desc.GetMipSize( 0 ),
+															 MetalDefaultUploadStorageMode( metalContext->GetDevice() ),
+															 nil );
 		m_memory.Grow( m_mtlWriteBuffer.length );
 	}
 	uint32_t start = 0;
@@ -591,10 +598,13 @@ ALResult Tr2TextureAL::MapForWriting( const Tr2TextureSubresource& region,
 			{
 				m_memory.Shrink( m_mtlWriteBuffer.length );
 				metalContext->DestroyMetalBuffer( m_mtlWriteBuffer );
-				m_mtlWriteBuffer = metalContext->CreateMetalBuffer( renderContext.GetMetalWorkQueue(),
-																	m_desc.GetMipSize( 0 ) + m_mtlWriteBuffer.length,
-																	MTLResourceStorageModeManaged,
-																	nil );
+				// Regrow of the same CPU-write-mapped staging buffer above; same
+				// UnmapForWriting/IndicateBufferModified sync pairing applies.
+				m_mtlWriteBuffer = metalContext->CreateMetalBuffer(
+					renderContext.GetMetalWorkQueue(),
+					m_desc.GetMipSize( 0 ) + m_mtlWriteBuffer.length,
+					MetalDefaultUploadStorageMode( metalContext->GetDevice() ),
+					nil );
 				m_memory.Grow( m_mtlWriteBuffer.length );
 				m_mappedRanges.clear();
 				start = 0;
@@ -610,10 +620,13 @@ ALResult Tr2TextureAL::MapForWriting( const Tr2TextureSubresource& region,
 			{
 				m_memory.Shrink( m_mtlWriteBuffer.length );
 				metalContext->DestroyMetalBuffer( m_mtlWriteBuffer );
-				m_mtlWriteBuffer = metalContext->CreateMetalBuffer( renderContext.GetMetalWorkQueue(),
-																	m_desc.GetMipSize( 0 ) + m_mtlWriteBuffer.length,
-																	MTLResourceStorageModeManaged,
-																	nil );
+				// Regrow of the same CPU-write-mapped staging buffer above; same
+				// UnmapForWriting/IndicateBufferModified sync pairing applies.
+				m_mtlWriteBuffer = metalContext->CreateMetalBuffer(
+					renderContext.GetMetalWorkQueue(),
+					m_desc.GetMipSize( 0 ) + m_mtlWriteBuffer.length,
+					MetalDefaultUploadStorageMode( metalContext->GetDevice() ),
+					nil );
 				m_memory.Grow( m_mtlWriteBuffer.length );
 				m_mappedRanges.clear();
 				start = 0;

@@ -2,6 +2,7 @@
 
 #if TRINITY_PLATFORM == TRINITY_METAL
 #import <Foundation/Foundation.h>
+#include <TargetConditionals.h>
 #include <float.h>
 #include "MetalWorkQueue.h"
 #include "MetalContext.h"
@@ -1409,8 +1410,12 @@ void MetalWorkQueue::ResolveMsaa( id<MTLTexture> source, id<MTLTexture> destinat
 	// Changing an attachment requires a new render encoder so we must flush any outstanding work.
 	ReleaseEncoder( true );
 
+	// Depth24Unorm_Stencil8 is macOS-only SDK surface (spec D7's producing site,
+	// MetalUtils.mm's SetupPixelFormatConversionTable, never emits it on iOS).
 	if( source.pixelFormat == MTLPixelFormatDepth16Unorm || source.pixelFormat == MTLPixelFormatDepth32Float ||
+#if TARGET_OS_OSX
 		source.pixelFormat == MTLPixelFormatDepth24Unorm_Stencil8 ||
+#endif
 		source.pixelFormat == MTLPixelFormatDepth32Float_Stencil8 )
 	{
 		id<MTLTexture> oldAttachment = m_currentRenderPassDescriptor.depthAttachment.texture;
@@ -2065,7 +2070,12 @@ void MetalWorkQueue::SetDepthStencilAttachment( id<MTLTexture> texture )
 			stencilTexture = texture;
 			break;
 
+		// Depth24Unorm_Stencil8 is macOS-only SDK surface (spec D7's producing
+		// site, MetalUtils.mm's SetupPixelFormatConversionTable, never emits
+		// it on iOS), so the enumerator itself must be guarded here too.
+#if TARGET_OS_OSX
 		case MTLPixelFormatDepth24Unorm_Stencil8:
+#endif
 		case MTLPixelFormatDepth32Float_Stencil8:
 			depthTexture = texture;
 			stencilTexture = texture;
