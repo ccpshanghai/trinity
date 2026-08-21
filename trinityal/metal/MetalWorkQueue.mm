@@ -293,9 +293,11 @@ void MetalWorkQueue::SetCommandQueue( id<MTLCommandQueue> commandQueue )
 	m_device = commandQueue.device;
 
 	m_isIntelGpu = [m_device.name containsString:@"Intel"];
-	if( @available( macOS 10.15, * ) )
+	if( @available( macOS 11.0, iOS 14.0, * ) )
 	{
-		m_isAppleSilicon = [m_device supportsFamily:MTLGPUFamilyMac2] && [m_device supportsFamily:MTLGPUFamilyApple7];
+		// Apple7 alone: an M1 reports it and so does an iPhone 12. The old
+		// Mac2 && Apple7 conjunction was false on every iPhone (spec D7).
+		m_isAppleSilicon = [m_device supportsFamily:MTLGPUFamilyApple7];
 	}
 
 	SetupPresentBlitResources();

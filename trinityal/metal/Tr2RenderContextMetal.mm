@@ -786,7 +786,9 @@ ALResult Tr2RenderContextAL::CreateDevice( uint32_t Adapter,
 	if( @available( macOS 11.0, * ) )
 	{
 		auto device = m_metalContext->GetDevice();
-		bool isAppleSilicon = [device supportsFamily:MTLGPUFamilyMac2] && [device supportsFamily:MTLGPUFamilyApple7];
+		// Apple7 alone: an M1 reports it and so does an iPhone 12. The old
+		// Mac2 && Apple7 conjunction was false on every iPhone (spec D7).
+		bool isAppleSilicon = [device supportsFamily:MTLGPUFamilyApple7];
 		bool raytracingAvailable = device.supportsRaytracing && isAppleSilicon;
 		m_caps.m_supportsRaytracing = raytracingAvailable;
 		if( m_caps.m_supportsRaytracing )

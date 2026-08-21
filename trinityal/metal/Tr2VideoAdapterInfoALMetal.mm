@@ -6,8 +6,11 @@
 
 #include "Tr2VideoAdapterInfoALMetal.h"
 #include "Tr2AdapterStructures.h"
+#include <TargetConditionals.h>
+#if TARGET_OS_OSX
 #import <CoreGraphics/CoreGraphics.h>
 #import <IOKit/graphics/IOGraphicsLib.h>
+#endif
 #import <Metal/Metal.h>
 
 
@@ -17,7 +20,11 @@ namespace
 {
 struct Display
 {
-	CGDirectDisplayID displayID;
+	// CGDirectDisplayID on macOS -- itself just a uint32_t -- so this stays a plain
+	// integer instead of pulling the type into scope unconditionally. iOS has no
+	// per-display id at all and leaves this 0 (see RefreshDisplays); GetAdapterMonitor
+	// already turns that into a null monitor handle without any platform split.
+	uint32_t displayID;
 	std::string name;
 	std::wstring description;
 	uint32_t vendorID;
@@ -26,6 +33,8 @@ struct Display
 	std::vector<Tr2DisplayModeInfo> modes;
 };
 std::vector<Display> s_displays;
+
+#if TARGET_OS_OSX
 
 void GetDisplayModes( CGDirectDisplayID display, std::vector<Tr2DisplayModeInfo>& modes )
 {
@@ -94,6 +103,8 @@ uint32_t GetEntryProperty( io_registry_entry_t entry, CFStringRef propertyName )
 	return value;
 }
 
+#endif // TARGET_OS_OSX
+
 std::string ToString( NSString* string )
 {
 	NSData* data = [string dataUsingEncoding:NSASCIIStringEncoding allowLossyConversion:YES];
@@ -107,6 +118,8 @@ std::wstring ToWString( NSString* string )
 	int32_t length = int32_t( [data length] ) / sizeof( wchar_t );
 	return std::wstring( reinterpret_cast<const wchar_t*>( [data bytes] ), length );
 }
+
+#if TARGET_OS_OSX
 
 io_service_t IOServicePortFromCGDisplayID( CGDirectDisplayID displayID )
 {
@@ -157,6 +170,8 @@ io_service_t IOServicePortFromCGDisplayID( CGDirectDisplayID displayID )
 	return servicePort;
 }
 
+#endif // TARGET_OS_OSX
+
 void RefreshDisplays()
 {
 	s_displays.clear();
@@ -166,9 +181,23 @@ void RefreshDisplays()
 	{
 		return;
 	}
-	if( @available( macOS 10.15, * ) )
+	if( @available( macOS 10.15, iOS 13.0, * ) )
 	{
-		if( ![device supportsFamily:MTLGPUFamilyMac1] )
+		// Admission: any Mac- or Apple-family GPU. The old check asked for Mac1,
+		// which every iPhone answers no to — family detection, not capability,
+		// which is why this is a list rather than a threshold (spec D7).
+		const MTLGPUFamily families[] = { MTLGPUFamilyMac2,   MTLGPUFamilyApple7, MTLGPUFamilyApple6,
+										  MTLGPUFamilyApple5, MTLGPUFamilyApple4, MTLGPUFamilyApple3 };
+		bool supported = false;
+		for( MTLGPUFamily family : families )
+		{
+			if( [device supportsFamily:family] )
+			{
+				supported = true;
+				break;
+			}
+		}
+		if( !supported )
 		{
 			return;
 		}
@@ -176,6 +205,7 @@ void RefreshDisplays()
 
 	std::wstring deviceDescription = ToWString( [device name] );
 
+#if TARGET_OS_OSX
 	uint32_t vendorID = 0;
 	uint32_t deviceID = 0;
 	if( uint64_t regID = [device respondsToSelector:@selector( registryID )] ? device.registryID : 0 )
@@ -193,8 +223,14 @@ void RefreshDisplays()
 			IOObjectRelease( entry );
 		}
 	}
+#else
+	// One GPU, Apple's, no PCI identity to look up. Zero is the honest value —
+	// the same convention PR #6 chose for the android monitor handle.
+	uint32_t vendorID = 0;
+	uint32_t deviceID = 0;
+#endif
 
-
+#if TARGET_OS_OSX
 	uint32_t displayCount;
 	CGGetOnlineDisplayList( 0, NULL, &displayCount );
 	std::unique_ptr<CGDirectDisplayID[]> displays( new CGDirectDisplayID[displayCount] );
@@ -242,6 +278,36 @@ void RefreshDisplays()
 			s_displays.push_back( display );
 		}
 	}
+#else
+	// iOS: no CoreGraphics/IOKit display enumeration exists to ask, and there is
+	// exactly one screen/GPU. The AL's swapchain takes its real extent from the
+	// CAMetalLayer at present time, so nothing here needs to be right about pixel
+	// size -- it only needs to exist, so GetAdapterCount()/GetAdapterInfo() have a
+	// single, defensible adapter to report.
+	Display display = {};
+	display.displayID = 0; // no per-display id on iOS; GetAdapterMonitor already
+							// turns this into a null monitor handle, matching PR #6's
+							// android convention for the same field.
+	display.description = deviceDescription; // the GPU name -- the same field every
+											   // macOS display carries too.
+	display.vendorID = vendorID; // 0, set above
+	display.deviceID = deviceID; // 0, set above
+	// display.name is left empty: iOS has no "display product name" API (that is
+	// what the macOS-only IOKit lookup above provides), so there is nothing honest
+	// to put there.
+
+	Tr2DisplayModeInfo mode = {};
+	mode.format = PIXEL_FORMAT_B8G8R8A8_UNORM;
+	mode.width = 0;  // Extent is the layer's/swapchain's to report, not this AL's --
+	mode.height = 0; // inventing a resolution here would be a lie.
+	mode.refreshRateNumerator = 1;
+	mode.refreshRateDenominator = 1;
+	mode.scaling = DISPLAY_SCALING_UNSPECIFIED;
+	mode.scanlineOrdering = SCANLINE_ORDER_UNSPECIFIED;
+	display.modes.push_back( mode );
+
+	s_displays.push_back( display );
+#endif
 }
 }
 
@@ -270,7 +336,9 @@ ALResult Tr2VideoAdapterInfo::GetAdapterInfo( unsigned adapterIndex, Tr2AdapterI
 	CHECK_ADAPTER;
 
 	auto& display = s_displays[adapterIndex];
-	id<MTLDevice> device = CGDirectDisplayCopyCurrentMetalDevice( display.displayID );
+#if TARGET_OS_OSX
+	id<MTLDevice> device = CGDirectDisplayCopyCurrentMetalDevice( display.displayID ); // unused below; kept to match existing macOS behavior
+#endif
 
 	info.driver = "";
 	info.driverVersion = 0;
@@ -304,6 +372,7 @@ ALResult Tr2VideoAdapterInfo::GetAdapterDisplayMode( unsigned adapterIndex, Tr2D
 {
 	CHECK_ADAPTER;
 
+#if TARGET_OS_OSX
 	size_t w = 0;
 	size_t h = 0;
 
@@ -349,6 +418,12 @@ ALResult Tr2VideoAdapterInfo::GetAdapterDisplayMode( unsigned adapterIndex, Tr2D
 	mode.refreshRateNumerator = 1;
 	mode.scaling = DISPLAY_SCALING_UNSPECIFIED;
 	mode.scanlineOrdering = SCANLINE_ORDER_UNSPECIFIED;
+#else
+	// No CoreGraphics display-mode API on iOS; the swapchain takes its real extent
+	// from the CAMetalLayer at present time. Return the same single fallback entry
+	// RefreshDisplays recorded (format B8G8R8A8, width/height 0) instead of inventing one.
+	mode = s_displays[adapterIndex].modes[0];
+#endif
 
 	return S_OK;
 }
@@ -472,10 +547,17 @@ bool Tr2VideoAdapterInfo::AreAdaptersDifferent( unsigned adapter1, unsigned adap
 		return true;
 	}
 
+#if TARGET_OS_OSX
 	id<MTLDevice> device1 = CGDirectDisplayCopyCurrentMetalDevice( s_displays[adapter1].displayID );
 	id<MTLDevice> device2 = CGDirectDisplayCopyCurrentMetalDevice( s_displays[adapter2].displayID );
 
 	return device1 != device2;
+#else
+	// RefreshDisplays only ever records one display on iOS, so two distinct valid
+	// indices can't happen in practice; if they somehow did, report "different"
+	// rather than assume they're the same GPU.
+	return true;
+#endif
 }
 
 ALResult Tr2VideoAdapterInfo::RefreshData()
