@@ -26,6 +26,7 @@ set(_SOURCES
     RenderWindow_Stub.cpp
     RenderWindow_Win32.cpp
     RenderWindow_Macos.mm
+    RenderWindow_iOS.mm
     Rendering.cpp
     SamplerState.cpp
     Shader.cpp
@@ -52,6 +53,7 @@ set(_SOURCES
     WithWindowFixture_Stub.cpp
     WithWindowFixture_Win32.cpp
     WithWindowFixture_Macos.mm
+    WithWindowFixture_iOS.mm
     XrgbVolume.h
 )
 
@@ -168,7 +170,10 @@ function(set_shared_trinityaltest_properties target)
         set_target_properties(${target} PROPERTIES LINKER_LANGUAGE OBJCXX)
 
         target_link_libraries(${target} PRIVATE "-framework CoreFoundation")
-        target_link_libraries(${target} PRIVATE "-framework Cocoa")
+        target_link_libraries(${target} PRIVATE "-framework QuartzCore")
+        if(NOT IOS)
+            target_link_libraries(${target} PRIVATE "-framework Cocoa")
+        endif()
     elseif(WIN32)
         target_link_options(${target} PRIVATE "/IGNORE:4049")
     endif()

@@ -1,7 +1,8 @@
 // Copyright © 2023 CCP ehf.
 
 #include "StdAfx.h"
-#if defined( __APPLE__ ) && TRINITY_PLATFORM != TRINITY_STUB
+#include <TargetConditionals.h>
+#if defined( __APPLE__ ) && TARGET_OS_OSX && ( TRINITY_PLATFORM != TRINITY_STUB )
 
 #include "RenderWindow.h"
 #import <Cocoa/Cocoa.h>
