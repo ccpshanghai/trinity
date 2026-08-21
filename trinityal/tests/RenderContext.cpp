@@ -369,4 +369,19 @@ TEST_F( RenderContext, NativeHandlesObserveTheFrame )
 	EXPECT_EQ( 0u, renderContext->GetNativeSrvHeap() );
 	EXPECT_EQ( 0u, renderContext->GetNativeSamplerHeap() );
 }
+
+TEST_F( RenderContext, NativeCommandBufferExistsAfterEndScene )
+{
+	ENSURE_GPU_OR_SKIP
+	// Unlike the encoder, the command buffer has a happy path this fixture can
+	// reach without opening a render pass: EndScene's FlushOutstandingOperations
+	// creates one unconditionally when the frame recorded nothing ("The tests
+	// just do a present with no render" -- MetalWorkQueue::FlushOutstandingOperations),
+	// and ResetFrame never clears it. Same BeginScene/EndScene sequence as
+	// CanBeginAndEndScene above; the getter only reads what that sequence
+	// already produced.
+	ASSERT_HRESULT_SUCCEEDED( renderContext->BeginScene() );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->EndScene() );
+	EXPECT_NE( 0u, renderContext->GetNativeCommandBuffer() );
+}
 #endif
