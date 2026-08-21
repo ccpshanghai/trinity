@@ -168,7 +168,7 @@ ALResult Tr2TextureAL::Create( const Tr2BitmapDimensions& desc,
 	// workaround this machinery was built for, and -- new with M3 -- a device
 	// that cannot sample BC at all (every iPhone; spec D7). BcDecompress
 	// covers BC1/2/3 only; a format it refuses fails the create loudly below,
-	// which is correct -- BC4/5/7 content is ASTC's job (spec S1), not a
+	// which is correct -- BC4/5/7 content is ASTC's job (spec §1), not a
 	// decoder's.
 	bool deviceLacksBc = !MetalDeviceSupportsBC( metalContext->GetDevice() );
 	bool legacyVolumeCase = false;
@@ -221,11 +221,21 @@ ALResult Tr2TextureAL::Create( const Tr2BitmapDimensions& desc,
 						uint32_t levelWidth = std::max( desc.GetWidth() >> mip, 1U );
 						uint32_t levelHeight = std::max( desc.GetHeight() >> mip, 1U );
 						uint32_t levelDepth = std::max( desc.GetDepth() >> mip, 1U );
+						// index, not mip alone: index tracks the (slice, mip) pair
+						// actually being processed, same as the non-decompressed
+						// sibling branch below. Using `mip` alone was dormant while
+						// this trigger only fired for TEX_TYPE_3D (where
+						// GetArraySize() == 1, so index == mip always) -- the D7
+						// widening to any device lacking BC made it reachable for
+						// arrays/cubes (GetArraySize() > 1), where it silently
+						// decompressed slice 0's bytes for every slice. Do not
+						// "simplify" this back to initialData[mip].
+						const Tr2SubresourceData& decompressSource = initialData[index];
 						if( !BcDecompress( levelWidth,
 										   levelHeight,
 										   levelDepth,
 										   desc.GetFormat(),
-										   initialData[mip],
+										   decompressSource,
 										   decompressed ) )
 						{
 							return E_FAIL;
@@ -234,6 +244,13 @@ ALResult Tr2TextureAL::Create( const Tr2BitmapDimensions& desc,
 						// the format was reported as if it had (spec D8). Read via
 						// DebugDecompressedOnCreate().
 						m_debugDecompressedOnCreate = true;
+						// Debug-only (regression coverage for the index fix above):
+						// records which source this (slice, mip) iteration actually
+						// consumed. Not reachable via MapForReading, which only ever
+						// supports face 0 (CCP_ASSERT( region.m_startFace == 0 &&
+						// region.m_endFace == 1 ) below), so this is the narrowest
+						// observable proof that each slice decompresses its own data.
+						m_debugDecompressedSources.push_back( decompressSource.m_sysMem );
 						workQueue->UploadTexture( m_mtlTexture,
 												  decompressed.get(),
 												  slice,
@@ -377,6 +394,7 @@ void Tr2TextureAL::Destroy()
 	m_metalContext = nil;
 	m_wrappedTexture = false;
 	m_debugDecompressedOnCreate = false;
+	m_debugDecompressedSources.clear();
 	m_memory.Reset();
 }
 

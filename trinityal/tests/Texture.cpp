@@ -5,6 +5,8 @@
 #include "WithRenderContextFixture.h"
 #include "../metal/Tr2TextureALMetal.h"
 #include "../metal/MetalUtils.h"
+#include <cstdlib>
+#include <cstring>
 
 using namespace Tr2RenderContextEnum;
 
@@ -20,6 +22,23 @@ bool MetalTestDeviceSupportsBC()
 	id<MTLDevice> device = MTLCreateSystemDefaultDevice();
 	return TrinityALImpl::MetalDeviceSupportsBC( device );
 }
+
+// Forces the decompress path for exactly the scope of one test, regardless of
+// the process-wide environment the suite was launched with or the real
+// device's BC capability. MetalDeviceSupportsBC() re-reads the env var on
+// every call (nothing caches it), so setenv/unsetenv here is enough -- no
+// dependency on how the binary itself was invoked.
+struct ScopedForceBcDecompress
+{
+	ScopedForceBcDecompress()
+	{
+		setenv( "TRINITY_FORCE_BC_DECOMPRESS", "1", 1 );
+	}
+	~ScopedForceBcDecompress()
+	{
+		unsetenv( "TRINITY_FORCE_BC_DECOMPRESS" );
+	}
+};
 }
 #endif
 
@@ -259,3 +278,66 @@ TEST_F( Texture, CanCreateCompressedCubeTexture )
 	EXPECT_EQ( PIXEL_FORMAT_BC1_UNORM, tex.GetFormat() );
 #endif
 }
+
+#if ( TRINITY_PLATFORM == TRINITY_METAL )
+// Regression coverage for a review finding on this same diff: the widened D7
+// trigger fires for TEX_TYPE_CUBE (GetArraySize() == 6), unlike the old
+// macOS-10.14-volume-only trigger where GetArraySize() was always 1. Under
+// the bug, the decompression branch indexed initialData[mip] instead of
+// initialData[index], so every face after face 0 silently decompressed face
+// 0's bytes again. CanCreateCompressedCubeTexture above cannot catch this --
+// it points all six faces at the same source image on purpose, so the wrong
+// index and the right index read identical bytes.
+//
+// This test gives each face genuinely distinct source data and checks, per
+// face, that the decompressor consumed THAT face's buffer. What it cannot
+// check: the actual GPU-side decoded pixel content per face.
+// MapForReading's Metal implementation hard-asserts
+// `region.m_startFace == 0 && region.m_endFace == 1` (Tr2TextureALMetal.mm),
+// i.e. it structurally only supports reading back face 0 of a cube texture --
+// which is exactly the one face the bug never corrupts, so a GPU readback
+// through this fixture could not have distinguished "fixed" from "buggy"
+// either. DebugDecompressedSources() records, at the point of consumption,
+// which source Create() actually fed to BcDecompress for each (slice, mip) --
+// the narrowest observable signal that still fails under the original bug
+// and passes once initialData[index] is used.
+TEST_F( Texture, CompressedCubeTextureDecompressesEachFaceFromItsOwnSource )
+{
+	ENSURE_GPU_OR_SKIP
+	// This test's entire point is the decompress branch; force it regardless
+	// of this Mac's real BC capability or how the suite binary was invoked.
+	ScopedForceBcDecompress forceDecompress;
+
+	const uint32_t width = 128;
+	const uint32_t height = 128;
+	uint32_t templatePixels[] = {
+#include "Dxt1Image.h"
+	};
+	constexpr size_t kFaceCount = 6;
+	uint32_t facePixels[kFaceCount][sizeof( templatePixels ) / sizeof( templatePixels[0] )];
+	Tr2SubresourceData textureData[kFaceCount];
+	for( size_t face = 0; face < kFaceCount; ++face )
+	{
+		memcpy( facePixels[face], templatePixels, sizeof( templatePixels ) );
+		// One word differing per face: genuinely distinct content per face,
+		// not just distinct array addresses (matching a real skybox/cube map,
+		// where every face is different art).
+		facePixels[face][0] ^= ( 0x1000u + static_cast<uint32_t>( face ) );
+
+		textureData[face].m_sysMem = facePixels[face];
+		textureData[face].m_sysMemPitch = sizeof( facePixels[face] ) / height * 4; // *4: compressed format
+		textureData[face].m_sysMemSlicePitch = sizeof( facePixels[face] );
+	}
+
+	Tr2TextureAL tex;
+	ASSERT_HRESULT_SUCCEEDED( tex.Create( Tr2BitmapDimensions( TEX_TYPE_CUBE, PIXEL_FORMAT_BC1_UNORM, width, height, 1, 1 ),
+										  Tr2GpuUsage::SHADER_RESOURCE, textureData, *renderContext ) );
+
+	const auto& consumedSources = tex.TrinityALImpl_GetObject()->DebugDecompressedSources();
+	ASSERT_EQ( kFaceCount, consumedSources.size() );
+	for( size_t face = 0; face < kFaceCount; ++face )
+	{
+		EXPECT_EQ( textureData[face].m_sysMem, consumedSources[face] ) << "face " << face;
+	}
+}
+#endif
