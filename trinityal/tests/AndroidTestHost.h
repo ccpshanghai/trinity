@@ -11,6 +11,10 @@ namespace AndroidTestHost
 {
 // Blocks until a live ANativeWindow exists, returns it. Never returns null.
 ANativeWindow* WaitForWindow();
+// Soak recreate wait. Returns null if no window arrives within timeoutSeconds.
+ANativeWindow* WaitForWindow( int timeoutSeconds );
+// The window currently stored by the host, or null. Not a wait.
+ANativeWindow* LiveWindow();
 // True when the framework has asked for the current window back (soak mode).
 bool WindowLost();
 // The render side has released every object referencing the lost window;

@@ -13,14 +13,43 @@
 RenderWindow::RenderWindow( uint32_t width, uint32_t height )
 {
 	ANativeWindow* window = AndroidTestHost::WaitForWindow();
+	ANativeWindow_acquire( window );
 	m_handle = reinterpret_cast<Tr2WindowHandle>( window );
 	Resize( width, height );
 }
 
 RenderWindow::~RenderWindow()
 {
-	// Restore the native extent so the next test starts from screen size.
-	ANativeWindow_setBuffersGeometry( reinterpret_cast<ANativeWindow*>( m_handle ), 0, 0, 0 );
+	ANativeWindow* window = reinterpret_cast<ANativeWindow*>( m_handle );
+	if( !window )
+	{
+		return;
+	}
+	// The soak path replaces the window; do not touch a handle that is no longer
+	// the live surface, and do not call into a window the framework has taken back.
+	if( !AndroidTestHost::WindowLost() && window == AndroidTestHost::LiveWindow() )
+	{
+		ANativeWindow_setBuffersGeometry( window, 0, 0, 0 );
+	}
+	ANativeWindow_release( window );
+}
+
+void RenderWindow::AdoptWindow( ANativeWindow* window )
+{
+	ANativeWindow* old = reinterpret_cast<ANativeWindow*>( m_handle );
+	if( old == window )
+	{
+		return;
+	}
+	if( old )
+	{
+		ANativeWindow_release( old );
+	}
+	if( window )
+	{
+		ANativeWindow_acquire( window );
+	}
+	m_handle = reinterpret_cast<Tr2WindowHandle>( window );
 }
 
 uint32_t RenderWindow::GetClientWidth() const

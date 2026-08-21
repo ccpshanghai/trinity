@@ -126,6 +126,7 @@ int main( int argc, char** argv )
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -207,6 +208,22 @@ ANativeWindow* WaitForWindow()
 	g_androidWindow = s_window;
 	return s_window;
 }
+ANativeWindow* WaitForWindow( int timeoutSeconds )
+{
+	std::unique_lock<std::mutex> lock( s_windowMutex );
+	const bool arrived = s_windowCv.wait_for( lock, std::chrono::seconds( timeoutSeconds ), [] { return s_window != nullptr; } );
+	if( !arrived || s_window == nullptr )
+	{
+		return nullptr;
+	}
+	g_androidWindow = s_window;
+	return s_window;
+}
+ANativeWindow* LiveWindow()
+{
+	std::lock_guard<std::mutex> lock( s_windowMutex );
+	return s_window;
+}
 bool WindowLost()
 {
 	std::lock_guard<std::mutex> lock( s_windowMutex );
@@ -241,6 +258,9 @@ static uint32_t mainThread( void* )
 
 	int result = main( (int)args.size(), args.data() );
 	__android_log_print( ANDROID_LOG_INFO, "TrinityALTest", "TESTS_COMPLETE exit=%d", result );
+	// Vulkan objects are gone (fixture teardown). Let onNativeWindowDestroyed
+	// return instead of waiting out the handshake and terminating.
+	AndroidTestHost::AckWindowReleased();
 	ANativeActivity_finish( g_androidActivity );
 	return 0;
 }
@@ -249,6 +269,7 @@ static void onNativeWindowCreated( ANativeActivity*, ANativeWindow* window )
 {
 	{
 		std::lock_guard<std::mutex> lock( s_windowMutex );
+		ANativeWindow_acquire( window );
 		s_window = window;
 		s_windowLost = false;
 		s_windowReleased = false;
@@ -261,17 +282,20 @@ static void onNativeWindowCreated( ANativeActivity*, ANativeWindow* window )
 	}
 }
 
-static void onNativeWindowDestroyed( ANativeActivity*, ANativeWindow* )
+static void onNativeWindowDestroyed( ANativeActivity*, ANativeWindow* window )
 {
 	// After this returns the window is gone; block until the render side lets go.
 	std::unique_lock<std::mutex> lock( s_windowMutex );
 	s_window = nullptr;
+	g_androidWindow = nullptr;
 	s_windowLost = true;
 	s_windowCv.wait_for( lock, std::chrono::seconds( 10 ), [] { return s_windowReleased; } );
 	if( !s_windowReleased )
 	{
 		__android_log_write( ANDROID_LOG_ERROR, "TrinityALTest", "window release handshake timed out" );
+		std::terminate();
 	}
+	ANativeWindow_release( window );
 }
 
 extern "C" __attribute__( ( visibility( "default" ) ) ) void ANativeActivity_onCreate( ANativeActivity* activity, void*, size_t )

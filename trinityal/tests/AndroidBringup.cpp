@@ -28,6 +28,10 @@ ALResult AndroidBringup::RecreateOnWindow( ANativeWindow* window )
 	presentParameters.outputWindow = reinterpret_cast<Tr2WindowHandle>( window );
 	presentParameters.mode.width = (uint32_t)ANativeWindow_getWidth( window );
 	presentParameters.mode.height = (uint32_t)ANativeWindow_getHeight( window );
+	if( RenderWindow* rw = GetWindow() )
+	{
+		rw->AdoptWindow( window );
+	}
 	return renderContext->SetPresentParameters( 0, presentParameters );
 }
 
@@ -66,7 +70,8 @@ TEST_F( AndroidBringup, LifecycleSoak )
 		{
 			ASSERT_HRESULT_SUCCEEDED( ReleasePresentation() );
 			AndroidTestHost::AckWindowReleased();
-			ANativeWindow* window = AndroidTestHost::WaitForWindow();
+			ANativeWindow* window = AndroidTestHost::WaitForWindow( 10 );
+			ASSERT_NE( window, nullptr ) << "soak window did not come back at cycle " << completed;
 			ASSERT_HRESULT_SUCCEEDED( RecreateOnWindow( window ) );
 			++completed;
 			framesSinceEvent = 0;
