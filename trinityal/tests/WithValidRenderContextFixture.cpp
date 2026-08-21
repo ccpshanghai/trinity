@@ -4,6 +4,10 @@
 #include "WithValidRenderContextFixture.h"
 #include <map>
 
+#if defined( __ANDROID__ )
+#include "AndroidTestHost.h"
+#endif
+
 WithValidRenderContext::WithValidRenderContext() :
 	m_madeScreenshot( false )
 {
@@ -11,6 +15,26 @@ WithValidRenderContext::WithValidRenderContext() :
 
 void WithValidRenderContext::SetUpTestCase()
 {
+#if defined( __ANDROID__ )
+	// R11: a lost window must never reach Vulkan. onNativeWindowDestroyed can
+	// fire between suites for reasons outside this harness's control (doze, a
+	// notification, an incoming call), and vkCreateAndroidSurfaceKHR on a stale
+	// ANativeWindow* takes a strong reference on an already-freed Surface --
+	// that crashes inside the driver (libvulkan -> libutils
+	// RefBase::incStrong), not in our code, and there is no clean way to
+	// recover from inside CreateDevice once it happens. Refuse before even
+	// constructing the RenderWindow: in gtest mode nothing will ever recreate
+	// the window, so WithWindow::SetUpTestCase's RenderWindow() would block
+	// forever in AndroidTestHost::WaitForWindow() instead of ever reaching
+	// CreateDevice. Skip cleanly instead so the remaining suites still report
+	// (skipped) and the XML still gets written, rather than losing the whole
+	// run's evidence to a native crash or a hang.
+	if( AndroidTestHost::WindowLost() )
+	{
+		GTEST_SKIP() << "Window lost before device creation; skipping suite.";
+	}
+#endif
+
 	WithWindow::SetUpTestCase();
 
 	renderContext = new Tr2PrimaryRenderContextAL();

@@ -319,6 +319,21 @@ static void onNativeWindowDestroyed( ANativeActivity*, ANativeWindow* window )
 		return;
 	}
 
+	if( s_mode != "soak" )
+	{
+		// R10: only a live soak cycle (AndroidBringup.LifecycleSoak) ever calls
+		// AckWindowReleased mid-run, so only soak may arm the wait/terminate
+		// handshake below. In smoke/gtest mode a mid-run window loss is already
+		// unrecoverable -- nothing is going to answer the handshake, and R9
+		// removed the routine per-test window churn that used to cause this --
+		// so terminate() would buy nothing here except destroying the XML for
+		// every test that already passed (googletest only emits it from
+		// OnTestProgramEnd). Log loudly and return instead.
+		__android_log_write( ANDROID_LOG_ERROR, "TrinityALTest", "window lost outside soak mode; not arming terminate handshake" );
+		ANativeWindow_release( window );
+		return;
+	}
+
 	// Armed: a live soak cycle (AndroidBringup.LifecycleSoak) may still have a
 	// render context bound to this exact ANativeWindow, and only it can say when
 	// that is no longer true.

@@ -5,50 +5,33 @@
 #include "AndroidTestHost.h"
 #include <android/native_window.h>
 
-// The one window belongs to the activity; every RenderWindow wraps it. The
-// requested size is advisory: the surface is the screen. Resize() maps to
-// ANativeWindow_setBuffersGeometry, which changes the buffer extent the
-// swapchain sees via currentExtent.
+// The one window belongs to the activity, which outlives every test; RenderWindow
+// is a non-owning view onto it, never an owner. (R9 -- see the M6 gtest teardown
+// crash this replaced: giving every test-local RenderWindow instance its own
+// acquire()/release() on the *shared* activity window meant each one's
+// SetBuffersGeometry/release calls reshaped and then reset the live display
+// surface underneath the primary render context's swapchain -- a screenshot
+// taken mid-soak showed exactly that, a black band where a 640x480 buffer
+// geometry had been stretched onto the real display. The window extent on
+// Android is display-dictated (GetSwapChainExtent always takes currentExtent),
+// so a test asking for a specific size can't be honoured, and pretending to
+// honour it is what corrupted the surface.) No acquire, no release, no
+// buffer-geometry mutation anywhere in this file.
 
-RenderWindow::RenderWindow( uint32_t width, uint32_t height )
+RenderWindow::RenderWindow( uint32_t /*width*/, uint32_t /*height*/ )
 {
 	ANativeWindow* window = AndroidTestHost::WaitForWindow();
-	ANativeWindow_acquire( window );
 	m_handle = reinterpret_cast<Tr2WindowHandle>( window );
-	Resize( width, height );
 }
 
 RenderWindow::~RenderWindow()
 {
-	ANativeWindow* window = reinterpret_cast<ANativeWindow*>( m_handle );
-	if( !window )
-	{
-		return;
-	}
-	// The soak path replaces the window; do not touch a handle that is no longer
-	// the live surface, and do not call into a window the framework has taken back.
-	if( !AndroidTestHost::WindowLost() && window == AndroidTestHost::LiveWindow() )
-	{
-		ANativeWindow_setBuffersGeometry( window, 0, 0, 0 );
-	}
-	ANativeWindow_release( window );
+	// Nothing to release: the handle was never ours to own.
 }
 
 void RenderWindow::AdoptWindow( ANativeWindow* window )
 {
-	ANativeWindow* old = reinterpret_cast<ANativeWindow*>( m_handle );
-	if( old == window )
-	{
-		return;
-	}
-	if( old )
-	{
-		ANativeWindow_release( old );
-	}
-	if( window )
-	{
-		ANativeWindow_acquire( window );
-	}
+	// A non-owning swap -- just point at the new handle.
 	m_handle = reinterpret_cast<Tr2WindowHandle>( window );
 }
 
@@ -62,10 +45,13 @@ uint32_t RenderWindow::GetClientHeight() const
 	return (uint32_t)ANativeWindow_getHeight( reinterpret_cast<ANativeWindow*>( m_handle ) );
 }
 
-bool RenderWindow::Resize( uint32_t width, uint32_t height )
+bool RenderWindow::Resize( uint32_t /*width*/, uint32_t /*height*/ )
 {
-	return ANativeWindow_setBuffersGeometry(
-		       reinterpret_cast<ANativeWindow*>( m_handle ), (int32_t)width, (int32_t)height, 0 ) == 0;
+	// No-op (R9): the surface is the real display, sized by the framework, not
+	// by the app. See SwapChainResizing in the M6 inventory -- that suite passes
+	// on Android without exercising a resize, because an app can't resize its
+	// own window on this platform.
+	return true;
 }
 
 #endif
