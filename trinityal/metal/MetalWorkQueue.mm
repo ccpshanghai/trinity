@@ -2588,7 +2588,7 @@ void MetalWorkQueue::ResetSamplers( Tr2RenderContextEnum::ShaderType shaderType 
 	m_dirtySamplersMask[shaderType] = ~0u;
 }
 
-void MetalWorkQueue::SetVertexStream( uint32 stream, id<MTLBuffer> buffer, uint32 stride, uint32 offset )
+void MetalWorkQueue::SetVertexStream( uint32_t stream, id<MTLBuffer> buffer, uint32_t stride, uint32_t offset )
 {
 	CCP_ASSERT( stream < METAL_VERTEX_STREAM_BUFFER_COUNT );
 	const uint32_t bufferIndex = METAL_VERTEX_STREAM_BUFFER_OFFSET + stream;

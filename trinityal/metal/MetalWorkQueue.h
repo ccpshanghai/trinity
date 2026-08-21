@@ -315,7 +315,7 @@ public:
 	void ResetTextures( Tr2RenderContextEnum::ShaderType shaderType );
 	void ResetSamplers( Tr2RenderContextEnum::ShaderType shaderType );
 
-	void SetVertexStream( uint32 stream, id<MTLBuffer> buffer, uint32 stride, uint32 offset );
+	void SetVertexStream( uint32_t stream, id<MTLBuffer> buffer, uint32_t stride, uint32_t offset );
 	void SetCurrentVertexDescriptor( MTLVertexDescriptor* vertexDescriptor, uint8_t vertexStreamMask, size_t baseHash );
 
 	void ClearAttachment( MTLClearColor* clearColor,

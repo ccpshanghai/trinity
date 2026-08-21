@@ -181,7 +181,7 @@ MTLPixelFormat MetalUtils::GetMTLPixelFormat( Tr2RenderContextEnum::PixelFormat 
 }
 
 MTLTextureType
-	MetalUtils::GetMTLTextureType( Tr2RenderContextEnum::TextureType type, uint32 arrayLength, uint32 sampleCount )
+	MetalUtils::GetMTLTextureType( Tr2RenderContextEnum::TextureType type, uint32_t arrayLength, uint32_t sampleCount )
 {
 	switch( type )
 	{

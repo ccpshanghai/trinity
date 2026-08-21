@@ -56,7 +56,7 @@ public:
 
 	MTLPixelFormat GetMTLPixelFormat( Tr2RenderContextEnum::PixelFormat pixelFormat );
 	MTLVertexFormat GetMTLVertexFormat( Tr2VertexDefinition::DataType dataType );
-	MTLTextureType GetMTLTextureType( Tr2RenderContextEnum::TextureType type, uint32 arrayLength, uint32 sampleCount );
+	MTLTextureType GetMTLTextureType( Tr2RenderContextEnum::TextureType type, uint32_t arrayLength, uint32_t sampleCount );
 	MTLCullMode GetMTLCullMode( Tr2RenderContextEnum::CullMode cullMode );
 	MTLBlendFactor GetMTLBlendFactor( uint32_t value );
 	MTLCompareFunction GetMTLCompareFunction( uint32_t value );

@@ -206,11 +206,11 @@ id<MTLTexture> MetalContext::CreateMetalTexture( MTLTextureType metalTextureType
 												 size_t width,
 												 size_t height,
 												 size_t depth,
-												 uint32 mipMapCount,
+												 uint32_t mipMapCount,
 												 MTLStorageMode storageMode,
 												 MTLTextureUsage textureUsage,
-												 uint32 sampleCount,
-												 uint32 arrayLength )
+												 uint32_t sampleCount,
+												 uint32_t arrayLength )
 {
 	METAL_LOG( @"Log:Creating texture of size %lux%lu", width, height );
 
