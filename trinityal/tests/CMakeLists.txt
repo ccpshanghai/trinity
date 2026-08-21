@@ -378,5 +378,56 @@ if(WIN32)
 
 endif()
 
+if(APPLE)
+    if (BUILD_METAL)
+        ccp_add_executable(TrinityALTest_metal ${_SOURCES})
+        target_link_libraries(TrinityALTest_metal PRIVATE TrinityAL_metal)
+        target_compile_definitions(TrinityALTest_metal PRIVATE TRINITY_PLATFORM=TRINITY_METAL)
+        set_shared_trinityaltest_properties(TrinityALTest_metal)
+
+        target_sources(TrinityALTest_metal PRIVATE ${_SHADERS_METAL})
+        source_group(Shaders FILES ${_SHADERS_METAL})
+
+        # The tests include their shaders as byte arrays via INCLUDE_SHADER_CODE
+        # (StdAfx.h maps TRINITY_METAL to Shaders.metal/<name>.h), and the backend
+        # loads them with newLibraryWithData — so each MSL source becomes a metallib
+        # at build time, then a generated header. The SDK is a cache variable so the
+        # same block serves macosx, iphoneos and iphonesimulator builds.
+        if(NOT DEFINED TRINITY_METAL_TEST_SDK)
+            if(IOS)
+                if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+                    set(TRINITY_METAL_TEST_SDK iphonesimulator)
+                else()
+                    set(TRINITY_METAL_TEST_SDK iphoneos)
+                endif()
+            else()
+                set(TRINITY_METAL_TEST_SDK macosx)
+            endif()
+        endif()
+
+        foreach(shaderSource ${_SHADERS_METAL})
+            if(${shaderSource} MATCHES "\\.h$")
+                continue()   # MetalDefines.h is an include, not a shader
+            endif()
+            string(REGEX REPLACE "h$" ".h" shaderOutput ${shaderSource})
+            add_custom_command(
+                OUTPUT ${GENERATED_SOURCES_DIR}/${shaderOutput}
+                COMMAND ${CMAKE_COMMAND} -E make_directory ${GENERATED_SOURCES_DIR}/Shaders.metal
+                COMMAND xcrun -sdk ${TRINITY_METAL_TEST_SDK} metal -x metal -std=metal3.0
+                        -I ${CMAKE_CURRENT_SOURCE_DIR}/Shaders.metal
+                        ${CMAKE_CURRENT_SOURCE_DIR}/${shaderSource}
+                        -o ${GENERATED_SOURCES_DIR}/${shaderSource}.bin
+                COMMAND python ${CMAKE_CURRENT_SOURCE_DIR}/bin2h.cmd ${GENERATED_SOURCES_DIR}/${shaderSource}.bin ${GENERATED_SOURCES_DIR}/${shaderOutput}
+                MAIN_DEPENDENCY ${shaderSource}
+            )
+        endforeach()
+
+        set_target_properties(TrinityALTest_metal PROPERTIES FOLDER "Tests")
+
+        enable_testing()
+        add_test(NAME TrinityALTest_metal COMMAND TrinityALTest_metal)
+    endif()
+endif()
+
 
 

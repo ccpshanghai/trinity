@@ -82,6 +82,18 @@
       }
     },
     {
+      "name": "arm64-osx-metal",
+      "displayName": "M3 Metal verification (Release, AL tests)",
+      "inherits": "arm64-osx-release",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "BUILD_METAL": "ON",
+        "BUILD_SHADER_COMPILER": "OFF",
+        "BUILD_TESTING": "ON",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "OFF"
+      }
+    },
+    {
       "name": "x64-windows-internal",
       "inherits": "x64-windows",
       "cacheVariables": {
