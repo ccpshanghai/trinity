@@ -21,6 +21,8 @@ set(_SOURCES
     EffectCompilerDX11.h
     EffectCompilerDX12.cpp
     EffectCompilerDX12.h
+    EffectCompilerVulkan.cpp
+    EffectCompilerVulkan.h
     EffectCompilerMetal.cpp
     EffectCompilerMetal.h
     EffectData.cpp

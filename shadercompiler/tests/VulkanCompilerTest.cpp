@@ -2,6 +2,7 @@
 
 #include "TesingUtils.h"
 #include "EffectCompilerDX11.h"
+#include "EffectCompilerVulkan.h"
 #include "StringTable.h"
 #include "trinityal/vulkan/Tr2ShaderBindingABIVulkan.h"
 
@@ -181,6 +182,27 @@ TEST( VulkanCompiler, BindingsObeyTheABIHeader )
 				<< " expected set " << expectedSet << " binding " << expectedBinding;
 		}
 	}
+}
+
+TEST( VulkanCompiler, TheVulkanCompilerSetsThePlatformDefine )
+{
+	const char* src = R"(
+float4 MainPS() : SV_Target
+{
+#if PLATFORM == 20
+	return float4( 0, 0, 0, 0 );
+#else
+#error wrong platform
+#endif
+}
+
+technique T0 { pass P0 { PixelShader = compile ps_5_0 MainPS(); } }
+)";
+	EffectData data = Compile<EffectCompilerVulkan>( src );
+	auto& ps = data.techniques[0].passes[0].stages[0];
+	size_t wordCount = 0;
+	const uint32_t* words = ShaderWords( ps, wordCount );
+	EXPECT_EQ( words[0], 0x07230203u );
 }
 
 #endif
