@@ -2,8 +2,7 @@
   "dependencies": [
     {
       "name": "gtest",
-      "version>=": "1.16.0",
-      "host": true
+      "version>=": "1.16.0"
     },
     {
       "name": "carbon-core",
@@ -197,12 +196,12 @@
     },
     "vulkan": {
       "description": "Create Vulkan targets",
-      "$comment": "On Android neither port applies: the loader is the OS's libvulkan (NDK link library, never a built port), and directx-dxc is the test-shader step, which only the Windows configuration runs.",
+      "$comment": "On Android vulkan-loader is not built: the loader is the OS's libvulkan (NDK link library, never a built port). directx-dxc is a host tool for the test-shader step on every configuration that builds tests; it must not set platform:windows, because vcpkg evaluates that expression against the target triplet and would drop the host tool from the Android closure.",
       "supports": "(windows & x64) | android",
       "dependencies": [
         {
           "name": "directx-dxc",
-          "platform": "windows",
+          "host": true,
           "version>=": "2023-03-01#2"
         },
         {
