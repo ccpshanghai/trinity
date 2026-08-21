@@ -2,14 +2,9 @@
 
 #pragma once
 
-#if TRINITY_PLATFORM == TRINITY_VULKAN
-
-#include "../include/Tr2ShaderAL.h"
-#include "../Tr2RenderContextEnum.h"
-
 // The Vulkan binding ABI, in one place.
 //
-// Three artifacts have to agree on these numbers, in three languages:
+// Four artifacts have to agree on these numbers, in four languages:
 //
 //   1. Tr2ShaderProgramALVulkan.cpp -- builds VkDescriptorSetLayoutBindings from them.
 //   2. trinityal/tests/CMakeLists.txt -- computes dxc's -fvk-{b,t,s,u}-shift arguments
@@ -17,6 +12,8 @@
 //      numbers.
 //   3. trinityal/tests/Shaders.vulkan/*.{vsh,psh,csh} -- declare the register spaces
 //      (b in space0, t/s/u in space1) that select the descriptor set.
+//   4. shadercompiler/EffectCompilerDX11.cpp -- computes -fvk-{b,t,s,u}-shift from
+//      this header so the host-side shader compiler stays on the same contract.
 //
 // Nothing used to tie them together, and all three of this branch's ABI defects were
 // the same failure with no assertion behind it: Phase 1's Tasks 4e and 4f moved every
@@ -27,27 +24,23 @@
 // straight into this header, so there is one source of truth for the arithmetic rather
 // than a table of expected numbers that can drift away from the code.
 //
-// This header deliberately mentions no Vulkan type, so the test can include it without
-// pulling in vulkan/vulkan.h.
+// This header has no includes and mentions no AL or Vulkan type, so both the AL
+// test and the host-side shader compiler can include it. The two flag values
+// below mirror Tr2ShaderRegisterAL (trinityal/include/Tr2ShaderAL.h) and
+// EffectData.h's RegisterInputType, which EffectData.h declares must stay equal
+// to the Trinity enums; ShaderBindingABI.cpp static_asserts the AL side.
 namespace Tr2VulkanBindingABI
 {
-	// One 32-slot window per shader stage, four consecutive stage windows... six,
-	// actually: the class block is 6 * REGISTER_SIZE so that all six
-	// Tr2RenderContextEnum::ShaderType values get a window inside one class block.
-	// These are 2019's values, restored by Phase 2a Task 1.
 	static const uint32_t REGISTER_SIZE = 32;
 	static const uint32_t CLASS_BLOCK = 6 * REGISTER_SIZE;
 
-	// The binding-number block a register lives in: the four HLSL register classes
-	// b/s/t/u. This is deliberately NOT the six-way descriptor-*kind* mapping
-	// (RegisterTypeIndex in Tr2ShaderProgramALVulkan.cpp) -- that one answers "which
-	// VkDescriptorType", which Vulkan splits six ways; this one answers "which binding
-	// block", which HLSL splits four ways. Conflating the two is what Tasks 4e and 4f
-	// did.
-	//
-	// b and u sharing block 0 is safe: CONSTANT_BUFFER registers go into
-	// m_constantLayout (descriptor set 0) and every other register into
-	// m_resourceLayout (set 1), so the two never share a set.
+	// Mirrors Tr2ShaderRegisterAL::RegisterType's shape: CONSTANT_BUFFER=0,
+	// SAMPLER=1, SRV_* carry 1<<5, UAV_* carry 1<<6.
+	static const uint32_t REGISTER_TYPE_CONSTANT_BUFFER = 0;
+	static const uint32_t REGISTER_TYPE_SAMPLER = 1;
+	static const uint32_t SRV_REGISTER_FLAG = 1u << 5;
+	static const uint32_t UAV_REGISTER_FLAG = 1u << 6;
+
 	enum RegisterClass
 	{
 		REGISTER_CLASS_CONSTANT_BUFFER = 0,   // b
@@ -65,36 +58,31 @@ namespace Tr2VulkanBindingABI
 		DESCRIPTOR_SET_RESOURCES = 1
 	};
 
-	inline uint32_t RegisterClassOffset( Tr2ShaderRegisterAL::RegisterType registerType )
+	inline uint32_t RegisterClassOffset( uint32_t registerType )
 	{
-		if( registerType & Tr2ShaderRegisterAL::UAV_REGISTER_FLAG )
+		if( registerType & UAV_REGISTER_FLAG )
 		{
 			return REGISTER_CLASS_UAV;
 		}
-		if( registerType & Tr2ShaderRegisterAL::SRV_REGISTER_FLAG )
+		if( registerType & SRV_REGISTER_FLAG )
 		{
 			return REGISTER_CLASS_SRV;
 		}
-		return registerType == Tr2ShaderRegisterAL::SAMPLER
+		return registerType == REGISTER_TYPE_SAMPLER
 			? REGISTER_CLASS_SAMPLER : REGISTER_CLASS_CONSTANT_BUFFER;
 	}
 
-	inline uint32_t DescriptorSetIndex( Tr2ShaderRegisterAL::RegisterType registerType )
+	inline uint32_t DescriptorSetIndex( uint32_t registerType )
 	{
-		return registerType == Tr2ShaderRegisterAL::CONSTANT_BUFFER
+		return registerType == REGISTER_TYPE_CONSTANT_BUFFER
 			? DESCRIPTOR_SET_CONSTANTS : DESCRIPTOR_SET_RESOURCES;
 	}
 
 	// binding = registerIndex + classOffset * 6 * 32 + shaderType * 32
-	inline uint32_t BindingNumber(
-		Tr2ShaderRegisterAL::RegisterType registerType,
-		uint32_t registerIndex,
-		Tr2RenderContextEnum::ShaderType shaderType )
+	inline uint32_t BindingNumber( uint32_t registerType, uint32_t registerIndex, uint32_t shaderType )
 	{
 		return registerIndex
 			+ RegisterClassOffset( registerType ) * CLASS_BLOCK
-			+ uint32_t( shaderType ) * REGISTER_SIZE;
+			+ shaderType * REGISTER_SIZE;
 	}
 }
-
-#endif
