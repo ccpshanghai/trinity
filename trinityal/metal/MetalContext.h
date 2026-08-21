@@ -116,7 +116,13 @@ private:
 	uint64_t m_recordingFrameNumber;
 	uint64_t m_renderedFrameNumber;
 	double m_gpuTimerRate;
-#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 110000
+	// __MAC_OS_X_VERSION_MAX_ALLOWED is a macOS SDK macro -- undefined entirely on
+	// iOS, where it previously read as 0 and fell into the "old SDK" NSUInteger
+	// branch below. But sampleTimestamps:gpuTimestamp: (the only consumer) takes
+	// MTLTimestamp* on every platform that has it at all, iOS included, so the
+	// old-SDK fallback was never actually iOS's type; guard on the macro's
+	// presence, not just its value, so iOS takes the same branch modern macOS does.
+#if !defined( __MAC_OS_X_VERSION_MAX_ALLOWED ) || __MAC_OS_X_VERSION_MAX_ALLOWED >= 110000
 	typedef MTLTimestamp DeviceTimestamp;
 #else
 	typedef NSUInteger DeviceTimestamp;

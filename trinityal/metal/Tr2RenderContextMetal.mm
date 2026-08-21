@@ -1,6 +1,7 @@
 // Copyright © 2023 CCP ehf.
 
 #include "StdAfx.h"
+#include <TargetConditionals.h>
 
 #if ( TRINITY_PLATFORM == TRINITY_METAL )
 
@@ -832,11 +833,17 @@ ALResult Tr2RenderContextAL::SetPresentParameters( unsigned adapter,
 	m_swapChain.m_swapChain->Create( presentationParameters.outputWindow, *this );
 
 	CAMetalLayer* layer = (CAMetalLayer*)presentationParameters.outputWindow;
+#if TARGET_OS_OSX
+	// displaySyncEnabled is macOS-only CAMetalLayer surface -- iOS layers have no
+	// equivalent toggle for disabling display sync, so PRESENT_INTERVAL_IMMEDIATE
+	// has no layer-level lever to pull there (unchanged from today: iOS never
+	// reaches this line either way).
 	if( layer && [layer isKindOfClass:CAMetalLayer.class] )
 	{
 		layer.displaySyncEnabled =
 			presentationParameters.presentInterval == Tr2RenderContextEnum::PRESENT_INTERVAL_IMMEDIATE ? NO : YES;
 	}
+#endif
 	m_defaultBackBuffer = m_swapChain.GetBackBuffer();
 
 	// Set a default viewport based around this

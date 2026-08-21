@@ -426,10 +426,17 @@ void MetalWorkQueue::RenderTargetBarrier()
 		GetRenderEncoder();
 		ReleaseEncoder( true );
 	}
+#if !TARGET_OS_IPHONE
+	// The alternative to splitting the pass above: an explicit render-target
+	// memory barrier for non-Apple-Silicon (Intel) Mac GPUs. MTLBarrierScopeRenderTargets
+	// is API_UNAVAILABLE(ios) -- every iOS GPU is Apple-family/TBDR, so this
+	// branch (and the flag it sets, consumed in SetCurrentEncoder below) is
+	// macOS-only surface, not a behavior iOS ever needs.
 	else
 	{
 		m_hasPendingRenderTargetBarrier = true;
 	}
+#endif
 }
 
 void MetalWorkQueue::CommitCommandBuffer( MetalCBCommitFlags flags )
@@ -858,6 +865,10 @@ void MetalWorkQueue::SetCurrentEncoder( MetalEncoderType encoderType, NSString* 
 		// If the encoder types match then we can carry on using the current encoder otherwise we need to create a new one
 		if( m_currentEncoderType == encoderType )
 		{
+#if !TARGET_OS_IPHONE
+			// m_hasPendingRenderTargetBarrier is never set true on iOS (see
+			// RenderTargetBarrier above), but the enumerator itself is
+			// API_UNAVAILABLE(ios), so the whole call has to stay macOS-only too.
 			if( encoderType == MTLENCODERTYPE_RENDER && m_hasPendingRenderTargetBarrier )
 			{
 				[m_currentRenderEncoder memoryBarrierWithScope:MTLBarrierScopeRenderTargets
@@ -865,6 +876,7 @@ void MetalWorkQueue::SetCurrentEncoder( MetalEncoderType encoderType, NSString* 
 												  beforeStages:MTLRenderStageVertex];
 				m_hasPendingRenderTargetBarrier = false;
 			}
+#endif
 			// Mark that this curent encoder is in use and return
 			m_encoderInUse = true;
 			return;
@@ -1062,7 +1074,12 @@ void MetalWorkQueue::ReadBackBufferToCPU( id<MTLBuffer> buffer, bool waitForData
 
 	id<MTLBlitCommandEncoder> blitEncoder = GetBlitEncoder();
 
+	// synchronizeResource: is Managed-storage-mode CPU sync, same family as
+	// didModifyRange in CopyDataToBuffer above -- macOS-only API, no-op on iOS
+	// because iOS buffers are never Managed (spec D7's Shared-only story).
+#if TARGET_OS_OSX
 	[blitEncoder synchronizeResource:buffer]; // sync to CPU
+#endif
 
 	if( waitForData )
 	{
@@ -1366,7 +1383,10 @@ void MetalWorkQueue::CopyTextureToMTLBuffer( id<MTLTexture> texture,
 	ReleaseEncoder( true );
 	blitEncoder = GetBlitEncoder();
 
+	// See ReadBackBufferToCPU: same Managed-only sync, no-op on iOS.
+#if TARGET_OS_OSX
 	[blitEncoder synchronizeResource:destBuffer]; // sync to CPU
+#endif
 
 	if( waitForData )
 	{
@@ -2077,7 +2097,12 @@ void MetalWorkQueue::SetDepthStencilAttachment( id<MTLTexture> texture )
 
 		case MTLPixelFormatStencil8:
 		case MTLPixelFormatX32_Stencil8:
+		// X24_Stencil8 is the same macOS-only SDK surface as Depth24Unorm_Stencil8
+		// below -- the 24-bit-depth combined formats never existed on iOS hardware,
+		// and MetalUtils.mm's MetalDefaultDepthStencilPixelFormat never produces it there.
+#if TARGET_OS_OSX
 		case MTLPixelFormatX24_Stencil8:
+#endif
 			stencilTexture = texture;
 			break;
 
