@@ -1,8 +1,10 @@
 // Copyright © 2024 CCP ehf.
 
 #include "StdAfx.h"
+#include <TargetConditionals.h>
 
-#if ( TRINITY_PLATFORM == TRINITY_METAL )
+// See Tr2MetalFxUpscaling.h: no MetalFX framework on the iOS Simulator SDK.
+#if ( TRINITY_PLATFORM == TRINITY_METAL ) && !TARGET_OS_SIMULATOR
 #include <MetalFx/MetalFX.h>
 
 #include "Tr2MetalFxUpscaling.h"

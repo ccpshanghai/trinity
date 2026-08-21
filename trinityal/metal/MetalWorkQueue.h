@@ -4,7 +4,10 @@
 #if TRINITY_PLATFORM == TRINITY_METAL
 
 #include <Metal/Metal.h>
-#import <Cocoa/Cocoa.h>
+// Foundation, not Cocoa/AppKit: this header only reaches NSString/NSRange/NSUInteger
+// (Foundation types), and Cocoa.h doesn't exist outside the macOS SDK. Nothing here
+// touches AppKit.
+#import <Foundation/Foundation.h>
 #import <QuartzCore/CAMetalLayer.h>
 
 #include "MetalUtils.h"
