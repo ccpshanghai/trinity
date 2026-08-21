@@ -970,7 +970,7 @@ TEST_F( Raytracing, CanUsePerObjectData )
 	ASSERT_HRESULT_SUCCEEDED( blas.Create( { Tr2RtPositionStreamAL( vb ), Tr2RtIndicesStreamAL( ib ) }, Tr2RtBlasGeometryFlags::OPAQUE_GEOMETRY, Tr2RtBuildFlags::PREFER_FAST_TRACE, *renderContext ) );
 
 	Tr2RtInstanceAL instances[2];
-	instances[0].blas = blas;
+	instances[0].blas = blas.TrinityALImpl_GetObject();
 	memset( instances[0].transform, 0, sizeof( instances[0].transform ) );
 	instances[0].transform[0][0] = 0.5f;
 	instances[0].transform[1][1] = 0.5f;
@@ -978,7 +978,7 @@ TEST_F( Raytracing, CanUsePerObjectData )
 	instances[0].transform[0][3] = -0.6f;
 	instances[0].materialIndex = 0;
 
-	instances[1].blas = blas;
+	instances[1].blas = blas.TrinityALImpl_GetObject();
 	memset( instances[1].transform, 0, sizeof( instances[1].transform ) );
 	instances[1].transform[0][0] = 0.5f;
 	instances[1].transform[1][1] = 0.5f;
