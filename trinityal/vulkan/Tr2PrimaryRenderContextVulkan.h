@@ -209,6 +209,12 @@ private:
 	// idle and building new ones is the only way to drain that state.
 	ALResult RebuildSwapChainVulkan();
 
+	// Drops the current swapchain + VkSurfaceKHR and, if outputWindow is non-null,
+	// creates a new surface from it. SetPresentParameters calls this when the
+	// window handle changes (Android surface loss); a null outputWindow is the
+	// teardown half of that handshake.
+	ALResult RecreateSurfaceVulkan();
+
 	Tr2CapsAL m_caps;
 	VkQueue m_graphicsQueue;
 	VkQueue m_presentQueue;

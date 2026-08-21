@@ -368,6 +368,36 @@ namespace
 		}
 		return S_OK;
 	}
+
+	ALResult CreatePresentationSurface( VkInstance instance, Tr2WindowHandle window, VkSurfaceKHR& surface )
+	{
+		if( window == 0 )
+		{
+			surface = VK_NULL_HANDLE;
+			return S_OK;
+		}
+#if defined( VK_USE_PLATFORM_WIN32_KHR )
+		VkWin32SurfaceCreateInfoKHR surfacecreateInfo = {
+			VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
+			nullptr,
+			0,
+			GetModuleHandle( nullptr ),
+			window
+		};
+		CR_RETURN_HR( Vk2Al( vkCreateWin32SurfaceKHR( instance, &surfacecreateInfo, nullptr, &surface ) ) );
+#elif defined( VK_USE_PLATFORM_ANDROID_KHR )
+		VkAndroidSurfaceCreateInfoKHR surfacecreateInfo = {
+			VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
+			nullptr,
+			0,
+			reinterpret_cast<ANativeWindow*>( window )
+		};
+		CR_RETURN_HR( Vk2Al( vkCreateAndroidSurfaceKHR( instance, &surfacecreateInfo, nullptr, &surface ) ) );
+#else
+		static_assert( false, "Define swapchain creation for this platform here" );
+#endif
+		return S_OK;
+	}
 }
 
 Tr2PrimaryRenderContextAL::FrameData::FrameData()
@@ -441,35 +471,13 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 
 	if( !isWindowless )
 	{
-#if defined(VK_USE_PLATFORM_WIN32_KHR)
-
-		VkWin32SurfaceCreateInfoKHR surfacecreateInfo = {
-			VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
-			nullptr,
-			0,
-			GetModuleHandle( nullptr ),
-			focusWindow
-		};
-
-		CR_RETURN_HR( Vk2Al( vkCreateWin32SurfaceKHR( instance, &surfacecreateInfo, nullptr, &surface ) ) );
-#elif defined(VK_USE_PLATFORM_ANDROID_KHR)
-
-		// Tr2WindowHandle is uintptr_t off Windows (StdAfx.h); on Android the host layer
-		// hands the ANativeWindow* it got from the Java Surface through it. Lifetime is
-		// the caller's problem exactly as an HWND's is: the window must outlive the
-		// surface, and surface loss (rotate, background) arrives as a swapchain rebuild,
-		// not as a new device.
-		VkAndroidSurfaceCreateInfoKHR surfacecreateInfo = {
-			VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
-			nullptr,
-			0,
-			reinterpret_cast<ANativeWindow*>( focusWindow )
-		};
-
-		CR_RETURN_HR( Vk2Al( vkCreateAndroidSurfaceKHR( instance, &surfacecreateInfo, nullptr, &surface ) ) );
-#else
-		static_assert( false, "Define swapchain creation for this platform here" );
-#endif
+		// Tr2WindowHandle is HWND on Windows and uintptr_t elsewhere (StdAfx.h); on
+		// Android the host layer hands the ANativeWindow* it got from the Java Surface
+		// through it. Lifetime is the caller's problem exactly as an HWND's is: the
+		// window must outlive the surface. Surface loss (background) is a new
+		// ANativeWindow, which SetPresentParameters rebuilds via RecreateSurfaceVulkan
+		// rather than a new device. Rotation with configChanges keeps the same window.
+		CR_RETURN_HR( CreatePresentationSurface( instance, focusWindow, surface ) );
 		if( !FindPresentableQueues( physicalDevice.device, surface, graphicsQueue, presentQueue ) )
 		{
 			CCP_AL_LOGERR( "Could not find graphics queues for the selected device" );
@@ -722,6 +730,9 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	// buffer gets sRGB views.
 	m_swapChainMutableFormat = swapChainMutableFormat;
 	m_presentParameters = presentationParameters;
+	// The surface was created from focusWindow, which is the handle RecreateSurfaceVulkan
+	// must compare against. Callers usually set outputWindow to the same value.
+	m_presentParameters.outputWindow = focusWindow;
 	m_needsSwapChainRebuild = false;
 	m_surface = surface;
 	m_swapChain = swapChain;
@@ -986,6 +997,53 @@ ALResult Tr2PrimaryRenderContextAL::RebuildSwapChainVulkan()
 	return S_OK;
 }
 
+ALResult Tr2PrimaryRenderContextAL::RecreateSurfaceVulkan()
+{
+	if( m_device == VK_NULL_HANDLE )
+	{
+		return E_INVALIDCALL;
+	}
+
+	// Same idle as RebuildSwapChainVulkan: nothing referencing the old surface may be in
+	// flight, including a present the frame fence does not cover.
+	vkDeviceWaitIdle( m_device );
+	m_flushedFrame = m_recordingFrame;
+	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
+	{
+		m_frameData[i].submittedFrame = 0;
+	}
+
+	m_defaultBackBuffer.m_texture->Destroy();
+	InvalidateAttachmentsVulkan();
+
+	// Swapchain first: destroying it ends outstanding presents, which is what makes the
+	// present-waited semaphores safe to destroy afterwards (RebuildSwapChainVulkan).
+	if( m_swapChain != VK_NULL_HANDLE )
+	{
+		vkDestroySwapchainKHR( m_device, m_swapChain, nullptr );
+		m_swapChain = VK_NULL_HANDLE;
+	}
+
+	if( m_surface != VK_NULL_HANDLE )
+	{
+		VkInstance instance;
+		TrinityALImpl::GetVulkanInstance( instance );
+		vkDestroySurfaceKHR( instance, m_surface, nullptr );
+		m_surface = VK_NULL_HANDLE;
+	}
+
+	if( m_presentParameters.outputWindow == 0 )
+	{
+		m_needsSwapChainRebuild = false;
+		return S_OK;
+	}
+
+	VkInstance instance;
+	FORWARD_HR( TrinityALImpl::GetVulkanInstance( instance ) );
+	FORWARD_HR( CreatePresentationSurface( instance, m_presentParameters.outputWindow, m_surface ) );
+	return S_OK;
+}
+
 ALResult Tr2PrimaryRenderContextAL::SetPresentParameters( unsigned, const Tr2PresentParametersAL& presentationParameters )
 {
 	if( !IsValid() )
@@ -993,6 +1051,7 @@ ALResult Tr2PrimaryRenderContextAL::SetPresentParameters( unsigned, const Tr2Pre
 		return E_INVALIDCALL;
 	}
 
+	const bool windowChanged = m_presentParameters.outputWindow != presentationParameters.outputWindow;
 	m_presentParameters = presentationParameters;
 
 	// Rebuilt now rather than flagged for later: the caller asked for this, and a resize
@@ -1002,14 +1061,33 @@ ALResult Tr2PrimaryRenderContextAL::SetPresentParameters( unsigned, const Tr2Pre
 	// The command buffer is mid-recording here, and RebuildSwapChainVulkan waits the device
 	// idle -- which is legal, but whatever was recorded for this frame is discarded along
 	// with the framebuffer it referenced. BeginFrame starts a clean one.
-	EndRenderPassVulkan();
-	vkEndCommandBuffer( m_commandBuffer );
-	m_commandBufferRecording = false;
+	//
+	// Guarded: a soak teardown can arrive after Present already ended the buffer, or after
+	// a previous SetPresentParameters dropped the surface. Ending an un-recording buffer
+	// is VUID-vkEndCommandBuffer-commandBuffer-00059.
+	if( m_commandBufferRecording )
+	{
+		EndRenderPassVulkan();
+		vkEndCommandBuffer( m_commandBuffer );
+		m_commandBufferRecording = false;
+	}
+
+	if( windowChanged )
+	{
+		FORWARD_HR( RecreateSurfaceVulkan() );
+	}
 
 	ALResult rebuilt = RebuildSwapChainVulkan();
 	if( FAILED( rebuilt ) )
 	{
 		return rebuilt;
+	}
+
+	if( m_surface == VK_NULL_HANDLE )
+	{
+		// Presentation dropped (surface-loss teardown). The next SetPresentParameters
+		// with a live window rebuilds surface + swapchain.
+		return S_OK;
 	}
 
 	FORWARD_HR( BeginFrame() );

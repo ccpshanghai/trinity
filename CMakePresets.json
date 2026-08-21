@@ -82,6 +82,17 @@
       }
     },
     {
+      "name": "arm64-android-vulkan",
+      "displayName": "M6 Android Vulkan (Release, AL tests)",
+      "inherits": "arm64-android-release",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "BUILD_VULKAN": "ON",
+        "BUILD_TESTING": "ON",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "OFF"
+      }
+    },
+    {
       "name": "x64-windows-internal",
       "inherits": "x64-windows",
       "cacheVariables": {

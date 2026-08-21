@@ -4,12 +4,6 @@
 #include "WithValidRenderContextFixture.h"
 #include <map>
 
-#if defined( __ANDROID__ )
-#include <android/log.h>
-
-extern volatile bool g_windowResized;
-#endif
-
 WithValidRenderContext::WithValidRenderContext() :
 	m_madeScreenshot( false )
 {
@@ -36,13 +30,6 @@ void WithValidRenderContext::SetUpTestCase()
 
 
 	CR( renderContext->CreateDevice( 0, WithWindow::GetWindowHandle(), presentParameters ) );
-
-#if defined( __ANDROID__ )
-	__android_log_print( ANDROID_LOG_INFO, "TrinityALTest", "OpenGL extensions: %s", glGetString( GL_EXTENSIONS ) );
-	while( !g_windowResized )
-	{
-	}
-#endif
 }
 
 void WithValidRenderContext::TearDownTestCase()
