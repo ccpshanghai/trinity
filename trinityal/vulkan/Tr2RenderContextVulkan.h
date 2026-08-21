@@ -31,6 +31,29 @@ class Tr2RtShaderTableAL;
 class Tr2RtTopLevelAccelerationStructureAL;
 
 
+// The engine declares members of this type unconditionally (Tr2Material, Tr2RaytracingGeometry,
+// ITr2EffectValue::AddUsedTexture), so every backend has to name it. This backend has no
+// bindless descriptor path, so -- exactly as on dx11 and on the stub -- the type exists and
+// does nothing. It is not a placeholder for a Vulkan implementation; when one arrives it
+// gains members, as on dx12.
+class Tr2BindlessResourcesAL
+{
+public:
+	void Add( const Tr2TextureAL& )
+	{
+	}
+	void Add( const Tr2BufferAL& )
+	{
+	}
+	void Add( const Tr2BindlessResourcesAL& )
+	{
+	}
+	void Clear()
+	{
+	}
+};
+
+
 // -------------------------------------------------------------
 // Description:
 //   See http://carbon/wiki/Tr2RenderContext
@@ -76,13 +99,14 @@ public:
 
 	ALResult SetStreamSource( uint32_t stream, const Tr2BufferAL & buffer, uint32_t offset, uint32_t stride ) throw( );
 	ALResult SetIndices( const Tr2BufferAL & buffer ) throw( );
+	ALResult SetIndices( const Tr2BufferAL & buffer, uint32_t stride ) throw( );
 
 	// vkCmdFillBuffer writes one 32-bit value over a range, which covers the single-
 	// component typed buffer these are used for. A buffer whose format has more than one
 	// component would need the pattern repeated, and nothing asks for that yet -- so this
 	// takes values[0] and says so rather than pretending to handle four.
-	ALResult ClearUav( Tr2BufferAL& buffer, const float values[4] ) throw( );
-	ALResult ClearUav( Tr2BufferAL& buffer, const uint32_t values[4] ) throw( );
+	ALResult ClearUav( const Tr2BufferAL& buffer, const float values[4] ) throw( );
+	ALResult ClearUav( const Tr2BufferAL& buffer, const uint32_t values[4] ) throw( );
 
 	ALResult CopySubBuffer(
 		Tr2BufferAL& dest,
@@ -98,8 +122,8 @@ public:
 	ALResult SetVertexLayout( const Tr2VertexLayoutAL& layout ) throw( );
 	ALResult SetShaderProgram( const Tr2ShaderProgramAL& shader ) throw( );
 
-	ALResult ClearUav( Tr2TextureAL& rt, uint32_t mip, const float values[4] ) throw( );
-	ALResult ClearUav( Tr2TextureAL& rt, uint32_t mip, const uint32_t values[4] ) throw( );
+	ALResult ClearUav( const Tr2TextureAL& rt, uint32_t mip, const float values[4] ) throw( );
+	ALResult ClearUav( const Tr2TextureAL& rt, uint32_t mip, const uint32_t values[4] ) throw( );
 
 	ALResult SetResourceSet( const Tr2ResourceSetAL& resourceSet ) throw( );
 	
@@ -115,6 +139,23 @@ public:
 		uint32_t startIndex,
 		uint32_t primitiveCount,
 		uint32_t numInstances ) throw( );
+
+	// The direct forms. The overload above counts primitives and derives the index count
+	// from the topology; these two take the counts the caller already has, which is what
+	// Tr2RenderContext::RenderBatch and the DrawUP helper hand over. Every other backend
+	// carries both, and on Vulkan they are the vkCmdDrawIndexed/vkCmdDraw argument lists
+	// verbatim -- no derivation, so nothing to get wrong.
+	ALResult DrawIndexedInstanced(
+		uint32_t indexCountPerInstance,
+		uint32_t instanceCount,
+		uint32_t startIndexLocation,
+		int32_t baseVertexLocation,
+		uint32_t startInstanceLocation ) throw( );
+	ALResult DrawInstanced(
+		uint32_t vertexCountPerInstance,
+		uint32_t instanceCount,
+		uint32_t startVertexLocation,
+		uint32_t startInstanceLocation ) throw( );
 
 	ALResult DrawIndexedInstancedIndirect( Tr2BufferAL& params, uint32_t offset ) throw( );
 	ALResult DrawInstancedIndirect( Tr2BufferAL& params, uint32_t offset ) throw( );
@@ -277,6 +318,50 @@ public:
 	ALResult UseTextures( Tr2GpuUsage::Type usage, size_t count, Tr2TextureAL* textures );
     ALResult UseAccelerationStructure( Tr2RtTopLevelAccelerationStructureAL tlas );
 
+	// The residency call for the bindless heap. There is no bindless heap on this backend
+	// (see Tr2BindlessResourcesAL above), so there is nothing to make resident and S_OK is
+	// the truthful answer -- the same answer dx11 gives, and for the same reason.
+	ALResult UseResources( Tr2UseResourceDestination, Tr2GpuUsage::Type, const Tr2BindlessResourcesAL& )
+	{
+		return S_OK;
+	}
+
+	// Reported to the effect compiler as the BINDLESS_RENDERING option; false keeps the
+	// shaders off the bindless path this backend cannot serve.
+	bool SupportsBindlessTextures() const
+	{
+		return false;
+	}
+
+	// The five native-handle accessors the Python exposure maps unconditionally, for
+	// hosting an ImGui backend inside Trinity's frame. They are DX12 handles; there is no
+	// DX12 anything here, and 0 is the documented "not available" value -- exactly as on
+	// dx11, metal and the stub.
+	uint64_t GetNativeCommandList() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeDevice() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeSrvHeap() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeCommandQueue() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeSamplerHeap() const
+	{
+		return 0;
+	}
+
     
 
 	Tr2UpscalingAL::Result EnableUpscaling( Tr2UpscalingAL::Technique tech, Tr2UpscalingAL::Setting setting, bool framegeneration, uint32_t adapter )
@@ -289,7 +374,11 @@ public:
 		return nullptr;
 	}
 
-	Tr2UpscalingContextAL* CreateUpscalingContext( uint32_t displayWidth, uint32_t displayHeight, Tr2RenderContextEnum::PixelFormat sourceFormat, Tr2RenderContextEnum::DepthStencilFormat depthFormat )
+	// The four loose parameters this used to take are now fields of UpscalingContextParams,
+	// and the engine passes the struct plus the id of a context to reuse. The answer is
+	// still nullptr -- upscaling is not implemented on this backend -- but the signature
+	// has to be the one the callers use.
+	Tr2UpscalingContextAL* CreateUpscalingContext( Tr2UpscalingAL::UpscalingContextParams params, uint32_t existingContext = Tr2UpscalingAL::INVALID_CONTEXT_ID )
 	{
 		return nullptr;
 	}
@@ -303,11 +392,14 @@ public:
 		return std::vector<std::tuple<Tr2UpscalingAL::Technique, uint32_t, bool>>();
 	}
 
-	void GetUpscalingSetup( Tr2UpscalingAL::Technique& technique, Tr2UpscalingAL::Setting& setting, bool& framegeneration )
+	// 'temporal' was added to the out-parameters after this stub was written; NONE is not a
+	// temporal technique, so false is the right value and not a placeholder.
+	void GetUpscalingSetup( Tr2UpscalingAL::Technique& technique, Tr2UpscalingAL::Setting& setting, bool& framegeneration, bool& temporal )
 	{
 		technique = Tr2UpscalingAL::Technique::NONE;
 		setting = Tr2UpscalingAL::Setting::NATIVE;
 		framegeneration = false;
+		temporal = false;
 	}
 
 	Tr2UpscalingAL::UpscalingInfo GetUpscalingInfo( uint32_t upscalingContextID )

@@ -19,6 +19,13 @@
 
 bool g_gatherPipelineStatistics = false;
 
+// The AL owns this counter on every backend -- dx11, dx12, metal and the stub all declare it
+// in their render-context translation unit, while TriStepRenderFps.cpp and Tr2InstancedMesh.cpp
+// say CCP_STATS_DECLARED_ELSEWHERE and read it. The engine does not link without a definition,
+// so it is the AL's to provide. The draws below feed it: a declared counter nobody adds to
+// reads a confident zero, which is worse than no counter at all.
+CCP_STATS_DECLARE( vertexCount, "Trinity/AL/vertexCount", true, CST_COUNTER_HIGH, "Vertex count in DrawPrimitive calls." );
+
 namespace
 {
 
@@ -275,6 +282,20 @@ ALResult Tr2RenderContextAL::SetIndices( const Tr2BufferAL & buffer ) throw( )
 		return S_OK;
 	}
 	vkCmdBindIndexBuffer( m_commandBuffer, buffer.m_buffer->m_buffer, 0, buffer.GetDesc().stride == 4 ?  VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16 );
+	return S_OK;
+}
+
+// The caller-supplied-stride form. The overload above reads the stride out of the buffer
+// description; Tr2EffectStateManager tracks index stride separately and passes it, which
+// matters for a buffer bound with a stride other than the one it was created with.
+ALResult Tr2RenderContextAL::SetIndices( const Tr2BufferAL & buffer, uint32_t stride ) throw( )
+{
+	if( !buffer.IsValid() )
+	{
+		vkCmdBindIndexBuffer( m_commandBuffer, m_owner->GetZeroBufferVulkan(), 0, VK_INDEX_TYPE_UINT16 );
+		return S_OK;
+	}
+	vkCmdBindIndexBuffer( m_commandBuffer, buffer.m_buffer->m_buffer, 0, stride == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32 );
 	return S_OK;
 }
 
@@ -764,7 +785,10 @@ ALResult Tr2RenderContextAL::DrawIndexedPrimitive(
 {
 	SetPipeline();
 
-	vkCmdDrawIndexed( m_commandBuffer, m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second, 1, 0, 0, 0 );
+	auto vc = m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second;
+	CCP_STATS_ADD( vertexCount, vc );
+
+	vkCmdDrawIndexed( m_commandBuffer, vc, 1, 0, 0, 0 );
 	return S_OK;
 }
 
@@ -772,7 +796,10 @@ ALResult Tr2RenderContextAL::DrawPrimitive( uint32_t startVertex, uint32_t primi
 {
 	SetPipeline();
 
-	vkCmdDraw( m_commandBuffer, m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second, 1, 0, 0 );
+	auto vc = m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second;
+	CCP_STATS_ADD( vertexCount, vc );
+
+	vkCmdDraw( m_commandBuffer, vc, 1, 0, 0 );
 	return S_OK;
 }
 
@@ -784,15 +811,58 @@ ALResult Tr2RenderContextAL::DrawIndexedInstanced(
 {
 	SetPipeline();
 
+	auto vc = m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second;
+	CCP_STATS_ADD( vertexCount, vc * numInstances );
+
 	// startIndex is honoured here even though DrawIndexedPrimitive above still ignores it.
 	// Passing it is free and leaving it out would be a second copy of that defect.
 	vkCmdDrawIndexed(
 		m_commandBuffer,
-		m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second,
+		vc,
 		numInstances,
 		startIndex,
 		0,
 		0 );
+	return S_OK;
+}
+
+ALResult Tr2RenderContextAL::DrawIndexedInstanced(
+	uint32_t indexCountPerInstance,
+	uint32_t instanceCount,
+	uint32_t startIndexLocation,
+	int32_t baseVertexLocation,
+	uint32_t startInstanceLocation ) throw( )
+{
+	SetPipeline();
+
+	CCP_STATS_ADD( vertexCount, indexCountPerInstance * instanceCount );
+
+	vkCmdDrawIndexed(
+		m_commandBuffer,
+		indexCountPerInstance,
+		instanceCount,
+		startIndexLocation,
+		baseVertexLocation,
+		startInstanceLocation );
+	return S_OK;
+}
+
+ALResult Tr2RenderContextAL::DrawInstanced(
+	uint32_t vertexCountPerInstance,
+	uint32_t instanceCount,
+	uint32_t startVertexLocation,
+	uint32_t startInstanceLocation ) throw( )
+{
+	SetPipeline();
+
+	CCP_STATS_ADD( vertexCount, vertexCountPerInstance * instanceCount );
+
+	vkCmdDraw(
+		m_commandBuffer,
+		vertexCountPerInstance,
+		instanceCount,
+		startVertexLocation,
+		startInstanceLocation );
 	return S_OK;
 }
 
@@ -858,7 +928,7 @@ namespace
 	const VkImageLayout UAV_CLEAR_LAYOUT = VK_IMAGE_LAYOUT_GENERAL;
 }
 
-ALResult Tr2RenderContextAL::ClearUav( Tr2TextureAL& rt, uint32_t mip, const float values[4] ) throw( )
+ALResult Tr2RenderContextAL::ClearUav( const Tr2TextureAL& rt, uint32_t mip, const float values[4] ) throw( )
 {
 	if( !rt.IsValid() )
 	{
@@ -875,7 +945,7 @@ ALResult Tr2RenderContextAL::ClearUav( Tr2TextureAL& rt, uint32_t mip, const flo
 	return S_OK;
 }
 
-ALResult Tr2RenderContextAL::ClearUav( Tr2TextureAL& rt, uint32_t mip, const uint32_t values[4] ) throw( )
+ALResult Tr2RenderContextAL::ClearUav( const Tr2TextureAL& rt, uint32_t mip, const uint32_t values[4] ) throw( )
 {
 	if( !rt.IsValid() )
 	{
@@ -892,7 +962,7 @@ ALResult Tr2RenderContextAL::ClearUav( Tr2TextureAL& rt, uint32_t mip, const uin
 	return S_OK;
 }
 
-ALResult Tr2RenderContextAL::ClearUav( Tr2BufferAL& buffer, const float values[4] ) throw( )
+ALResult Tr2RenderContextAL::ClearUav( const Tr2BufferAL& buffer, const float values[4] ) throw( )
 {
 	if( !buffer.IsValid() )
 	{
@@ -906,7 +976,7 @@ ALResult Tr2RenderContextAL::ClearUav( Tr2BufferAL& buffer, const float values[4
 	return S_OK;
 }
 
-ALResult Tr2RenderContextAL::ClearUav( Tr2BufferAL& buffer, const uint32_t values[4] ) throw( )
+ALResult Tr2RenderContextAL::ClearUav( const Tr2BufferAL& buffer, const uint32_t values[4] ) throw( )
 {
 	if( !buffer.IsValid() )
 	{
