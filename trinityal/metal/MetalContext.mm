@@ -462,9 +462,9 @@ uint64_t MetalContext::GetRenderedFrameNumber() const
 	return m_renderedFrameNumber;
 }
 
-void MetalContext::BlitToDrawableAndPresent( id<MTLTexture> srcTexture, NSView* view )
+void MetalContext::BlitToDrawableAndPresent( id<MTLTexture> srcTexture, CAMetalLayer* layer )
 {
-	if( m_primaryWorkQueue.BlitToDrawableAndPresent( srcTexture, view, &m_renderedFrameNumber ) )
+	if( m_primaryWorkQueue.BlitToDrawableAndPresent( srcTexture, layer, &m_renderedFrameNumber ) )
 	{
 		CCP_STATS_SET( constantDataSize, GetConstantBufferAllocator().GetTotalUploadedSize() );
 		++m_recordingFrameNumber;

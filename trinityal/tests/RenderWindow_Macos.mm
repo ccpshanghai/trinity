@@ -114,7 +114,7 @@ bool RenderWindow::Resize( uint32_t width, uint32_t height )
 
 Tr2WindowHandle RenderWindow::GetHandle() const
 {
-	return [(NSWindow*)m_handle contentView];
+	return [(NSWindow*)m_handle contentView].layer;
 }
 
 

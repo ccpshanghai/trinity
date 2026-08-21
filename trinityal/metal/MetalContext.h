@@ -84,7 +84,7 @@ public:
 	uint64_t GetRecordingFrameNumber() const;
 	uint64_t GetRenderedFrameNumber() const;
 
-	void BlitToDrawableAndPresent( id<MTLTexture> srcTexture, NSView* view );
+	void BlitToDrawableAndPresent( id<MTLTexture> srcTexture, CAMetalLayer* layer );
 
 	double GetGpuTimerRate() const;
 

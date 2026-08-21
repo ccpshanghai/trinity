@@ -23,8 +23,8 @@ ALResult Tr2SwapChainAL::Create( Tr2WindowHandle windowHandle, Tr2RenderContextA
 	{
 		return E_INVALIDARG;
 	}
-	NSView* view = (NSView*)windowHandle;
-	if( !view.layer || ![view.layer isKindOfClass:CAMetalLayer.class] )
+	CAMetalLayer* layer = (CAMetalLayer*)windowHandle;
+	if( !layer || ![layer isKindOfClass:CAMetalLayer.class] )
 	{
 		return E_INVALIDARG;
 	}
@@ -43,7 +43,6 @@ ALResult Tr2SwapChainAL::Create( Tr2WindowHandle windowHandle, Tr2RenderContextA
 	}
 	else
 	{
-		auto layer = (CAMetalLayer*)view.layer;
 		auto scale = layer.contentsScale;
 		layer.drawableSize = CGSizeMake( layer.bounds.size.width * scale, layer.bounds.size.height * scale );
 		width = layer.drawableSize.width;
@@ -78,9 +77,9 @@ bool Tr2SwapChainAL::IsValid() const
 ALResult Tr2SwapChainAL::Present( Tr2RenderContextAL& renderContext )
 {
 	MetalContext* metalContext = renderContext.GetMetalContext();
-	NSView* view = (NSView*)m_windowHandle;
+	CAMetalLayer* layer = (CAMetalLayer*)m_windowHandle;
 	id<MTLTexture> backBufferTexture = m_backBuffer.m_texture->GetMetalTexture();
-	metalContext->BlitToDrawableAndPresent( backBufferTexture, view );
+	metalContext->BlitToDrawableAndPresent( backBufferTexture, layer );
 
 	GetNextBackbuffer();
 

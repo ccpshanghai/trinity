@@ -179,7 +179,7 @@ public:
 	void SetCommandQueue( id<MTLCommandQueue> commandQueue );
 
 	void CommitCommandBuffer( MetalCBCommitFlags flags );
-	bool BlitToDrawableAndPresent( id<MTLTexture> srcTexture, NSView* view, uint64_t* renderedFrameNumber );
+	bool BlitToDrawableAndPresent( id<MTLTexture> srcTexture, CAMetalLayer* layer, uint64_t* renderedFrameNumber );
 	void BeginFrame();
 	void EndFrame();
 	void EndCurrentRenderPass();

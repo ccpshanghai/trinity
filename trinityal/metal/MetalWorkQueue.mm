@@ -548,7 +548,7 @@ void MetalWorkQueue::SetupPresentBlitResources()
 	m_numCommands = 0;
 }
 
-bool MetalWorkQueue::BlitToDrawableAndPresent( id<MTLTexture> srcTexture, NSView* view, uint64_t* renderedFrameNumber )
+bool MetalWorkQueue::BlitToDrawableAndPresent( id<MTLTexture> srcTexture, CAMetalLayer* layer, uint64_t* renderedFrameNumber )
 {
 	CCP_ASSERT( m_isPrimary );
 
@@ -558,23 +558,17 @@ bool MetalWorkQueue::BlitToDrawableAndPresent( id<MTLTexture> srcTexture, NSView
 
 	// JM - this should not be done every blit but rather setup only when something changes.
 	// Probably from the SwapChain or PresentParameters code.
-	CAMetalLayer* caMetalLayer = (CAMetalLayer*)view.layer;
-	caMetalLayer.device = m_device;
-	caMetalLayer.pixelFormat = srcTexture.pixelFormat;
-	id<CAMetalDrawable> drawable = [caMetalLayer nextDrawable];
+	layer.device = m_device;
+	layer.pixelFormat = srcTexture.pixelFormat;
+	id<CAMetalDrawable> drawable = [layer nextDrawable];
 
-	CCP_ASSERT( view != nil && caMetalLayer != nil && drawable != nil );
+	CCP_ASSERT( layer != nil && drawable != nil );
 
-	if( view == nil || caMetalLayer == nil || drawable == nil )
+	if( layer == nil || drawable == nil )
 	{
-		if( view == nil )
+		if( layer == nil )
 		{
-			CCP_AL_LOGERR( "No target view - present failed." );
-		}
-
-		if( caMetalLayer == nil )
-		{
-			CCP_AL_LOGERR( "Target view doesn't have a Metal layer - present failed." );
+			CCP_AL_LOGERR( "No CAMetalLayer provided - present failed." );
 		}
 
 		if( drawable == nil )

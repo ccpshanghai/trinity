@@ -774,12 +774,7 @@ ALResult Tr2RenderContextAL::CreateDevice( uint32_t Adapter,
 {
 	m_isValid = true;
 	m_workQueue = m_metalContext->GetPrimaryWorkQueue();
-#if 0
-	NSView *view = (NSView *)hFocusWindow;
-#else
-	NSView* view = (NSView*)presentationParameters.outputWindow;
-#endif
-	m_caMetalLayer = (CAMetalLayer*)view.layer;
+	m_caMetalLayer = (CAMetalLayer*)presentationParameters.outputWindow;
 	METAL_LOG( @"Creating device" );
 	SetPresentParameters( Adapter, presentationParameters );
 
@@ -834,10 +829,10 @@ ALResult Tr2RenderContextAL::SetPresentParameters( unsigned adapter,
 	}
 	m_swapChain.m_swapChain->Create( presentationParameters.outputWindow, *this );
 
-	NSView* view = (NSView*)presentationParameters.outputWindow;
-	if( view.layer && [view.layer isKindOfClass:CAMetalLayer.class] )
+	CAMetalLayer* layer = (CAMetalLayer*)presentationParameters.outputWindow;
+	if( layer && [layer isKindOfClass:CAMetalLayer.class] )
 	{
-		( (CAMetalLayer*)view.layer ).displaySyncEnabled =
+		layer.displaySyncEnabled =
 			presentationParameters.presentInterval == Tr2RenderContextEnum::PRESENT_INTERVAL_IMMEDIATE ? NO : YES;
 	}
 	m_defaultBackBuffer = m_swapChain.GetBackBuffer();
