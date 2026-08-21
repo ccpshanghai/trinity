@@ -327,14 +327,12 @@ if(WIN32)
         set(_VK_REGISTER_SIZE 32)
         set(_VK_CLASS_BLOCK 192)   # 6 * _VK_REGISTER_SIZE
 
-        # Matches the instance the backend actually creates: VkApplicationInfo's
-        # apiVersion is VK_MAKE_VERSION(1,0,0) at
-        # trinityal/vulkan/Tr2VideoAdapterInfoALVulkan.cpp:129 (the whole struct is
-        # 1.0), and nothing under trinityal/vulkan requests more. A SPIR-V module
-        # built for a newer environment than the instance requests is a validation
-        # error, so this tracks that line and is not a free choice. Phase 3 raises
-        # both together, with dynamic_rendering and synchronization2.
-        set(_VK_TARGET_ENV vulkan1.0)
+        # Matches the instance floor in
+        # trinityal/vulkan/Tr2VideoAdapterInfoALVulkan.cpp: loaders below 1.3 now
+        # fail before instance creation, and a SPIR-V module built for a newer
+        # environment than the declared instance is a validation error. This target
+        # env therefore tracks that 1.3 floor and is not a free choice.
+        set(_VK_TARGET_ENV vulkan1.3)
 
         foreach(shaderSource ${_SHADERS_VULKAN})
             string(REGEX REPLACE "h$" ".h" shaderOutput ${shaderSource})
