@@ -35,6 +35,11 @@ MTLResourceOptions MetalDefaultUploadStorageMode( id<MTLDevice> device );
 // macOS-only API.
 MTLPixelFormat MetalDefaultDepthStencilPixelFormat( id<MTLDevice> device );
 
+// BC textures can be sampled where the device says so -- every Apple-silicon
+// Mac, no iPhone. TRINITY_FORCE_BC_DECOMPRESS overrides to "no" so the
+// decompress path can be exercised on BC-capable hardware (test-only; spec D8).
+bool MetalDeviceSupportsBC( id<MTLDevice> device );
+
 struct MetalColor
 {
 	float red;

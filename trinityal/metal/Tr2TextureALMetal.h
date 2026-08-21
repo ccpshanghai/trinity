@@ -58,6 +58,18 @@ public:
 	uint32_t GetSrvIndexInHeap( Tr2RenderContextEnum::ColorSpace colorSpace = Tr2RenderContextEnum::COLOR_SPACE_LINEAR ) const;
 	uint32_t GetUavIndexInHeap( uint32_t mip ) const;
 
+	// Debug-only: true once BcDecompress has actually run during this texture's
+	// Create() (spec D8). Lets tests tell "GetFormat reports BGRA8" apart from
+	// "the decompress path really executed" -- without this, a stub that
+	// hardcoded the fallback format without ever calling BcDecompress would
+	// still pass the format-only assertion. Reached from tests via the existing
+	// TrinityALImpl_GetObject() escape hatch (same idiom other AL classes use),
+	// so no new production-facing API is added.
+	bool DebugDecompressedOnCreate() const
+	{
+		return m_debugDecompressedOnCreate;
+	}
+
 private:
 	Tr2BitmapDimensions m_desc;
 	Tr2MsaaDesc m_msaa;
@@ -91,6 +103,7 @@ private:
 	std::string m_name;
 	Tr2MemoryCounterAL m_memory;
 	bool m_wrappedTexture;
+	bool m_debugDecompressedOnCreate;
 	friend class ::Tr2RenderContextAL;
 };
 }

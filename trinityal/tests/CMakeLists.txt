@@ -5,6 +5,7 @@ project(TrinityALTest VERSION 1.0.0)
 set(_SOURCES 
     ALResultTest.cpp
     BitmapDimensions.cpp
+    BcDecompressTest.cpp
     Buffer.cpp
     Compute.cpp
     ConstantBuffer.cpp

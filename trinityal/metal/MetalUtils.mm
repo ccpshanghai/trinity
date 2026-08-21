@@ -36,6 +36,23 @@ MTLPixelFormat MetalDefaultDepthStencilPixelFormat( id<MTLDevice> device )
 #endif
 }
 
+bool MetalDeviceSupportsBC( id<MTLDevice> device )
+{
+	if( getenv( "TRINITY_FORCE_BC_DECOMPRESS" ) )
+	{
+		return false;
+	}
+	if( @available( macOS 11.0, iOS 16.4, * ) )
+	{
+		return [device supportsBCTextureCompression];
+	}
+#if TARGET_OS_OSX
+	return true; // pre-11.0 macOS: BC always worked there
+#else
+	return false;
+#endif
+}
+
 void MetalUtils::SetupPixelFormatConversionTable( id<MTLDevice> device )
 {
 	// Safe guard future expansion of formats

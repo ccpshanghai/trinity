@@ -23,7 +23,8 @@ Tr2TextureAL::Tr2TextureAL() :
 	m_mtlTextureSRGBView( nil ),
 	m_metalContext( nullptr ),
 	m_usedInEncoder( 0 ),
-	m_wrappedTexture( false )
+	m_wrappedTexture( false ),
+	m_debugDecompressedOnCreate( false )
 {
 	m_srvHeapIndices[0] = m_srvHeapIndices[1] = 0xffffffff;
 }
@@ -163,26 +164,32 @@ ALResult Tr2TextureAL::Create( const Tr2BitmapDimensions& desc,
 
 	Tr2BitmapDimensions realDesc = desc;
 
-	// macOS 10.14 can't handle compressed volume textures, so we decompress them on the fly
-	// This only works with an assumption that we have BC 1, 2, 3 compression only and that such
-	// textures are immutable textures only participating in draw commands (not copy/map, etc.)
+	// Two reasons to decompress, one mechanism. The 10.14 volume-texture
+	// workaround this machinery was built for, and -- new with M3 -- a device
+	// that cannot sample BC at all (every iPhone; spec D7). BcDecompress
+	// covers BC1/2/3 only; a format it refuses fails the create loudly below,
+	// which is correct -- BC4/5/7 content is ASTC's job (spec S1), not a
+	// decoder's.
+	bool deviceLacksBc = !MetalDeviceSupportsBC( metalContext->GetDevice() );
+	bool legacyVolumeCase = false;
 	if( @available( macOS 10.15, * ) )
 	{
 	}
 	else
 	{
-		if( desc.GetType() == Tr2RenderContextEnum::TEX_TYPE_3D && IsCompressedFormat( desc.GetFormat() ) )
-		{
-			metalPixelFormat = MTLPixelFormatBGRA8Unorm;
-			needsDecompression = true;
-			realDesc = Tr2BitmapDimensions( desc.GetType(),
-											Tr2RenderContextEnum::PIXEL_FORMAT_B8G8R8A8_UNORM,
-											desc.GetWidth(),
-											desc.GetHeight(),
-											desc.GetDepth(),
-											desc.GetMipCount(),
-											desc.GetArraySize() );
-		}
+		legacyVolumeCase = desc.GetType() == Tr2RenderContextEnum::TEX_TYPE_3D;
+	}
+	if( ( deviceLacksBc || legacyVolumeCase ) && IsCompressedFormat( desc.GetFormat() ) )
+	{
+		metalPixelFormat = MTLPixelFormatBGRA8Unorm;
+		needsDecompression = true;
+		realDesc = Tr2BitmapDimensions( desc.GetType(),
+										Tr2RenderContextEnum::PIXEL_FORMAT_B8G8R8A8_UNORM,
+										desc.GetWidth(),
+										desc.GetHeight(),
+										desc.GetDepth(),
+										desc.GetMipCount(),
+										desc.GetArraySize() );
 	}
 
 	{
@@ -223,6 +230,10 @@ ALResult Tr2TextureAL::Create( const Tr2BitmapDimensions& desc,
 						{
 							return E_FAIL;
 						}
+						// Proof the decompress path actually executed, not just that
+						// the format was reported as if it had (spec D8). Read via
+						// DebugDecompressedOnCreate().
+						m_debugDecompressedOnCreate = true;
 						workQueue->UploadTexture( m_mtlTexture,
 												  decompressed.get(),
 												  slice,
@@ -266,7 +277,10 @@ ALResult Tr2TextureAL::Create( const Tr2BitmapDimensions& desc,
 	m_memory.Set( Tr2MemoryCounterAL::TEXTURE, realDesc, msaa );
 
 	m_metalContext = metalContext;
-	m_desc = desc;
+	// The format we actually allocated. A caller that asked for BC1 on a
+	// device that cannot sample it gets BGRA8 and is told so -- GetFormat
+	// lying about this cost a design round to rule out (spec D8).
+	m_desc = realDesc;
 	m_gpuUsage = gpuUsage;
 	m_cpuUsage = cpuUsage;
 	m_msaa = msaa;
@@ -362,6 +376,7 @@ void Tr2TextureAL::Destroy()
 
 	m_metalContext = nil;
 	m_wrappedTexture = false;
+	m_debugDecompressedOnCreate = false;
 	m_memory.Reset();
 }
 
