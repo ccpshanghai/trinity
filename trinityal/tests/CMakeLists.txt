@@ -328,10 +328,10 @@ if(WIN32)
         set(_VK_CLASS_BLOCK 192)   # 6 * _VK_REGISTER_SIZE
 
         # Matches the instance floor in
-        # trinityal/vulkan/Tr2VideoAdapterInfoALVulkan.cpp: loaders below 1.3 now
-        # fail before instance creation, and a SPIR-V module built for a newer
-        # environment than the declared instance is a validation error. This target
-        # env therefore tracks that 1.3 floor and is not a free choice.
+        # trinityal/vulkan/Tr2VideoAdapterInfoALVulkan.cpp: the shader pipeline emits
+        # SPIR-V 1.6 for vulkan1.3, and a module built for a newer environment than
+        # the declared instance is a validation error. This target env therefore
+        # tracks that 1.3 floor and is not a free choice.
         set(_VK_TARGET_ENV vulkan1.3)
 
         foreach(shaderSource ${_SHADERS_VULKAN})

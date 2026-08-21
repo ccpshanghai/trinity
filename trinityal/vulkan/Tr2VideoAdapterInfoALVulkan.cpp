@@ -139,12 +139,11 @@ namespace
 					instanceVersion = VK_API_VERSION_1_0;
 				}
 			}
-			// The device gate (Tr2PrimaryRenderContextVulkan.cpp) already refuses
-			// devices below 1.3, and the shader pipeline emits SPIR-V 1.6 for
-			// vulkan1.3 -- a module targeting a newer environment than the instance
-			// declares is a validation error. A loader older than 1.3 therefore
-			// cannot run anything this backend produces: fail here, loudly, instead
-			// of creating an instance the first shader would invalidate.
+			// The shader pipeline emits SPIR-V 1.6 for vulkan1.3, and a module
+			// targeting a newer environment than the instance declares is a
+			// validation error. A loader older than 1.3 therefore cannot run
+			// anything this backend produces: fail here, loudly, instead of
+			// creating an instance the first shader would invalidate.
 			if( instanceVersion < VK_API_VERSION_1_3 )
 			{
 				CCP_AL_LOGERR( "Vulkan loader reports %u.%u; this backend requires 1.3",
