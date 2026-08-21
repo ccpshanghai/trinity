@@ -1028,7 +1028,18 @@ void MetalWorkQueue::CopyDataToBuffer( id<MTLBuffer> buffer, const void* data, s
 
 		memcpy( offsetDest, data, sizeInBytes );
 
-		[buffer didModifyRange:NSMakeRange( offset, sizeInBytes )];
+		// CPU writes buffer.contents directly above; sync it here. Managed needs
+		// the explicit call, Shared (spec D7) is a no-op, and didModifyRange is
+		// macOS-only API. CopyDataToBuffer has no callers in the tree today, but
+		// this file still has to compile for iOS (Task 11's gate), so it gets the
+		// same guard as every other didModifyRange site rather than being skipped
+		// as unreachable.
+#if TARGET_OS_OSX
+		if( buffer.storageMode == MTLStorageModeManaged )
+		{
+			[buffer didModifyRange:NSMakeRange( offset, sizeInBytes )];
+		}
+#endif
 	}
 }
 
