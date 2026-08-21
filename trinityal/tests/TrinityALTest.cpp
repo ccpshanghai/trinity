@@ -144,6 +144,7 @@ std::condition_variable s_windowCv;
 ANativeWindow* s_window = nullptr;   // guarded by s_windowMutex
 bool s_windowLost = false;           // guarded by s_windowMutex
 bool s_windowReleased = true;        // guarded by s_windowMutex
+bool s_finishing = false;            // guarded by s_windowMutex; see MarkFinishing
 std::string s_mode = "gtest";
 std::string s_gtestFilter;
 int s_soakCycles = 20;
@@ -235,6 +236,11 @@ void AckWindowReleased()
 	s_windowReleased = true;
 	s_windowCv.notify_all();
 }
+void MarkFinishing()
+{
+	std::lock_guard<std::mutex> lock( s_windowMutex );
+	s_finishing = true;
+}
 int SoakCycles() { return s_soakCycles; }
 const char* GtestFilter() { return s_gtestFilter.c_str(); }
 }
@@ -258,9 +264,14 @@ static uint32_t mainThread( void* )
 
 	int result = main( (int)args.size(), args.data() );
 	__android_log_print( ANDROID_LOG_INFO, "TrinityALTest", "TESTS_COMPLETE exit=%d", result );
-	// Vulkan objects are gone (fixture teardown). Let onNativeWindowDestroyed
-	// return instead of waiting out the handshake and terminating.
+	// Vulkan objects are gone (fixture teardown). AckWindowReleased is belt-and-
+	// suspenders bookkeeping; MarkFinishing is what actually matters here -- it
+	// tells onNativeWindowDestroyed this is the deliberate end-of-run teardown
+	// (every mode reaches this line, not just soak), so it returns promptly
+	// instead of arming the release-wait/terminate handshake that only a live
+	// soak cycle should ever need. See F6.
 	AndroidTestHost::AckWindowReleased();
+	AndroidTestHost::MarkFinishing();
 	ANativeActivity_finish( g_androidActivity );
 	return 0;
 }
@@ -284,14 +295,43 @@ static void onNativeWindowCreated( ANativeActivity*, ANativeWindow* window )
 
 static void onNativeWindowDestroyed( ANativeActivity*, ANativeWindow* window )
 {
-	// After this returns the window is gone; block until the render side lets go.
+	// After this returns the window is gone; block until the render side lets go --
+	// but only when the render side might actually still be holding it. Before this
+	// was gated, that wait was armed unconditionally in every mode: in gtest/smoke
+	// mode nothing ever called AckWindowReleased mid-run, so the ordinary exit
+	// after mainThread's own ANativeActivity_finish() necessarily rode out the
+	// full 10 seconds and then aborted. No test ever saw it because the driver
+	// script already has TESTS_COMPLETE and the pulled XML by then -- luck, not
+	// design. See F6.
 	std::unique_lock<std::mutex> lock( s_windowMutex );
 	s_window = nullptr;
 	g_androidWindow = nullptr;
 	s_windowLost = true;
+
+	if( s_finishing )
+	{
+		// Deliberate shutdown (mainThread's MarkFinishing, set after RUN_ALL_TESTS
+		// returned and every fixture's Vulkan objects were destroyed). Nothing is
+		// going to answer a release handshake and nothing needs to -- return
+		// promptly instead of waiting one out.
+		lock.unlock();
+		ANativeWindow_release( window );
+		return;
+	}
+
+	// Armed: a live soak cycle (AndroidBringup.LifecycleSoak) may still have a
+	// render context bound to this exact ANativeWindow, and only it can say when
+	// that is no longer true.
 	s_windowCv.wait_for( lock, std::chrono::seconds( 10 ), [] { return s_windowReleased; } );
 	if( !s_windowReleased )
 	{
+		// A real timeout here means RUN_ALL_TESTS itself is stuck -- the soak
+		// test's own release handshake (AndroidBringup.cpp's AckWindowReleased
+		// call) never ran -- so gtest's XML for the whole run is not on disk yet
+		// (googletest only emits it from OnTestProgramEnd, after every test
+		// including this one returns) and is lost whatever this callback does
+		// next. Aborting is still the right call: returning here would hand
+		// Vulkan a live VkSurfaceKHR built on a window that no longer exists.
 		__android_log_write( ANDROID_LOG_ERROR, "TrinityALTest", "window release handshake timed out" );
 		std::terminate();
 	}

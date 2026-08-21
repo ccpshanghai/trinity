@@ -902,19 +902,8 @@ bool Tr2PrimaryRenderContextAL::IsValid() const
 	return m_device != VK_NULL_HANDLE;
 }
 
-ALResult Tr2PrimaryRenderContextAL::RebuildSwapChainVulkan()
+void Tr2PrimaryRenderContextAL::QuiesceSwapChainStateVulkan()
 {
-	if( m_device == VK_NULL_HANDLE )
-	{
-		return E_INVALIDCALL;
-	}
-	if( m_surface == VK_NULL_HANDLE )
-	{
-		// Windowless: there is no swapchain to rebuild and nothing to recover from.
-		m_needsSwapChainRebuild = false;
-		return S_OK;
-	}
-
 	// Everything below assumes nothing is in flight, and that assumption is the reason this
 	// is a device-wide wait rather than a fence wait: the frame that failed may have left a
 	// submit half-done, and the acquire semaphore signalled with nobody to wait on it.
@@ -935,6 +924,25 @@ ALResult Tr2PrimaryRenderContextAL::RebuildSwapChainVulkan()
 
 	// The next pass must not begin against image views that have just been destroyed.
 	InvalidateAttachmentsVulkan();
+}
+
+ALResult Tr2PrimaryRenderContextAL::RebuildSwapChainVulkan( bool alreadyQuiesced )
+{
+	if( m_device == VK_NULL_HANDLE )
+	{
+		return E_INVALIDCALL;
+	}
+	if( m_surface == VK_NULL_HANDLE )
+	{
+		// Windowless: there is no swapchain to rebuild and nothing to recover from.
+		m_needsSwapChainRebuild = false;
+		return S_OK;
+	}
+
+	if( !alreadyQuiesced )
+	{
+		QuiesceSwapChainStateVulkan();
+	}
 
 	// Build the replacement first, handing the old swapchain over so the driver can reuse
 	// what it can. Nothing is destroyed until this succeeds, so a failure here leaves a
@@ -1013,17 +1021,11 @@ ALResult Tr2PrimaryRenderContextAL::RecreateSurfaceVulkan()
 		return E_INVALIDCALL;
 	}
 
-	// Same idle as RebuildSwapChainVulkan: nothing referencing the old surface may be in
-	// flight, including a present the frame fence does not cover.
-	vkDeviceWaitIdle( m_device );
-	m_flushedFrame = m_recordingFrame;
-	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
-	{
-		m_frameData[i].submittedFrame = 0;
-	}
-
-	m_defaultBackBuffer.m_texture->Destroy();
-	InvalidateAttachmentsVulkan();
+	// Same quiesce RebuildSwapChainVulkan uses: nothing referencing the old surface may be
+	// in flight, including a present the frame fence does not cover. SetPresentParameters
+	// always calls RebuildSwapChainVulkan( true ) right after this, so that call skips
+	// repeating it -- see QuiesceSwapChainStateVulkan's comment.
+	QuiesceSwapChainStateVulkan();
 
 	// Swapchain first: destroying it ends outstanding presents, which is what makes the
 	// present-waited semaphores safe to destroy afterwards (RebuildSwapChainVulkan).
@@ -1085,7 +1087,11 @@ ALResult Tr2PrimaryRenderContextAL::SetPresentParameters( unsigned, const Tr2Pre
 		FORWARD_HR( RecreateSurfaceVulkan() );
 	}
 
-	ALResult rebuilt = RebuildSwapChainVulkan();
+	// windowChanged: RecreateSurfaceVulkan just quiesced this state for the surface it
+	// tore down; repeating it here would be the double back-buffer/attachment teardown
+	// F7 found, previously silent only because Tr2TextureAL::Destroy() no-ops on an
+	// already-empty texture.
+	ALResult rebuilt = RebuildSwapChainVulkan( /*alreadyQuiesced=*/windowChanged );
 	if( FAILED( rebuilt ) )
 	{
 		return rebuilt;

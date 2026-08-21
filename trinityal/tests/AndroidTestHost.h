@@ -20,6 +20,12 @@ bool WindowLost();
 // The render side has released every object referencing the lost window;
 // unblocks the waiting onNativeWindowDestroyed callback.
 void AckWindowReleased();
+// Marks the deliberate end-of-run teardown: RUN_ALL_TESTS has returned, every
+// fixture (and therefore every Vulkan object that referenced the window) is
+// already gone, and ANativeActivity_finish is about to be called. Once set,
+// onNativeWindowDestroyed returns promptly instead of waiting out (and
+// potentially timing out) a release handshake nothing will ever answer.
+void MarkFinishing();
 // Intent extras, parsed in onCreate.
 int SoakCycles();          // -e cycles N, default 20
 const char* GtestFilter(); // -e gtest_filter ..., may be empty

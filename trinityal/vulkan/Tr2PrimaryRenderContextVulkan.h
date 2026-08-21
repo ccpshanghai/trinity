@@ -198,6 +198,16 @@ private:
 
 	ALResult BeginFrame();
 
+	// The single place that quiesces everything referencing the current swapchain
+	// images before that swapchain is touched: waits the device idle, retires the
+	// frame counters, drops the default back buffer's views and every attachment
+	// built from them. Both RecreateSurfaceVulkan (about to destroy the swapchain
+	// outright) and RebuildSwapChainVulkan (about to replace it) need this exactly
+	// once. When SetPresentParameters calls both in the same window-change, the
+	// second call is told to skip it via alreadyQuiesced rather than repeating the
+	// work -- see RebuildSwapChainVulkan's parameter.
+	void QuiesceSwapChainStateVulkan();
+
 	// Throw the swapchain away and build it again against the surface as it is now. One
 	// action for every cause -- a present that reported SUBOPTIMAL or OUT_OF_DATE, a submit
 	// that failed, or SetPresentParameters -- because they all leave the same mess and there
@@ -207,12 +217,17 @@ private:
 	// leaves one signalled with nothing to wait on it, Vulkan has no vkResetSemaphore, and
 	// the next vkAcquireNextImageKHR on a signalled semaphore is illegal. Waiting the device
 	// idle and building new ones is the only way to drain that state.
-	ALResult RebuildSwapChainVulkan();
+	//
+	// alreadyQuiesced: true when the caller (SetPresentParameters, after
+	// RecreateSurfaceVulkan) already ran QuiesceSwapChainStateVulkan for this same
+	// window change. Every other caller leaves it false and gets the quiesce here.
+	ALResult RebuildSwapChainVulkan( bool alreadyQuiesced = false );
 
 	// Drops the current swapchain + VkSurfaceKHR and, if outputWindow is non-null,
 	// creates a new surface from it. SetPresentParameters calls this when the
 	// window handle changes (Android surface loss); a null outputWindow is the
-	// teardown half of that handshake.
+	// teardown half of that handshake. Always immediately followed, in the same
+	// SetPresentParameters call, by RebuildSwapChainVulkan( true ).
 	ALResult RecreateSurfaceVulkan();
 
 	Tr2CapsAL m_caps;
