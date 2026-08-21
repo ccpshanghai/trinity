@@ -391,6 +391,14 @@ public:
 		return m_commandBuffer;
 	}
 
+	// The encoder currently recording, or nil when no render pass is open. For
+	// the render context's GetNativeRenderEncoder only — observation, never a
+	// second way to drive the frame (M3 spec §5).
+	id<MTLRenderCommandEncoder> GetCurrentRenderEncoder() const
+	{
+		return m_currentEncoderType == MTLENCODERTYPE_RENDER ? m_currentRenderEncoder : nil;
+	}
+
 	bool EmitRenderEncoderState();
 
 	uint64_t GetCurrentEncoderIndex() const;

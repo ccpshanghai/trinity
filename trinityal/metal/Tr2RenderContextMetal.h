@@ -344,26 +344,39 @@ protected:
 	Tr2UpscalingTechniqueAL* m_upscalingTechnique;
 
 public:
-	// See the DX12 backend for what this is for. There is no DX12 command list
-	// here; Metal's equivalent (MTLRenderCommandEncoder) arrives with M3, and 0 is
-	// the documented "not now" value until then.
+	// The DX12 command-list slot has no Metal meaning and stays 0; Metal's
+	// equivalents are GetNativeCommandBuffer and GetNativeRenderEncoder below.
+	// Spec D3: a getter is named for what it returns.
 	uint64_t GetNativeCommandList() const
 	{
 		return 0;
 	}
 
-	// See the DX12 backend. No DX12 device or descriptor heap here.
 	uint64_t GetNativeDevice() const
 	{
-		return 0;
-	}
-
-	uint64_t GetNativeSrvHeap() const
-	{
-		return 0;
+		return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( (__bridge void*)m_metalContext->GetDevice() ) );
 	}
 
 	uint64_t GetNativeCommandQueue() const
+	{
+		return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( (__bridge void*)m_metalContext->GetCommandQueue() ) );
+	}
+
+	// ImGui's Metal backend renders with a command buffer plus the pass's open
+	// encoder; both are only handed out inside a TriStepPythonCB callback, where
+	// the frame guarantees them (S6 -- the call site is the guard).
+	uint64_t GetNativeCommandBuffer() const
+	{
+		return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( (__bridge void*)m_workQueue->GetCommandBuffer() ) );
+	}
+
+	uint64_t GetNativeRenderEncoder() const
+	{
+		return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( (__bridge void*)m_workQueue->GetCurrentRenderEncoder() ) );
+	}
+
+	// DX12 descriptor heaps; no Metal meaning, 0 by contract (spec D3).
+	uint64_t GetNativeSrvHeap() const
 	{
 		return 0;
 	}
