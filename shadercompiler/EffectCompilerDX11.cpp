@@ -23,6 +23,7 @@
 #include "OutputHLSL.h"
 
 #include "DxReflection.h"
+#include "trinityal/vulkan/Tr2ShaderBindingABIVulkan.h"
 #include <WorkQueue.h>
 
 #define DXIL_FOURCC( ch0, ch1, ch2, ch3 ) (                        \
@@ -55,6 +56,58 @@ extern unsigned g_optimizationLevel;
 extern bool g_avoidFlowControl;
 extern bool g_generatePDB;
 extern bool g_skipOptimization;
+
+namespace
+{
+struct VulkanBindingShiftArguments
+{
+	std::wstring b;
+	std::wstring t;
+	std::wstring s;
+	std::wstring u;
+};
+
+const char* VulkanBindingStageName( InputStageType stage )
+{
+	switch( stage )
+	{
+	case VERTEX_STAGE:
+		return "vertex";
+	case PIXEL_STAGE:
+		return "pixel";
+	case COMPUTE_STAGE:
+		return "compute";
+	case GEOMETRY_STAGE:
+		return "geometry";
+	case HULL_STAGE:
+		return "hull";
+	case DOMAIN_STAGE:
+		return "domain";
+	default:
+		return "unknown";
+	}
+}
+
+bool TryGetVulkanBindingShiftArguments( VulkanBindingShiftArguments& shifts, InputStageType stage )
+{
+	using namespace Tr2VulkanBindingABI;
+
+	if( stage != VERTEX_STAGE && stage != PIXEL_STAGE && stage != COMPUTE_STAGE )
+	{
+		char error[160];
+		sprintf_s( error, "\\memory(0): error X0000: SPIR-V binding ABI does not support the %s shader stage", VulkanBindingStageName( stage ) );
+		g_messages.AddMessage( error );
+		return false;
+	}
+
+	uint32_t stageBase = uint32_t( stage ) * REGISTER_SIZE;
+	shifts.b = std::to_wstring( REGISTER_CLASS_CONSTANT_BUFFER * CLASS_BLOCK + stageBase );
+	shifts.t = std::to_wstring( REGISTER_CLASS_SRV * CLASS_BLOCK + stageBase );
+	shifts.s = std::to_wstring( REGISTER_CLASS_SAMPLER * CLASS_BLOCK + stageBase );
+	shifts.u = std::to_wstring( REGISTER_CLASS_UAV * CLASS_BLOCK + stageBase );
+	return true;
+}
+}
 
 
 static bool FindParameterBySemantics( ASTNode* node, const char** semantics, std::vector<Symbol*>* path, bool outParameter = false )
@@ -1381,6 +1434,10 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 				{
 					CreateGlobalsCB( state );
 					AssignRegisters( state.GetTree(), stage.type );
+					if( compileOptions.spirv )
+					{
+						ForceVulkanRegisterSpaces( state.GetTree() );
+					}
 				}
 
 				CompilerInputStream os( state, ShadingLanguage::HLSL );
@@ -1463,7 +1520,23 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 								L"-fspv-target-env=vulkan1.3",
 								L"-Zpc",
 							};
-							// -fvk shifts are appended in Task 3; without them dxc maps register N to binding N.
+							VulkanBindingShiftArguments shiftValues;
+							if( !TryGetVulkanBindingShiftArguments( shiftValues, stage.type ) )
+							{
+								syncData->passSpirv = nullptr;
+								syncData->passSpirvReflection = nullptr;
+								std::lock_guard scope( syncData->mutex );
+								syncData->compiled = true;
+								syncData->conditionVariable.notify_all();
+								return false;
+							}
+							const LPCWSTR shiftArguments[] = {
+								L"-fvk-b-shift", shiftValues.b.c_str(), L"0",
+								L"-fvk-t-shift", shiftValues.t.c_str(), L"1",
+								L"-fvk-s-shift", shiftValues.s.c_str(), L"1",
+								L"-fvk-u-shift", shiftValues.u.c_str(), L"1",
+							};
+							spirvArguments.insert( end( spirvArguments ), std::begin( shiftArguments ), std::end( shiftArguments ) );
 							if( g_skipOptimization )
 							{
 								spirvArguments.push_back( DXC_ARG_SKIP_OPTIMIZATIONS );

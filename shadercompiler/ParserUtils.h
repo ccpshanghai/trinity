@@ -52,6 +52,7 @@ extern bool HasRegisterBinding( const Symbol* symbol, const char* shaderProfile,
 extern bool IsUniformInputArgument( ASTNode* argument );
 
 extern void AssignRegisters( ASTNode* root, int32_t stage, const std::vector<GlobalInputElement>& globalInput = {} );
+extern void ForceVulkanRegisterSpaces( ASTNode* root );
 
 extern void SortProgramNodes( ASTNode* root );
 

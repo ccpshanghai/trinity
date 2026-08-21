@@ -896,6 +896,48 @@ void AssignRegisters( ASTNode* root, int32_t stage, const std::vector<GlobalInpu
 	AssignRegisters( root, InputStageType( stage ), registers, globalInput, globalInputRegisters );
 }
 
+void ForceVulkanRegisterSpaces( ASTNode* root )
+{
+	if( !root )
+	{
+		return;
+	}
+	switch( root->GetNodeType() )
+	{
+	case NT_CBUFFER:
+	case NT_NAME_DECLARATION:
+		if( root->GetSymbol() && root->GetSymbol()->used )
+		{
+			for( auto& r : root->GetSymbol()->registerSpecifier )
+			{
+				switch( r.second.registerType )
+				{
+				case 't':
+				case 's':
+				case 'u':
+					if( r.second.space == 0 )
+					{
+						r.second.space = 1;
+					}
+					break;
+				default:
+					break;
+				}
+			}
+		}
+		break;
+	case NT_PROGRAM:
+	case NT_VAR_DECLARATION_LIST:
+		for( size_t i = 0; i < root->GetChildrenCount(); ++i )
+		{
+			ForceVulkanRegisterSpaces( root->GetChild( i ) );
+		}
+		break;
+	default:
+		break;
+	}
+}
+
 int GetNodeOrder( ASTNode* t )
 {
 	switch( t->GetNodeType() )

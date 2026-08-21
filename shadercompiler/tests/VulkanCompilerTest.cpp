@@ -3,6 +3,11 @@
 #include "TesingUtils.h"
 #include "EffectCompilerDX11.h"
 #include "StringTable.h"
+#include "trinityal/vulkan/Tr2ShaderBindingABIVulkan.h"
+
+#include <algorithm>
+#include <map>
+#include <set>
 
 extern StringTable g_stringTable;
 
@@ -72,6 +77,36 @@ const uint32_t* ShaderWords( const StageInput& stage, size_t& wordCount )
 	wordCount = stage.shaderSize / 4;
 	return reinterpret_cast<const uint32_t*>( bytes );
 }
+
+struct Decoration
+{
+	uint32_t set = ~0u;
+	uint32_t binding = ~0u;
+};
+
+std::map<uint32_t, Decoration> ScanDecorations( const uint32_t* words, size_t wordCount )
+{
+	std::map<uint32_t, Decoration> byId;
+	size_t i = 5;
+	while( i < wordCount )
+	{
+		uint32_t opcode = words[i] & 0xFFFF;
+		uint32_t length = words[i] >> 16;
+		if( opcode == 71 && length == 4 )
+		{
+			if( words[i + 2] == 33 )
+			{
+				byId[words[i + 1]].binding = words[i + 3];
+			}
+			if( words[i + 2] == 34 )
+			{
+				byId[words[i + 1]].set = words[i + 3];
+			}
+		}
+		i += std::max<size_t>( length, 1u );
+	}
+	return byId;
+}
 }
 
 TEST( VulkanCompiler, EmitsSpirvForEveryStage )
@@ -113,6 +148,39 @@ TEST( VulkanCompiler, ReflectionSurvivesTheBackendSwap )
 	EXPECT_STREQ( g_stringTable.GetString( vs.constants[0].name ), "WorldViewProj" );
 	EXPECT_EQ( vs.pipelineInputs.size(), 2u ); // POSITION + TEXCOORD
 	EXPECT_EQ( vs.pipelineInputs.size(), dx11Vs.pipelineInputs.size() );
+}
+
+TEST( VulkanCompiler, BindingsObeyTheABIHeader )
+{
+	using namespace Tr2VulkanBindingABI;
+
+	EffectData data = CompileSpirv( SIMPLE_EFFECT );
+	auto& stages = data.techniques[0].passes[0].stages;
+	for( auto& stage : stages )
+	{
+		uint32_t shaderType = uint32_t( stage.type );
+		size_t wordCount = 0;
+		const uint32_t* words = ShaderWords( stage, wordCount );
+		auto decorations = ScanDecorations( words, wordCount );
+
+		std::set<std::pair<uint32_t, uint32_t>> present;
+		for( auto& d : decorations )
+		{
+			if( d.second.set != ~0u && d.second.binding != ~0u )
+			{
+				present.insert( { d.second.set, d.second.binding } );
+			}
+		}
+
+		for( auto& ri : stage.registerInputs )
+		{
+			uint32_t expectedSet = DescriptorSetIndex( uint32_t( ri.registerType.Packed() ) );
+			uint32_t expectedBinding = BindingNumber( uint32_t( ri.registerType.Packed() ), ri.registerIndex, shaderType );
+			EXPECT_TRUE( present.count( { expectedSet, expectedBinding } ) )
+				<< "register type " << int( ri.registerType.Packed() ) << " index " << ri.registerIndex
+				<< " expected set " << expectedSet << " binding " << expectedBinding;
+		}
+	}
 }
 
 #endif
