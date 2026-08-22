@@ -185,9 +185,14 @@ void RefreshDisplays()
 	{
 		// Admission: any Mac- or Apple-family GPU. The old check asked for Mac1,
 		// which every iPhone answers no to — family detection, not capability,
-		// which is why this is a list rather than a threshold (spec D7).
-		const MTLGPUFamily families[] = { MTLGPUFamilyMac2,   MTLGPUFamilyApple7, MTLGPUFamilyApple6,
-										  MTLGPUFamilyApple5, MTLGPUFamilyApple4, MTLGPUFamilyApple3 };
+		// which is why this is a list rather than a threshold (spec D7). The
+		// iOS simulator's software GPU ("Apple iOS simulator GPU") reports only
+		// Apple1/Apple2, so the list reaches down to Apple1 or the suite would
+		// find zero adapters and skip every device-dependent test.
+		const MTLGPUFamily families[] = { MTLGPUFamilyMac2,   MTLGPUFamilyApple9, MTLGPUFamilyApple8,
+										  MTLGPUFamilyApple7, MTLGPUFamilyApple6, MTLGPUFamilyApple5,
+										  MTLGPUFamilyApple4, MTLGPUFamilyApple3, MTLGPUFamilyApple2,
+										  MTLGPUFamilyApple1 };
 		bool supported = false;
 		for( MTLGPUFamily family : families )
 		{
