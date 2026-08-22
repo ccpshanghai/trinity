@@ -411,6 +411,21 @@ if(APPLE)
             endif()
         endif()
 
+        # The metallib deployment target follows the OS min version, not -std:
+        # the iOS 26 SDK default produces air64_v28 (0x00020008), and the
+        # simulator's software Metal device ("Apple iOS simulator GPU") only
+        # loads up to air64_v26 (0x00020006) -- newComputePipelineStateWithFunction
+        # then fails with "deployment target incompatible with this OS" and the
+        # dispatch silently drops. 17.0 selects air64_v26 for both iOS SDKs;
+        # macOS stays on its SDK default.
+        if(TRINITY_METAL_TEST_SDK STREQUAL "iphonesimulator")
+            set(TRINITY_METAL_TEST_MIN_VERSION -mios-simulator-version-min=17.0)
+        elseif(TRINITY_METAL_TEST_SDK STREQUAL "iphoneos")
+            set(TRINITY_METAL_TEST_MIN_VERSION -mios-version-min=17.0)
+        else()
+            set(TRINITY_METAL_TEST_MIN_VERSION)
+        endif()
+
         foreach(shaderSource ${_SHADERS_METAL})
             if(${shaderSource} MATCHES "\\.h$")
                 continue()   # MetalDefines.h is an include, not a shader
@@ -420,6 +435,7 @@ if(APPLE)
                 OUTPUT ${GENERATED_SOURCES_DIR}/${shaderOutput}
                 COMMAND ${CMAKE_COMMAND} -E make_directory ${GENERATED_SOURCES_DIR}/Shaders.metal
                 COMMAND xcrun -sdk ${TRINITY_METAL_TEST_SDK} metal -x metal -std=metal3.0
+                        ${TRINITY_METAL_TEST_MIN_VERSION}
                         -I ${CMAKE_CURRENT_SOURCE_DIR}/Shaders.metal
                         ${CMAKE_CURRENT_SOURCE_DIR}/${shaderSource}
                         -o ${GENERATED_SOURCES_DIR}/${shaderSource}.bin
