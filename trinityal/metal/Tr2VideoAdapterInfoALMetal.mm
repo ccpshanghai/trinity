@@ -6,10 +6,14 @@
 
 #include "Tr2VideoAdapterInfoALMetal.h"
 #include "Tr2AdapterStructures.h"
+#include <cmath>
 #include <TargetConditionals.h>
 #if TARGET_OS_OSX
 #import <CoreGraphics/CoreGraphics.h>
 #import <IOKit/graphics/IOGraphicsLib.h>
+#endif
+#if TARGET_OS_IPHONE
+#import <UIKit/UIScreen.h>
 #endif
 #import <Metal/Metal.h>
 
@@ -104,6 +108,34 @@ uint32_t GetEntryProperty( io_registry_entry_t entry, CFStringRef propertyName )
 }
 
 #endif // TARGET_OS_OSX
+
+#if TARGET_OS_IPHONE
+
+// The one screen's current pixel extent. UIScreen is iOS's screen descriptor --
+// the role CGDisplayCopyDisplayMode plays in the macOS branch. The AL is
+// deliberately window-less (spec D6: it receives a CAMetalLayer, never a view),
+// so there is no window scene to look the screen up through; mainScreen is
+// deprecated in iOS 26 in favor of that scene-based lookup, and the pragma
+// silences exactly that deprecation.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+void GetIOSScreenExtent( uint32_t& width, uint32_t& height )
+{
+	width = 0;
+	height = 0;
+	UIScreen* screen = [UIScreen mainScreen];
+	if( !screen )
+	{
+		return;
+	}
+	const CGRect bounds = screen.bounds;
+	const CGFloat nativeScale = screen.nativeScale; // pixels, not points -- CGDisplayModeGetPixelWidth parity
+	width = (uint32_t)lround( bounds.size.width * nativeScale );
+	height = (uint32_t)lround( bounds.size.height * nativeScale );
+}
+#pragma clang diagnostic pop
+
+#endif // TARGET_OS_IPHONE
 
 std::string ToString( NSString* string )
 {
@@ -285,10 +317,14 @@ void RefreshDisplays()
 	}
 #else
 	// iOS: no CoreGraphics/IOKit display enumeration exists to ask, and there is
-	// exactly one screen/GPU. The AL's swapchain takes its real extent from the
-	// CAMetalLayer at present time, so nothing here needs to be right about pixel
-	// size -- it only needs to exist, so GetAdapterCount()/GetAdapterInfo() have a
-	// single, defensible adapter to report.
+	// exactly one screen/GPU. The screen's pixel extent is asked of UIScreen the
+	// way the macOS branch asks CGDisplay, so the adapter reports a real display
+	// mode; the swapchain's actual extent still comes from the CAMetalLayer at
+	// present time (D6).
+	uint32_t screenWidth = 0;
+	uint32_t screenHeight = 0;
+	GetIOSScreenExtent( screenWidth, screenHeight );
+
 	Display display = {};
 	display.displayID = 0; // no per-display id on iOS; GetAdapterMonitor already
 							// turns this into a null monitor handle, matching PR #6's
@@ -303,8 +339,8 @@ void RefreshDisplays()
 
 	Tr2DisplayModeInfo mode = {};
 	mode.format = PIXEL_FORMAT_B8G8R8A8_UNORM;
-	mode.width = 0;  // Extent is the layer's/swapchain's to report, not this AL's --
-	mode.height = 0; // inventing a resolution here would be a lie.
+	mode.width = screenWidth;  // the one real screen's extent, queried above --
+	mode.height = screenHeight; // a reported mode of 0x0 would be a lie.
 	mode.refreshRateNumerator = 1;
 	mode.refreshRateDenominator = 1;
 	mode.scaling = DISPLAY_SCALING_UNSPECIFIED;
@@ -424,10 +460,18 @@ ALResult Tr2VideoAdapterInfo::GetAdapterDisplayMode( unsigned adapterIndex, Tr2D
 	mode.scaling = DISPLAY_SCALING_UNSPECIFIED;
 	mode.scanlineOrdering = SCANLINE_ORDER_UNSPECIFIED;
 #else
-	// No CoreGraphics display-mode API on iOS; the swapchain takes its real extent
-	// from the CAMetalLayer at present time. Return the same single fallback entry
-	// RefreshDisplays recorded (format B8G8R8A8, width/height 0) instead of inventing one.
-	mode = s_displays[adapterIndex].modes[0];
+	// No CoreGraphics display-mode API on iOS; UIScreen is the one screen's
+	// descriptor. Queried live, like the macOS branch queries CGDisplay.
+	uint32_t width = 0;
+	uint32_t height = 0;
+	GetIOSScreenExtent( width, height );
+	mode.format = PIXEL_FORMAT_B8G8R8A8_UNORM;
+	mode.width = width;
+	mode.height = height;
+	mode.refreshRateDenominator = 1;
+	mode.refreshRateNumerator = 1;
+	mode.scaling = DISPLAY_SCALING_UNSPECIFIED;
+	mode.scanlineOrdering = SCANLINE_ORDER_UNSPECIFIED;
 #endif
 
 	return S_OK;

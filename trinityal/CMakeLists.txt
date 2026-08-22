@@ -566,6 +566,13 @@ elseif(APPLE)
         if(NOT (IOS AND CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator"))
             target_link_libraries(TrinityAL_metal PUBLIC "-framework MetalFX")
         endif()
+        # UIKit for iOS: Tr2VideoAdapterInfoALMetal.mm reads UIScreen for the
+        # one screen's pixel extent (the CGDisplay role), and UIScreen lives in
+        # UIKit. Window-less by design, but reading the screen descriptor is not
+        # building a UI (spec D6).
+        if(IOS)
+            target_link_libraries(TrinityAL_metal PUBLIC "-framework UIKit")
+        endif()
         #[[
             FIXME because we're mixing objective-c++ and c++ headers in our precompiled headers then we need to force
             one specific language for macOS. This can be fixed once we revisit our usage of precompiled headers, which is
