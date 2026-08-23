@@ -7,9 +7,6 @@
   "registries": [
     {
       "kind": "git",
-      "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
-      "reference": "m3-imgui-ios",
-      "baseline": "c35c5e39e76aa2adf0f56f2a80b08d9ce2dc7c92",
       "packages": [
         "imgui",
         "python3",
@@ -32,7 +29,10 @@
         "nvidia-streamline",
         "openvdb",
         "protobuf"
-      ]
+      ],
+      "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
+      "reference": "m3-imgui-ios",
+      "baseline": "c35c5e323e9569e275553b6fff80ef08b0ee4848"
     }
   ]
 }
