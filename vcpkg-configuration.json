@@ -8,9 +8,10 @@
     {
       "kind": "git",
       "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
-      "reference": "mobile-exp",
-      "baseline": "9ebb6f676e149dd4640e78a786fa4823638dd8aa",
+      "reference": "m3-imgui-ios",
+      "baseline": "aa4bdabc6e3ba355fb23789183a397ff117a2d7e",
       "packages": [
+        "imgui",
         "python3",
         "carbon-*",
         "tracy",
