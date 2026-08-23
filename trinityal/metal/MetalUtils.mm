@@ -166,6 +166,14 @@ void MetalUtils::SetupPixelFormatConversionTable( id<MTLDevice> device )
 	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_BC7_TYPELESS] = MTLPixelFormatInvalid;
 	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_BC7_UNORM] = MTLPixelFormatBC7_RGBAUnorm;
 	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_BC7_UNORM_SRGB] = MTLPixelFormatBC7_RGBAUnorm_sRGB;
+	// ASTC (M3, spec §7.3): sampled natively by Apple GPUs — the simulator's software
+	// renderer and the device's Apple7 both accept LDR ASTC. No ASTC 3D block compression.
+	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_4x4_UNORM] = MTLPixelFormatASTC_4x4_LDR;
+	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_4x4_UNORM_SRGB] = MTLPixelFormatASTC_4x4_sRGB;
+	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_6x6_UNORM] = MTLPixelFormatASTC_6x6_LDR;
+	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_6x6_UNORM_SRGB] = MTLPixelFormatASTC_6x6_sRGB;
+	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_8x8_UNORM] = MTLPixelFormatASTC_8x8_LDR;
+	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_8x8_UNORM_SRGB] = MTLPixelFormatASTC_8x8_sRGB;
 }
 
 MTLPixelFormat MetalUtils::GetMTLPixelFormat( Tr2RenderContextEnum::PixelFormat pixelFormat )
