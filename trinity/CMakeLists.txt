@@ -8,16 +8,6 @@ endif()
 
 project(trinity VERSION 1.0.0)
 
-# iOS builds the AL alone in M3 plan 1: the engine layer and its dependency set
-# (squish, CAS/CACAO, TBB, audio, blue, math, parser, mesh, freetype,
-# pdmprotowrapper) follow in plan 2, when _trinity_metal.so becomes the
-# deliverable. This early-return and vcpkg.json's "!ios" gates are one fact
-# stated twice — lift them together. The android twin of this block lives on
-# m6-android-vulkan-al (trinity PR #6); merging both means combining the gates.
-if(IOS)
-    return()
-endif()
-
 if(BUILD_FOR_PYTHON_2)
     find_package(libSquish REQUIRED)
     add_library(unofficial::libsquish::squish ALIAS SQUISH::SQUISH)

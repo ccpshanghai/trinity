@@ -8,6 +8,7 @@
     {
       "kind": "git",
       "packages": [
+        "curl",
         "imgui",
         "python3",
         "carbon-*",
@@ -32,7 +33,7 @@
       ],
       "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
       "reference": "m3-imgui-ios",
-      "baseline": "c35c5e323e9569e275553b6fff80ef08b0ee4848"
+      "baseline": "3664c2fe67edb4d6fadd5af4afd2c396b62f8bca"
     }
   ]
 }

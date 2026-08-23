@@ -14,23 +14,19 @@
     },
     {
       "name": "libsquish",
-      "version>=": "1.15",
-      "platform": "!ios"
+      "version>=": "1.15"
     },
     {
       "name": "amd-fidelityfx-cas",
-      "version>=": "1.0",
-      "platform": "!ios"
+      "version>=": "1.0"
     },
     {
       "name": "amd-fidelityfx-cacao",
-      "version>=": "1.2",
-      "platform": "!ios"
+      "version>=": "1.2"
     },
     {
       "name": "tbb",
-      "version>=": "2021.5.0#1",
-      "platform": "!ios"
+      "version>=": "2021.5.0#1"
     },
     {
       "name": "vulkan-headers",
@@ -42,33 +38,27 @@
     },
     {
       "name": "carbon-trinityaudioapi",
-      "version>=": "2.0.3",
-      "platform": "!ios"
+      "version>=": "2.0.3"
     },
     {
       "name": "freetype",
-      "version>=": "2.13.3",
-      "platform": "!ios"
+      "version>=": "2.13.3"
     },
     {
       "name": "carbon-pdmprotowrapper",
-      "version>=": "2.0.4",
-      "platform": "!ios"
+      "version>=": "2.0.4"
     },
     {
       "name": "carbon-blue",
-      "version>=": "6.0.0",
-      "platform": "!ios"
+      "version>=": "6.0.0"
     },
     {
       "name": "carbon-math",
-      "version>=": "1.2.1",
-      "platform": "!ios"
+      "version>=": "1.2.1"
     },
     {
       "name": "carbon-parser",
-      "version>=": "1.0.2",
-      "platform": "!ios"
+      "version>=": "1.0.2"
     },
     {
       "name": "libpng",
@@ -84,8 +74,7 @@
     },
     {
       "name": "carbon-mesh",
-      "version>=": "1.0.1",
-      "platform": "!ios"
+      "version>=": "1.0.1"
     }
   ],
   "features": {
