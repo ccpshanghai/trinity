@@ -303,6 +303,20 @@ public:
 		return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( m_commandList.p ) );
 	}
 
+	// Metal's two, so the Python-side handle table is the same shape on every backend
+	// (spec D3): a getter is named for what it returns, and returns 0 where the concept
+	// does not exist. ImGui's Metal backend renders with a command buffer plus the pass's
+	// open encoder; neither has a DX12 counterpart.
+	uint64_t GetNativeCommandBuffer() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeRenderEncoder() const
+	{
+		return 0;
+	}
+
 	// The other four — device, command queue, SRV heap, sampler heap — live on
 	// Tr2PrimaryRenderContextAL rather than here: that is where m_device, m_commandQueue and
 	// the two GetGlobal*Heap accessors are, and at this point in the header

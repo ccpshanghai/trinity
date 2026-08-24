@@ -391,6 +391,28 @@ const Be::ClassInfo* Tr2PrimaryRenderContext::ExposeToBlue()
 			"SetDescriptorHeaps replaces the whole binding rather than adding to it, so\n"
 			"restoring only the SRV heap leaves later draws without samplers." )
 
+		MAP_METHOD_AND_WRAP(
+			"GetNativeCommandBuffer",
+			GetNativeCommandBuffer,
+			"Returns the MTLCommandBuffer as an integer, or 0 off Metal.\n"
+			"\n"
+			"Metal's half of the pair GetNativeCommandList is on DX12: ImGui's Metal\n"
+			"backend renders with a command buffer plus the pass's open encoder, so a\n"
+			"hosted UI needs both.\n"
+			"\n"
+			"Like the command list, this is NOT a liveness check. Read it only from inside\n"
+			"a TriStepPythonCB callback, where the frame is what guarantees the buffer, and\n"
+			"gate on being there rather than on this value." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeRenderEncoder",
+			GetNativeRenderEncoder,
+			"Returns the pass's open MTLRenderCommandEncoder as an integer, 0 off Metal.\n"
+			"\n"
+			"The other half of GetNativeCommandBuffer, and the one with a real lifetime:\n"
+			"an encoder exists only between the pass beginning and ending, which is exactly\n"
+			"the TriStepPythonCB callback and nowhere else." )
+
 	EXPOSURE_END()
 }
 
