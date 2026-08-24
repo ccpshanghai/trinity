@@ -1811,6 +1811,30 @@ if(WITH_GRANNY)
     list(APPEND _SOURCES ${GRANNY_RELATED_SOURCES})
 endif()
 
+if(IOS)
+    #[[
+        On iOS the engine owns no OS window: the app shell creates it and hands the AL a
+        CAMetalLayer (M3 spec D5), so Tr2MainWindow's platform half has no iOS counterpart to
+        write -- an NSWindow, an NSCursor, a MacBook touch bar and AppKit's event pump are all
+        macOS-only. The cluster is self-contained (nothing outside UI/ names Tr2MainWindow or
+        Tr2MouseCursor), so it is left out of the iOS build rather than stubbed: trinity.Tr2MainWindow
+        and trinity.Tr2MouseCursor simply do not exist there, which is the truth. UI/Scancodes.*
+        stays -- trinity.cpp's AddScancodesToDict is the VK_* table, not a window.
+    ]]
+    list(REMOVE_ITEM _SOURCES
+        UI/TouchBar.h
+        UI/TouchBar.mm
+        UI/Tr2MainWindow.cpp
+        UI/Tr2MainWindow.h
+        UI/Tr2MainWindow_Blue.cpp
+        UI/Tr2MainWindow_MacOS.mm
+        UI/Tr2MainWindow_Windows.cpp
+        UI/Tr2MouseCursor.cpp
+        UI/Tr2MouseCursor.h
+        UI/Tr2MouseCursor_Blue.cpp
+        UI/Tr2MouseCursor_MacOS.mm
+    )
+endif()
 
 # Ensure that we have a sane file grouping for XCode and VS project files
 if(CMAKE_GENERATOR STREQUAL "Xcode" OR CMAKE_GENERATOR MATCHES "Visual Studio.*")
@@ -2048,14 +2072,27 @@ elseif(APPLE)
             PRIVATE
                 TrinityAL_metal
                 "-framework CoreFoundation"
-                "-framework Cocoa"
-                "-framework Carbon"
                 "-framework GameController"
                 "-framework Metal"
-                "-framework MetalFX"
                 "-framework IOKit"
                 "-framework QuartzCore"
         )
+        # Cocoa (AppKit) and Carbon are macOS-only frameworks, and so is everything here that
+        # reached for them: Tr2MainWindow's NSWindow, Tr2MouseCursor's NSCursor, the touch bar
+        # (all three left out of the iOS build above) and Scancodes.mm's Text Input Sources
+        # lookups (compiled out under TARGET_OS_OSX).
+        if(NOT IOS)
+            target_link_libraries(${TRINITY_METAL_TARGET_NAME}
+                PRIVATE
+                    "-framework Cocoa"
+                    "-framework Carbon"
+            )
+        endif()
+        # MetalFX.framework: the same absence trinityal/CMakeLists.txt records -- it ships for
+        # macOS and real iOS devices but for no iPhoneSimulator SDK.
+        if(NOT (IOS AND CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator"))
+            target_link_libraries(${TRINITY_METAL_TARGET_NAME} PRIVATE "-framework MetalFX")
+        endif()
 
         #[[
             FIXME because we're mixing objective-c++ and c++ headers in our precompiled headers then we need to force
