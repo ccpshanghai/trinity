@@ -33,7 +33,7 @@
       ],
       "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
       "reference": "m3-imgui-ios",
-      "baseline": "3664c2fe67edb4d6fadd5af4afd2c396b62f8bca"
+      "baseline": "24a5fa14efb84645b0273ce62bbaf3262e7c178c"
     }
   ]
 }
