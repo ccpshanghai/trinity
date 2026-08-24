@@ -106,6 +106,21 @@
       }
     },
     {
+      "name": "arm64-ios-simulator-metal-xcode",
+      "displayName": "M3 Metal AL for the iOS simulator (Xcode project, browse and debug)",
+      "inherits": "arm64-ios-simulator-metal",
+      "generator": "Xcode",
+      "description": "Same configuration as arm64-ios-simulator-metal, generated as an .xcodeproj for browsing and debugging in Xcode; its own build tree, because a build tree carries its generator. Xcode is multi-config and CcpBuildConfigurations.cmake FORCEs the four CCP flavors, so the configuration list cannot be narrowed from here — instead the generated schemes launch Release, because the arm64-ios-simulator-release triplet installs release dependencies only and Xcode would otherwise default to Debug. Code signing is off: nothing here leaves the simulator.",
+      "cacheVariables": {
+        "CMAKE_XCODE_GENERATE_SCHEME": "ON",
+        "CMAKE_XCODE_SCHEME_LAUNCH_CONFIGURATION": "Release",
+        "CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED": "NO",
+        "CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED": "NO",
+        "CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY": "",
+        "CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH": "NO"
+      }
+    },
+    {
       "name": "arm64-ios-metal",
       "displayName": "M3 Metal AL for iOS devices (Release, AL tests)",
       "inherits": "arm64-ios-release",
