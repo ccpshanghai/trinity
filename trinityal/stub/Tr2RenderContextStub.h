@@ -318,6 +318,14 @@ public:
 		return 0;
 	}
 
+	// Metal opens a render pass here; every other backend has an always-recording command
+	// list and there is nothing to do. Present on all of them so the shared TriStep that
+	// calls it compiles everywhere (spec 5: the frame graph asks, getters never drive).
+	ALResult BeginRenderPass()
+	{
+		return S_OK;
+	}
+
 	// No device, so no back buffer format. 0 is MTLPixelFormatInvalid and DXGI_FORMAT_UNKNOWN
 	// alike, so a caller checking for 0 is right on every backend (spec D3).
 	uint64_t GetNativeBackBufferFormat() const

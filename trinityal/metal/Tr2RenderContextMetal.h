@@ -375,6 +375,19 @@ public:
 		return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( (__bridge void*)m_workQueue->GetCurrentRenderEncoder() ) );
 	}
 
+	// Open a render pass on the currently bound targets, if one is not open already.
+	//
+	// This is the frame graph asking, not a getter driving (spec 5). Metal has no
+	// always-recording command list: an encoder exists only between a pass beginning and
+	// ending, and Clear does not open one -- ClearAttachment ends the current encoder and
+	// leaves MTLLoadActionClear on the descriptor for the NEXT pass to apply. So a step that
+	// hands control to something which records draws -- TriStepPythonCB with a hosted UI in it
+	// -- has to say so, or GetNativeRenderEncoder() correctly observes that there is nothing
+	// there and the UI silently draws nowhere.
+	//
+	// A no-op on every other backend, where a command list is always recording.
+	ALResult BeginRenderPass();
+
 	// The back buffer's format as the GPU API spells it -- an MTLPixelFormat here, a
 	// DXGI_FORMAT on the DX backends.
 	//

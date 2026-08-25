@@ -305,6 +305,14 @@ public:
 		return 0;
 	}
 
+	// Metal opens a render pass here; every other backend has an always-recording command
+	// list and there is nothing to do. Present on all of them so the shared TriStep that
+	// calls it compiles everywhere (spec 5: the frame graph asks, getters never drive).
+	ALResult BeginRenderPass()
+	{
+		return S_OK;
+	}
+
 	// The back buffer's format as the GPU API spells it. On the DX backends
 	// Tr2RenderContextEnum::PixelFormat already holds DXGI's values, so this is
 	// GetBackBufferFormat() widened -- and the getter exists precisely so a caller does not

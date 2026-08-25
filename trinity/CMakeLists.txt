@@ -1074,6 +1074,9 @@ set(_SOURCES
     RenderJob/TriStepPopProjection.cpp
     RenderJob/TriStepPopProjection.h
     RenderJob/TriStepPopProjection_Blue.cpp
+    RenderJob/TriStepBeginRenderPass.cpp
+    RenderJob/TriStepBeginRenderPass.h
+    RenderJob/TriStepBeginRenderPass_Blue.cpp
     RenderJob/TriStepPopRenderTarget.cpp
     RenderJob/TriStepPopRenderTarget.h
     RenderJob/TriStepPopRenderTarget_Blue.cpp

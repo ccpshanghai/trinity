@@ -816,6 +816,19 @@ PixelFormat Tr2RenderContextAL::GetBackBufferFormat() const
 	return m_defaultBackBuffer.GetFormat();
 }
 
+ALResult Tr2RenderContextAL::BeginRenderPass()
+{
+	if( !IsValid() )
+	{
+		return E_FAIL;
+	}
+	// GetRenderEncoder, not GetCurrentRenderEncoder: this one opens the pass (and applies any
+	// pending clear) when none is open, and returns the existing encoder when one is. It is the
+	// same call the four DrawPrimitives overloads make for the same reason.
+	m_workQueue->GetRenderEncoder( @"TriStepBeginRenderPass" );
+	return S_OK;
+}
+
 uint64_t Tr2RenderContextAL::GetNativeBackBufferFormat() const
 {
 	// Through the AL's own table, so the HUD's pipeline state is built for exactly the format

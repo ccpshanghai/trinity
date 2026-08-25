@@ -190,6 +190,14 @@ public:
 	}
 
 	// Helper function to clear the current primary backbuffer, depth and/or stencil.
+	// Metal opens a render pass here; every other backend has an always-recording command
+	// list and there is nothing to do. Present on all of them so the shared TriStep that calls
+	// it compiles everywhere (spec 5: the frame graph asks, getters never drive).
+	ALResult BeginRenderPass()
+	{
+		return S_OK;
+	}
+
 	ALResult Clear(
 		uint32_t clearFlags,
 		uint32_t color,
