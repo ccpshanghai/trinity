@@ -799,6 +799,15 @@ ALResult Tr2RenderContextAL::CreateDevice( uint32_t Adapter,
 		bool isAppleSilicon = [device supportsFamily:MTLGPUFamilyApple7];
 		bool raytracingAvailable = device.supportsRaytracing && isAppleSilicon;
 		m_caps.m_supportsRaytracing = raytracingAvailable;
+
+		// ASTC: Apple2, not Apple7. Every Apple GPU family from 2 upward samples LDR ASTC --
+		// including the Simulator's software renderer, which reports Apple1/2 and nothing above.
+		// Asking for Apple7 here would have made the capability track raytracing's answer and
+		// turned the whole ASTC path off on the one device M3 has to demonstrate it on. Intel
+		// Macs (MTLGPUFamilyMac2, no Apple family) correctly answer no.
+		m_caps.m_supportsAstcTextures = [device supportsFamily:MTLGPUFamilyApple2];
+		CCP_LOGNOTICE( m_caps.m_supportsAstcTextures ? "Device samples ASTC textures"
+													: "Device does not sample ASTC textures" );
 		if( m_caps.m_supportsRaytracing )
 		{
 			CCP_LOGNOTICE( "Device supports raytracing" );

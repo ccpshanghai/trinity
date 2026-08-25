@@ -35,17 +35,25 @@ bool Tr2CapsAL::SupportsRaytracing() const
 	return m_supportsRaytracing;
 }
 
-Tr2CapsAL::Tr2CapsAL() : m_supportsRaytracing( false )
+bool Tr2CapsAL::SupportsAstcTextures() const
+{
+	return m_supportsAstcTextures;
+}
+
+Tr2CapsAL::Tr2CapsAL() : m_supportsRaytracing( false ), m_supportsAstcTextures( false )
 {
 }
 
-Tr2CapsAL::Tr2CapsAL( const Tr2CapsAL& other ) : m_supportsRaytracing( other.m_supportsRaytracing )
+Tr2CapsAL::Tr2CapsAL( const Tr2CapsAL& other ) :
+	m_supportsRaytracing( other.m_supportsRaytracing ),
+	m_supportsAstcTextures( other.m_supportsAstcTextures )
 {
 }
 
 Tr2CapsAL& Tr2CapsAL::operator=( const Tr2CapsAL& other )
 {
 	m_supportsRaytracing = other.m_supportsRaytracing;
+	m_supportsAstcTextures = other.m_supportsAstcTextures;
 	return *this;
 }
 

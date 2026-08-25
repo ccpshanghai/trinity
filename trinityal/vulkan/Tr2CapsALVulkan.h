@@ -14,6 +14,7 @@
 #define TRINITY_PLATFORM_IS_LOW_PERFORMACE 0
 #define TRINITY_PLATFORM_MAX_CONSTANT_BUFFER_SIZE ( 64 * 1024 )
 #define TRINITY_PLATFORM_SUPPORTS_RAY_TRACING 0
+#define TRINITY_PLATFORM_SUPPORTS_ASTC_TEXTURES 0
 
 
 class Tr2CapsAL
@@ -55,6 +56,16 @@ public:
 	}
 	bool SupportsRaytracing() const
 	{
+		return false;
+	}
+	// ASTC sampling, the one M3 asks about. A capability, not a platform (spec D7): the answer
+	// differs between two Metal devices, so a compile-time #if would be wrong even here.
+	bool SupportsAstcTextures() const
+	{
+		// Vulkan does define the ASTC formats and mobile Vulkan devices do sample them; this
+		// backend simply has no rows for them yet -- UtilitiesVulkan.cpp's table stops at BC.
+		// No until that changes, because a yes here would mean uploading blocks the format
+		// table cannot name.
 		return false;
 	}
 

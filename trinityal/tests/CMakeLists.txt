@@ -4,6 +4,7 @@ project(TrinityALTest VERSION 1.0.0)
 
 set(_SOURCES 
     ALResultTest.cpp
+    Astc6x6TwoTone.h
     BitmapDimensions.cpp
     BcDecompressTest.cpp
     Buffer.cpp
@@ -17,6 +18,7 @@ set(_SOURCES
     FakeGoogleTest.h
     Fence.cpp
     GPUTimer.cpp
+    Ktx2AstcRoundTrip.cpp
     OcclusionQuery.cpp
     Raytracing.cpp
     RenderContext.cpp

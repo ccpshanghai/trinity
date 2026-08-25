@@ -179,7 +179,18 @@ ALResult Tr2TextureAL::Create( const Tr2BitmapDimensions& desc,
 	{
 		legacyVolumeCase = desc.GetType() == Tr2RenderContextEnum::TEX_TYPE_3D;
 	}
-	if( ( deviceLacksBc || legacyVolumeCase ) && IsCompressedFormat( desc.GetFormat() ) )
+	// IsCompressedFormat and not IsAstcFormat, because "compressed" is two families and only
+	// one of them is BC's business. Every device that lacks BC samples ASTC natively -- that is
+	// the whole reason M3 transcodes to it -- so routing an ASTC texture through the BC
+	// decompressor asks BcDecompress for a format it has no decoder for, and the create fails
+	// with E_FAIL on exactly the device the format exists for. The simulator found this on the
+	// first ASTC upload it was ever handed.
+	//
+	// A device that lacked ASTC too would still fail here, and should: there is no ASTC decoder
+	// and inventing one is not this layer's job. Tr2CapsAL::SupportsAstcTextures is what a
+	// caller asks before it gets this far.
+	if( ( deviceLacksBc || legacyVolumeCase ) && IsCompressedFormat( desc.GetFormat() ) &&
+		!IsAstcFormat( desc.GetFormat() ) )
 	{
 		metalPixelFormat = MTLPixelFormatBGRA8Unorm;
 		needsDecompression = true;
