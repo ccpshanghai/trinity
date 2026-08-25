@@ -43,11 +43,46 @@ ALResult Tr2SwapChainAL::Create( Tr2WindowHandle windowHandle, Tr2RenderContextA
 	}
 	else
 	{
-		auto scale = layer.contentsScale;
+		pixelFormat = Tr2RenderContextEnum::PIXEL_FORMAT_B8G8R8X8_UNORM;
+	}
+
+	// A zero dimension means "the whole window", and on Metal nobody used to resolve it.
+	//
+	// DXGI does: a swap-chain description of 0 x 0 is documented as the client rect, so callers
+	// are written that way -- app/boot.py's create_device passes CreateWindowedDevice( hwnd, 0, 0 )
+	// on purpose, with a comment explaining that the size then lives in one place instead of two.
+	// TriDevice::CreateSimpleDevice copies those zeros straight into pp.mode, Metal's
+	// SetPresentParameters repairs mode.format and leaves the size alone, and the branch above
+	// then asked for a 0 x 0 back buffer. The texture creation failed, its ALResult was discarded
+	// by both callers, and the only visible symptom was GetBackBufferFormat() returning UNKNOWN --
+	// which reached Python as ui_init refusing an MTLPixelFormatInvalid colour format, three
+	// layers away from the cause.
+	//
+	// Resolved from the layer, which is the only thing here that knows: drawableSize in pixels,
+	// via bounds x contentsScale, exactly as the else branch above always did for a foreign
+	// window handle.
+	if( width == 0 || height == 0 )
+	{
+		const auto scale = layer.contentsScale;
 		layer.drawableSize = CGSizeMake( layer.bounds.size.width * scale, layer.bounds.size.height * scale );
 		width = layer.drawableSize.width;
 		height = layer.drawableSize.height;
-		pixelFormat = Tr2RenderContextEnum::PIXEL_FORMAT_B8G8R8X8_UNORM;
+
+		if( width == 0 || height == 0 )
+		{
+			// A zero-sized layer is not something to paper over with a 1x1: it means the view
+			// has no geometry yet, and every render target derived from this would be wrong.
+			CCP_LOGERR( "Swap chain: CAMetalLayer has no size (bounds %g x %g, scale %g)",
+				layer.bounds.size.width, layer.bounds.size.height, scale );
+			return E_INVALIDARG;
+		}
+	}
+
+	if( pixelFormat == Tr2RenderContextEnum::PIXEL_FORMAT_UNKNOWN )
+	{
+		// Same defaulting SetPresentParameters does, repeated here because Create is also
+		// reachable from SwapChainResizing's tests without going through it.
+		pixelFormat = Tr2RenderContextEnum::PIXEL_FORMAT_B8G8R8A8_UNORM;
 	}
 
 	Tr2MsaaDesc msaaDesc = Tr2MsaaDesc( presentParameters->msaaType, presentParameters->msaaQuality );

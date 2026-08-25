@@ -413,6 +413,19 @@ const Be::ClassInfo* Tr2PrimaryRenderContext::ExposeToBlue()
 			"an encoder exists only between the pass beginning and ending, which is exactly\n"
 			"the TriStepPythonCB callback and nowhere else." )
 
+		MAP_METHOD_AND_WRAP(
+			"GetNativeBackBufferFormat",
+			GetNativeBackBufferFormat,
+			"Returns the back buffer's format as the GPU API spells it: an MTLPixelFormat\n"
+			"on Metal, a DXGI_FORMAT on the DX backends, 0 where there is no device.\n"
+			"\n"
+			"NOT GetBackBufferFormat, which returns Trinity's own PixelFormat enum. On the\n"
+			"DX backends those enums hold DXGI's values and the difference is invisible; on\n"
+			"Metal they are different numbers, and passing Trinity's to a Metal call aborts\n"
+			"the process in the validation layer rather than failing. Use this one for\n"
+			"anything that crosses into a graphics API -- a hosted UI's pipeline state --\n"
+			"and GetBackBufferFormat for anything comparing against Trinity's own formats." )
+
 	EXPOSURE_END()
 }
 

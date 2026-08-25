@@ -777,7 +777,14 @@ ALResult Tr2RenderContextAL::CreateDevice( uint32_t Adapter,
 	m_workQueue = m_metalContext->GetPrimaryWorkQueue();
 	m_caMetalLayer = (CAMetalLayer*)presentationParameters.outputWindow;
 	METAL_LOG( @"Creating device" );
-	SetPresentParameters( Adapter, presentationParameters );
+
+	// Checked, which it was not. A failure here leaves a context with no back buffer, and the
+	// only thing that showed downstream was GetBackBufferFormat() returning UNKNOWN -- which
+	// Python saw as ui_init refusing an invalid colour format, with nothing anywhere naming the
+	// swap chain. Three results were discarded in a row (here, in SetPresentParameters, and
+	// Tr2SwapChainAL::Create's own early-outs) and that is most of what made a 0 x 0 back buffer
+	// expensive to find.
+	CR_RETURN_HR( SetPresentParameters( Adapter, presentationParameters ) );
 
 	if( m_events )
 	{
@@ -809,6 +816,16 @@ PixelFormat Tr2RenderContextAL::GetBackBufferFormat() const
 	return m_defaultBackBuffer.GetFormat();
 }
 
+uint64_t Tr2RenderContextAL::GetNativeBackBufferFormat() const
+{
+	// Through the AL's own table, so the HUD's pipeline state is built for exactly the format
+	// every other texture in this context was created with. MTLPixelFormatInvalid is 0, which
+	// is also what the other backends' version of this getter returns where it has no meaning
+	// (spec D3), so a caller checking for 0 is right on all of them.
+	return static_cast<uint64_t>(
+		m_metalContext->m_utils->GetMTLPixelFormat( m_defaultBackBuffer.GetFormat() ) );
+}
+
 ALResult Tr2RenderContextAL::SetPresentParameters( unsigned adapter,
 												   const Tr2PresentParametersAL& presentationParameters )
 {
@@ -830,7 +847,9 @@ ALResult Tr2RenderContextAL::SetPresentParameters( unsigned adapter,
 	{
 		m_presentParameters.mode.format = PIXEL_FORMAT_B8G8R8A8_UNORM;
 	}
-	m_swapChain.m_swapChain->Create( presentationParameters.outputWindow, *this );
+	// Checked. Create refuses a handle that is not a CAMetalLayer, an invalid context and a
+	// layer with no geometry, and every one of those used to be silent.
+	CR_RETURN_HR( m_swapChain.m_swapChain->Create( presentationParameters.outputWindow, *this ) );
 
 	CAMetalLayer* layer = (CAMetalLayer*)presentationParameters.outputWindow;
 #if TARGET_OS_OSX

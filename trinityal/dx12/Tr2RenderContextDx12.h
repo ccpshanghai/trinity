@@ -303,6 +303,16 @@ public:
 		return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( m_commandList.p ) );
 	}
 
+	// The back buffer's format as the GPU API spells it. On the DX backends
+	// Tr2RenderContextEnum::PixelFormat already holds DXGI's values, so this is
+	// GetBackBufferFormat() widened -- and the getter exists precisely so a caller does not
+	// have to know that, because on Metal the two are different numbers and passing the wrong
+	// one aborts the process inside Metal's validation layer.
+	uint64_t GetNativeBackBufferFormat() const
+	{
+		return static_cast<uint64_t>( GetBackBufferFormat() );
+	}
+
 	// Metal's two, so the Python-side handle table is the same shape on every backend
 	// (spec D3): a getter is named for what it returns, and returns 0 where the concept
 	// does not exist. ImGui's Metal backend renders with a command buffer plus the pass's

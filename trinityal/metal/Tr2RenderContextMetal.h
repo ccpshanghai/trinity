@@ -375,6 +375,21 @@ public:
 		return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( (__bridge void*)m_workQueue->GetCurrentRenderEncoder() ) );
 	}
 
+	// The back buffer's format as the GPU API spells it -- an MTLPixelFormat here, a
+	// DXGI_FORMAT on the DX backends.
+	//
+	// GetBackBufferFormat() is not this. That one returns Tr2RenderContextEnum::PixelFormat,
+	// Trinity's own enum, and on the DX backends its values ARE DXGI's -- so a caller that
+	// passed it straight to a graphics API worked on Windows and had no reason to notice. It
+	// does not work here: the HUD passed PixelFormat 87 to
+	// texture2DDescriptorWithPixelFormat: and Metal's validation layer aborted the process on
+	// "pixelFormat (87) is not a valid MTLPixelFormat".
+	//
+	// So the translation belongs where the table is -- MetalUtils::GetMTLPixelFormat, the same
+	// one every texture goes through -- and not in the caller, which would have to carry a
+	// copy of it in Python. Defined in the .mm because MetalUtils is not in this header.
+	uint64_t GetNativeBackBufferFormat() const;
+
 	// DX12 descriptor heaps; no Metal meaning, 0 by contract (spec D3).
 	uint64_t GetNativeSrvHeap() const
 	{

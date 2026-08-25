@@ -318,6 +318,13 @@ public:
 		return 0;
 	}
 
+	// No device, so no back buffer format. 0 is MTLPixelFormatInvalid and DXGI_FORMAT_UNKNOWN
+	// alike, so a caller checking for 0 is right on every backend (spec D3).
+	uint64_t GetNativeBackBufferFormat() const
+	{
+		return 0;
+	}
+
 	// Metal's two, so the Python-side handle table is the same shape on every backend
 	// (spec D3): a getter is named for what it returns, and returns 0 where the concept
 	// does not exist. ImGui's Metal backend renders with a command buffer plus the pass's
