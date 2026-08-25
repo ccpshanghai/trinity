@@ -576,13 +576,25 @@ ALResult Tr2TextureAL::MapForWriting( const Tr2TextureSubresource& region,
 		auto depth = MAX( MIN( region.GetDepth(), m_desc.GetMipDepth( region.m_startMipLevel ) ), 1 );
 		if( m_desc.IsCompressed() )
 		{
-			mipPitch = MAX( width / 4u, 1 ) * GetBlockByteSize( m_desc.GetFormat() );
+			// GetBlockCount, not `MAX( width / 4u, 1 )`. The MAX was covering for the same
+			// truncation -- it turned a sub-block width into 1 block, correctly -- but it could
+			// not fix a width of 5 on a 4-wide block (1 instead of 2), and it assumed the block
+			// is 4 wide, which ASTC 6x6 and 8x8 are not.
+			// Qualified, unlike GetBlockWidth beside it: those take a PixelFormat and so reach
+			// ImageIO by argument-dependent lookup, while GetBlockCount takes two integers and
+			// has nothing to be found through.
+			mipPitch = Tr2RenderContextEnum::GetBlockCount( width, GetBlockWidth( m_desc.GetFormat() ) )
+				* GetBlockByteSize( m_desc.GetFormat() );
 		}
 		else
 		{
 			mipPitch = width * GetBytesPerPixel( m_desc.GetFormat() );
 		}
-		bufferSize = mipPitch * height * depth;
+		// Block rows, for the same reason: the pitch above is bytes per BLOCK row, so
+		// multiplying by texel rows overcounted by the block height on every compressed
+		// format. GetBlockHeight is 1 when uncompressed, so this is unchanged there.
+		bufferSize = mipPitch
+			* Tr2RenderContextEnum::GetBlockCount( height, GetBlockHeight( m_desc.GetFormat() ) ) * depth;
 	}
 
 	auto renderedFrame = metalContext->GetRenderedFrameNumber();

@@ -637,8 +637,17 @@ namespace TrinityALImpl
 			{
 				// Rows of blocks, not rows of texels -- the same distinction the upload path
 				// in Create has to make.
-				pitch = ( ( extent.width + 3 ) / 4 ) * Tr2RenderContextEnum::GetBlockByteSize( desc.GetFormat() );
-				size = VkDeviceSize( pitch ) * ( ( extent.height + 3 ) / 4 ) * extent.depth;
+				// Through the enum's block extent. Vulkan maps no ASTC format today
+				// (UtilitiesVulkan.cpp:152 says so), so this is not a behaviour change here --
+				// it is the same arithmetic stated once, so that the gap closing later does not
+				// need this line found again.
+				pitch = Tr2RenderContextEnum::GetBlockCount(
+							extent.width, Tr2RenderContextEnum::GetBlockWidth( desc.GetFormat() ) )
+					* Tr2RenderContextEnum::GetBlockByteSize( desc.GetFormat() );
+				size = VkDeviceSize( pitch )
+					* Tr2RenderContextEnum::GetBlockCount(
+						  extent.height, Tr2RenderContextEnum::GetBlockHeight( desc.GetFormat() ) )
+					* extent.depth;
 			}
 			else
 			{
