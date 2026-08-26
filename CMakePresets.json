@@ -133,6 +133,21 @@
       }
     },
     {
+      "name": "arm64-ios-metal-xcode",
+      "displayName": "M3 Metal AL for an iOS device (Xcode project, signed)",
+      "inherits": "arm64-ios-metal",
+      "generator": "Xcode",
+      "description": "Same configuration as arm64-ios-metal, generated as an .xcodeproj because a device build has to be signed and signing is Xcode's. The Ninja preset beside this one compiles and links for the device without signing, which is enough to find compile and link errors and not enough to install anything.\n\nSigning is automatic and the team is CCP ehf. (PC6EP52JKP), read off the provisioning profiles already on the M3 machine rather than chosen. Automatic because the alternative is a profile per bundle id kept in step by hand; Xcode creates and renews both once someone is signed in to an account with access to that team. Override with -DCMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM=<id> for a different one.\n\nONLY_ACTIVE_ARCH stays NO for the same reason as the simulator preset: the triplet installs one architecture and Xcode must not decide it is building another.",
+      "cacheVariables": {
+        "CMAKE_XCODE_GENERATE_SCHEME": "ON",
+        "CMAKE_XCODE_SCHEME_LAUNCH_CONFIGURATION": "Release",
+        "CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_STYLE": "Automatic",
+        "CMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM": "PC6EP52JKP",
+        "CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY": "Apple Development",
+        "CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH": "NO"
+      }
+    },
+    {
       "name": "x64-windows-internal",
       "inherits": "x64-windows",
       "cacheVariables": {
