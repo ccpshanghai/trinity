@@ -509,7 +509,23 @@ ALResult Tr2VideoAdapterInfo::GetAdapterMaxTextureWidth( unsigned adapterIndex, 
 {
 	CHECK_ADAPTER;
 
-	maxWidth = 16384;
+	// Asked of the device, not written down. 16384 is Apple3-and-up (and every Mac family);
+	// Apple1 and Apple2 cap at 8192, and the iOS Simulator's software renderer is Apple2 -- so
+	// the constant that used to be here was a promise the simulator could not keep. It broke
+	// where a caller believed it: the cascaded shadow atlas is eight 2048 splits wide, which is
+	// exactly 16384, and Metal aborted the process on the descriptor.
+	//
+	// A family test rather than a device property because Metal exposes no maxTextureWidth; the
+	// numbers are the feature-set tables'.
+	maxWidth = 8192;
+	if( @available( macOS 10.15, iOS 13.0, * ) )
+	{
+		id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+		if( device && ( [device supportsFamily:MTLGPUFamilyApple3] || [device supportsFamily:MTLGPUFamilyMac2] ) )
+		{
+			maxWidth = 16384;
+		}
+	}
 	return S_OK;
 }
 

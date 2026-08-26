@@ -306,7 +306,7 @@ bool Tr2Effect::OnPrepareResources()
 	return true;
 }
 
-static bool ConvertEffectPath( const std::string& path, std::string& actualPath )
+bool Tr2Effect::ActualEffectPath( const std::string& path, std::string& actualPath )
 {
 	CCP_STATS_ZONE( __FUNCTION__ );
 
@@ -399,7 +399,7 @@ bool Tr2Effect::Initialize()
 
 	if( m_effectFilePath.size() > 0 )
 	{
-		if( !ConvertEffectPath( m_effectFilePath, m_actualEffectFilePath ) )
+		if( !ActualEffectPath( m_effectFilePath, m_actualEffectFilePath ) )
 		{
 			m_actualEffectFilePath = "";
 			return true;
