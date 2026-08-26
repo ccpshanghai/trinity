@@ -316,10 +316,11 @@ public:
 	// GetBackBufferFormat() widened -- and the getter exists precisely so a caller does not
 	// have to know that, because on Metal the two are different numbers and passing the wrong
 	// one aborts the process inside Metal's validation layer.
-	uint64_t GetNativeBackBufferFormat() const
-	{
-		return static_cast<uint64_t>( GetBackBufferFormat() );
-	}
+	//
+	// Out-of-line, unlike dx11 and stub: there GetPrimaryRenderContext() is static and an
+	// inline body can call it, but here it is an accessor over m_ownerDevice, which the
+	// note below explains cannot be dereferenced at this point in the header.
+	uint64_t GetNativeBackBufferFormat() const;
 
 	// Metal's two, so the Python-side handle table is the same shape on every backend
 	// (spec D3): a getter is named for what it returns, and returns 0 where the concept

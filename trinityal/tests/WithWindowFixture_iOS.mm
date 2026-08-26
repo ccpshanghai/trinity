@@ -1,7 +1,15 @@
 // Copyright © 2026 CCP ehf.
 
 #include "StdAfx.h"
+
+// TARGET_OS_* is needed by the guard below, so the include cannot go inside it -- but it
+// is an Apple header and Windows compiles this file too, so it is wrapped rather than
+// left bare. Off Apple the undefined TARGET_OS_* evaluates to 0 and __APPLE__ already
+// makes the guard false.
+#if defined( __APPLE__ )
 #include <TargetConditionals.h>
+#endif
+
 #if defined( __APPLE__ ) && TARGET_OS_IPHONE && ( TRINITY_PLATFORM != TRINITY_STUB )
 
 #include "WithWindowFixture.h"

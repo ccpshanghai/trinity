@@ -1,8 +1,8 @@
 // Copyright © 2024 CCP ehf.
 
 #include "StdAfx.h"
-#include <TargetConditionals.h>
 #if ( TRINITY_PLATFORM == TRINITY_METAL )
+#include <TargetConditionals.h>
 
 #include "Tr2UpscalingALMetal.h"
 #include "Tr2MetalFxUpscaling.h"
