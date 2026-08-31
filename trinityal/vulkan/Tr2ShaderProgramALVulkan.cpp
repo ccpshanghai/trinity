@@ -159,7 +159,13 @@ namespace TrinityALImpl
 				break;
 			}
 			info.module = shaders[i].m_shader->m_shader;
-			info.pName = "main";
+			// The module's own entry point name, read out of the SPIR-V at Tr2ShaderAL::Create.
+			// It is not "main" -- dxc names it after the HLSL entry function, so a hardcoded
+			// "main" fails vkCreateGraphicsPipelines under
+			// VUID-VkPipelineShaderStageCreateInfo-pName-00707 and every draw becomes a no-op.
+			// The pointer's lifetime is the shader's, which m_shaders below holds -- the same
+			// assumption info.module already makes.
+			info.pName = shaders[i].m_shader->m_entryPoint.c_str();
 			m_shaderInfo.push_back( info );
 			m_shaders.push_back( shaders[i] );
 

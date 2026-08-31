@@ -886,18 +886,25 @@ namespace TrinityALImpl
 
 	ALResult Tr2TextureAL::Resolve( Tr2TextureAL& destination, Tr2RenderContextAL& renderContext )
 	{
+		if( m_msaa.samples <= 1 )
+		{
+			// Not an error, and the contract here is the AL's rather than Vulkan's. vkCmdResolveImage
+			// does require a multisampled source, but Resolve on this interface means "put my
+			// contents in the destination", and dx12 answers a single-sample source with a plain
+			// copy (Tr2TextureALDX12.cpp:1109). Refusing instead left every single-sample caller
+			// with an untouched destination: Tr2HostBitmap reads back the target it was handed, so
+			// app.probes.readback -- the repo's standard for "did it draw" -- returned a zero-filled
+			// frame. One distinct colour at alpha 0, indistinguishable from a frame that presented
+			// nothing, and the E_INVALIDCALL went unread on the way out.
+			return destination.CopySubresourceRegion( Tr2TextureSubresource(), *this, Tr2TextureSubresource(), renderContext );
+		}
+
 		if( !IsValid() || !destination.IsValid() || !m_owner )
 		{
 			return E_INVALIDCALL;
 		}
 		if( m_currentIndex >= m_images.size() || destination.m_currentIndex >= destination.m_images.size() )
 		{
-			return E_INVALIDCALL;
-		}
-		if( m_msaa.samples <= 1 )
-		{
-			// Resolving a single-sample image is not a resolve; vkCmdResolveImage requires
-			// the source to be multisampled and the destination not to be.
 			return E_INVALIDCALL;
 		}
 
