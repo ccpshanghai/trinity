@@ -1436,7 +1436,15 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 					AssignRegisters( state.GetTree(), stage.type );
 					if( compileOptions.spirv )
 					{
-						ForceVulkanRegisterSpaces( state.GetTree() );
+						VulkanRegisterSpaceReject reject;
+						if( !ForceVulkanRegisterSpaces( state.GetTree(), reject ) )
+						{
+							// AddMessage sizes its own buffer, so the symbol name needs no cap here.
+							g_messages.AddMessage(
+								"\\memory(0): error X0000: '%.*s' was assigned register space %d, which the SPIR-V binding ABI cannot place: it has one descriptor set for constant buffers and one for every '%c' register. A stage may declare at most one resource array per register class, because each array declaration takes a register space of its own.",
+								int( reject.name.end - reject.name.start ), reject.name.start, reject.space, reject.registerType );
+							return false;
+						}
 					}
 				}
 

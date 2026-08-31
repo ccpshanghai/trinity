@@ -48,6 +48,39 @@ technique T0
 }
 )";
 
+// One resource array, which AssignRegisters puts on a space of its own -- space1 for
+// the first array, which is already the set the ABI wants. The baseline for the pair
+// below: the rewrite must leave this alone rather than refuse it.
+const char* ONE_RESOURCE_ARRAY_EFFECT = R"(
+Texture2D DiffuseMaps[4];
+SamplerState Samp { Filter = MIN_MAG_MIP_LINEAR; };
+
+float4 MainPS( float2 uv : TEXCOORD0 ) : SV_Target
+{
+	return DiffuseMaps[0].Sample( Samp, uv );
+}
+
+technique T0 { pass P0 { PixelShader = compile ps_5_0 MainPS(); } }
+)";
+
+// Two resource arrays used by one stage. The space counter is seeded with 0, so the
+// second array lands on space2 -- and space is the descriptor set, of which the ABI
+// header has exactly two. Nothing downstream can express set 2: -fvk-t-shift's
+// trailing "1" stops matching, so the shift silently does not apply and the AL builds
+// set 1 while the module says set 2.
+const char* TWO_RESOURCE_ARRAYS_EFFECT = R"(
+Texture2D DiffuseMaps[4];
+Texture2D NormalMaps[4];
+SamplerState Samp { Filter = MIN_MAG_MIP_LINEAR; };
+
+float4 MainPS( float2 uv : TEXCOORD0 ) : SV_Target
+{
+	return DiffuseMaps[0].Sample( Samp, uv ) + NormalMaps[0].Sample( Samp, uv );
+}
+
+technique T0 { pass P0 { PixelShader = compile ps_5_0 MainPS(); } }
+)";
+
 EffectData CompileSpirv( const char* src )
 {
 	EffectCompilerDX11 compiler;
@@ -58,6 +91,19 @@ EffectData CompileSpirv( const char* src )
 	g_messages.Flush();
 	[compiled] { ASSERT_TRUE( compiled ); }();
 	return data;
+}
+
+// CompileSpirv asserts success. This one reports it, for the cases where refusing to
+// compile is the correct answer.
+bool TryCompileSpirv( const char* src )
+{
+	EffectCompilerDX11 compiler;
+	[&] { ASSERT_TRUE( compiler.Create() ); }();
+	EffectData data;
+	bool compiled = compiler.CompileEffect( src + 1, strlen( src ), {},
+		data, { "6_0", true, false, true }, nullptr );
+	g_messages.Flush();
+	return compiled;
 }
 
 EffectData CompileDx11Reference( const char* src )
@@ -108,6 +154,38 @@ std::map<uint32_t, Decoration> ScanDecorations( const uint32_t* words, size_t wo
 	}
 	return byId;
 }
+
+// Every register input a stage declares must appear in the module on the set and
+// binding the ABI header computes for it. Nothing else in the pipeline can recover
+// from a mismatch here, because both sides derive their numbers independently.
+void ExpectStageObeysTheAbi( const StageInput& stage )
+{
+	using namespace Tr2VulkanBindingABI;
+
+	uint32_t shaderType = uint32_t( stage.type );
+	size_t wordCount = 0;
+	const uint32_t* words = ShaderWords( stage, wordCount );
+	auto decorations = ScanDecorations( words, wordCount );
+
+	std::set<std::pair<uint32_t, uint32_t>> present;
+	for( auto& d : decorations )
+	{
+		if( d.second.set != ~0u && d.second.binding != ~0u )
+		{
+			present.insert( { d.second.set, d.second.binding } );
+		}
+	}
+
+	for( auto& ri : stage.registerInputs )
+	{
+		uint32_t expectedSet = DescriptorSetIndex( uint32_t( ri.registerType.Packed() ) );
+		uint32_t expectedBinding = BindingNumber( uint32_t( ri.registerType.Packed() ), ri.registerIndex, shaderType );
+		EXPECT_TRUE( present.count( { expectedSet, expectedBinding } ) )
+			<< "register type " << int( ri.registerType.Packed() ) << " index " << ri.registerIndex
+			<< " declared space " << int( ri.registerSpace )
+			<< " expected set " << expectedSet << " binding " << expectedBinding;
+	}
+}
 }
 
 TEST( VulkanCompiler, EmitsSpirvForEveryStage )
@@ -153,34 +231,10 @@ TEST( VulkanCompiler, ReflectionSurvivesTheBackendSwap )
 
 TEST( VulkanCompiler, BindingsObeyTheABIHeader )
 {
-	using namespace Tr2VulkanBindingABI;
-
 	EffectData data = CompileSpirv( SIMPLE_EFFECT );
-	auto& stages = data.techniques[0].passes[0].stages;
-	for( auto& stage : stages )
+	for( auto& stage : data.techniques[0].passes[0].stages )
 	{
-		uint32_t shaderType = uint32_t( stage.type );
-		size_t wordCount = 0;
-		const uint32_t* words = ShaderWords( stage, wordCount );
-		auto decorations = ScanDecorations( words, wordCount );
-
-		std::set<std::pair<uint32_t, uint32_t>> present;
-		for( auto& d : decorations )
-		{
-			if( d.second.set != ~0u && d.second.binding != ~0u )
-			{
-				present.insert( { d.second.set, d.second.binding } );
-			}
-		}
-
-		for( auto& ri : stage.registerInputs )
-		{
-			uint32_t expectedSet = DescriptorSetIndex( uint32_t( ri.registerType.Packed() ) );
-			uint32_t expectedBinding = BindingNumber( uint32_t( ri.registerType.Packed() ), ri.registerIndex, shaderType );
-			EXPECT_TRUE( present.count( { expectedSet, expectedBinding } ) )
-				<< "register type " << int( ri.registerType.Packed() ) << " index " << ri.registerIndex
-				<< " expected set " << expectedSet << " binding " << expectedBinding;
-		}
+		ExpectStageObeysTheAbi( stage );
 	}
 }
 
@@ -203,6 +257,38 @@ technique T0 { pass P0 { PixelShader = compile ps_5_0 MainPS(); } }
 	size_t wordCount = 0;
 	const uint32_t* words = ShaderWords( ps, wordCount );
 	EXPECT_EQ( words[0], 0x07230203u );
+}
+
+TEST( VulkanCompiler, AResourceArrayLandsInTheResourceDescriptorSet )
+{
+	EffectData data = CompileSpirv( ONE_RESOURCE_ARRAY_EFFECT );
+	auto& stages = data.techniques[0].passes[0].stages;
+	ASSERT_EQ( stages.size(), 1u );
+	auto& ps = stages[0];
+	// AssignRegisters puts the array on a space of its own, which for the first array
+	// is space1 -- already the resource set. It has to be left there, not refused.
+	ASSERT_EQ( ps.registerInputs.size(), 2u );
+	for( auto& ri : ps.registerInputs )
+	{
+		EXPECT_EQ( int( ri.registerSpace ), int( Tr2VulkanBindingABI::DESCRIPTOR_SET_RESOURCES ) )
+			<< "register type " << int( ri.registerType.Packed() ) << " index " << ri.registerIndex;
+	}
+	ExpectStageObeysTheAbi( ps );
+}
+
+TEST( VulkanCompiler, ASecondResourceArrayIsRefusedRatherThanMisbound )
+{
+	// The second array is assigned space2, which the ABI has no descriptor set for.
+	// It used to pass straight through: -fvk-t-shift names space 1 and nothing else,
+	// so the shift did not apply and the module declared set 2 while the AL built
+	// set 1 -- a wrong binding with no diagnostic on any side.
+	testing::internal::CaptureStdout();
+	bool compiled = TryCompileSpirv( TWO_RESOURCE_ARRAYS_EFFECT );
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_FALSE( compiled );
+	EXPECT_NE( output.find( "NormalMaps" ), std::string::npos ) << output;
+	EXPECT_NE( output.find( "register space 2" ), std::string::npos ) << output;
 }
 
 #endif
