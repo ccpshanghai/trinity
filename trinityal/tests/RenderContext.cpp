@@ -352,3 +352,36 @@ TEST_F( RenderContext, CanBeginAndEndScene )
 	ASSERT_HRESULT_SUCCEEDED( renderContext->BeginScene() );
 	ASSERT_HRESULT_SUCCEEDED( renderContext->EndScene() );
 }
+
+#if ( TRINITY_PLATFORM == TRINITY_METAL )
+TEST_F( RenderContext, NativeHandlesObserveTheFrame )
+{
+	ENSURE_GPU_OR_SKIP
+	// Device and queue exist from creation on; they are what ui_init needs.
+	EXPECT_NE( 0u, renderContext->GetNativeDevice() );
+	EXPECT_NE( 0u, renderContext->GetNativeCommandQueue() );
+	// The encoder is only valid inside a pass; outside one, 0 is the documented
+	// value — the same contract the DX12 command-list getter carries (S6: the
+	// call site is the guard, so the honest answer out-of-frame is "not now").
+	EXPECT_EQ( 0u, renderContext->GetNativeRenderEncoder() );
+	// The DX12 names that have no Metal meaning stay 0 — spec D3 forbids
+	// smuggling a command buffer through a heap getter.
+	EXPECT_EQ( 0u, renderContext->GetNativeSrvHeap() );
+	EXPECT_EQ( 0u, renderContext->GetNativeSamplerHeap() );
+}
+
+TEST_F( RenderContext, NativeCommandBufferExistsAfterEndScene )
+{
+	ENSURE_GPU_OR_SKIP
+	// Unlike the encoder, the command buffer has a happy path this fixture can
+	// reach without opening a render pass: EndScene's FlushOutstandingOperations
+	// creates one unconditionally when the frame recorded nothing ("The tests
+	// just do a present with no render" -- MetalWorkQueue::FlushOutstandingOperations),
+	// and ResetFrame never clears it. Same BeginScene/EndScene sequence as
+	// CanBeginAndEndScene above; the getter only reads what that sequence
+	// already produced.
+	ASSERT_HRESULT_SUCCEEDED( renderContext->BeginScene() );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->EndScene() );
+	EXPECT_NE( 0u, renderContext->GetNativeCommandBuffer() );
+}
+#endif

@@ -2,6 +2,7 @@
 
 #if TRINITY_PLATFORM == TRINITY_METAL
 #import <Foundation/Foundation.h>
+#include <TargetConditionals.h>
 #include "MetalUtils.h"
 #include "ALLog.h"
 
@@ -9,7 +10,50 @@
 namespace TrinityALImpl
 {
 
-void MetalUtils::SetupPixelFormatConversionTable()
+MTLResourceOptions MetalDefaultUploadStorageMode( id<MTLDevice> device )
+{
+#if TARGET_OS_OSX
+	return MTLResourceStorageModeManaged;
+#else
+	(void)device;
+	return MTLResourceStorageModeShared;
+#endif
+}
+
+MTLPixelFormat MetalDefaultDepthStencilPixelFormat( id<MTLDevice> device )
+{
+	// Depth24Unorm_Stencil8 is a macOS-only format, and even there optional.
+	// Fall back per capability, not per OS (spec D7): iOS devices answer NO.
+	// The enumerator itself -- not just isDepth24Stencil8PixelFormatSupported --
+	// is macOS-only SDK surface, so it cannot be mentioned outside this #if
+	// either (same rule as MetalDefaultUploadStorageMode's Managed enumerator).
+#if TARGET_OS_OSX
+	const bool hasD24 = device.isDepth24Stencil8PixelFormatSupported;
+	return hasD24 ? MTLPixelFormatDepth24Unorm_Stencil8 : MTLPixelFormatDepth32Float_Stencil8;
+#else
+	(void)device;
+	return MTLPixelFormatDepth32Float_Stencil8;
+#endif
+}
+
+bool MetalDeviceSupportsBC( id<MTLDevice> device )
+{
+	if( getenv( "TRINITY_FORCE_BC_DECOMPRESS" ) )
+	{
+		return false;
+	}
+	if( @available( macOS 11.0, iOS 16.4, * ) )
+	{
+		return [device supportsBCTextureCompression];
+	}
+#if TARGET_OS_OSX
+	return true; // pre-11.0 macOS: BC always worked there
+#else
+	return false;
+#endif
+}
+
+void MetalUtils::SetupPixelFormatConversionTable( id<MTLDevice> device )
 {
 	// Safe guard future expansion of formats
 	for( int i = 0; i < Tr2RenderContextEnum::PIXEL_FORMAT_SENTINEL; i++ )
@@ -63,8 +107,11 @@ void MetalUtils::SetupPixelFormatConversionTable()
 	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_R32_UINT] = MTLPixelFormatR32Uint;
 	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_R32_SINT] = MTLPixelFormatR32Sint;
 	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_R24G8_TYPELESS] = MTLPixelFormatInvalid;
-	// HACK: D24S8 is emulated on Intel/AMD and is not supported on Apple Silicon. Use D32 or D32S8 instead.
-	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_D24_UNORM_S8_UINT] = MTLPixelFormatDepth32Float;
+	// D24S8 is asked of the device (spec D7): Managed-capable Macs that support
+	// the format get it, everything else (emulated Intel/AMD paths that don't
+	// report support, Apple Silicon, and -- eventually -- iOS) gets D32S8.
+	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_D24_UNORM_S8_UINT] =
+		MetalDefaultDepthStencilPixelFormat( device );
 	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_R24_UNORM_X8_TYPELESS] = MTLPixelFormatInvalid;
 	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_X24_TYPELESS_G8_UINT] = MTLPixelFormatInvalid;
 	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_R8G8_TYPELESS] = MTLPixelFormatInvalid;
@@ -119,6 +166,14 @@ void MetalUtils::SetupPixelFormatConversionTable()
 	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_BC7_TYPELESS] = MTLPixelFormatInvalid;
 	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_BC7_UNORM] = MTLPixelFormatBC7_RGBAUnorm;
 	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_BC7_UNORM_SRGB] = MTLPixelFormatBC7_RGBAUnorm_sRGB;
+	// ASTC (M3, spec §7.3): sampled natively by Apple GPUs — the simulator's software
+	// renderer and the device's Apple7 both accept LDR ASTC. No ASTC 3D block compression.
+	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_4x4_UNORM] = MTLPixelFormatASTC_4x4_LDR;
+	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_4x4_UNORM_SRGB] = MTLPixelFormatASTC_4x4_sRGB;
+	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_6x6_UNORM] = MTLPixelFormatASTC_6x6_LDR;
+	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_6x6_UNORM_SRGB] = MTLPixelFormatASTC_6x6_sRGB;
+	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_8x8_UNORM] = MTLPixelFormatASTC_8x8_LDR;
+	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_8x8_UNORM_SRGB] = MTLPixelFormatASTC_8x8_sRGB;
 }
 
 MTLPixelFormat MetalUtils::GetMTLPixelFormat( Tr2RenderContextEnum::PixelFormat pixelFormat )
@@ -134,7 +189,7 @@ MTLPixelFormat MetalUtils::GetMTLPixelFormat( Tr2RenderContextEnum::PixelFormat 
 }
 
 MTLTextureType
-	MetalUtils::GetMTLTextureType( Tr2RenderContextEnum::TextureType type, uint32 arrayLength, uint32 sampleCount )
+	MetalUtils::GetMTLTextureType( Tr2RenderContextEnum::TextureType type, uint32_t arrayLength, uint32_t sampleCount )
 {
 	switch( type )
 	{
@@ -350,9 +405,9 @@ MetalColor MetalUtils::GetMetalColorFromRGBA8( uint32_t color )
 	return metalColor;
 }
 
-MetalUtils::MetalUtils()
+MetalUtils::MetalUtils( id<MTLDevice> device )
 {
-	SetupPixelFormatConversionTable();
+	SetupPixelFormatConversionTable( device );
 	SetupVertexFormatConversionTable();
 }
 

@@ -306,11 +306,22 @@ bool Tr2Effect::OnPrepareResources()
 	return true;
 }
 
-static bool ConvertEffectPath( const std::string& path, std::string& actualPath )
+bool Tr2Effect::ActualEffectPath( const std::string& path, std::string& actualPath )
 {
 	CCP_STATS_ZONE( __FUNCTION__ );
 
-	actualPath = std::string( path.size() + 8 + 10, 0 );
+	// TRINITY_EFFECT_PLATFORM_NAME, not TRINITY_PLATFORM_NAME: on Apple one renderer has three
+	// effect directories, one per SDK, because a metallib is compiled per SDK and the three
+	// cannot be loaded by each other. The two names are the same string everywhere else. See
+	// TrinityALForward.h.
+	static const char s_platformName[] = "." TRINITY_EFFECT_PLATFORM_NAME "/";
+
+	// The rewrite inserts ".<platform>" where a "/" was, and replaces the extension with the
+	// longest shader-model suffix ("sm_depth"), so those two are what the slack has to cover.
+	// It used to be the literal 8 + 10, which fitted "dx12" and would have overrun the buffer
+	// the moment the platform name grew -- and "metal-iphonesimulator" is 21 characters.
+	// sizeof covers the '.' and the '/' and the NUL, and the +1 is the '.' before the suffix.
+	actualPath = std::string( path.size() + sizeof( s_platformName ) + sizeof( "sm_depth" ) + 1, 0 );
 	const char* str = actualPath.c_str();
 	size_t i = 0;
 	size_t dot = -1;
@@ -323,7 +334,6 @@ static bool ConvertEffectPath( const std::string& path, std::string& actualPath 
 			if( i > 8 && strcmp( str + i - 7, "/effect/" ) == 0 )
 			{
 				--i;
-				static const char* s_platformName = "." TRINITY_PLATFORM_NAME "/";
 				for( const char* src = s_platformName; *src; ++src )
 				{
 					actualPath[++i] = *src;
@@ -389,7 +399,7 @@ bool Tr2Effect::Initialize()
 
 	if( m_effectFilePath.size() > 0 )
 	{
-		if( !ConvertEffectPath( m_effectFilePath, m_actualEffectFilePath ) )
+		if( !ActualEffectPath( m_effectFilePath, m_actualEffectFilePath ) )
 		{
 			m_actualEffectFilePath = "";
 			return true;

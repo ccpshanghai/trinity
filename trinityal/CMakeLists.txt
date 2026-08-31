@@ -558,7 +558,21 @@ elseif(APPLE)
         ccp_add_library(TrinityAL_metal STATIC)
         target_compile_definitions(TrinityAL_metal PUBLIC TRINITY_PLATFORM=TRINITY_METAL)
         set_shared_trinityal_properties(metal)
-        target_link_libraries(TrinityAL_metal PUBLIC "-framework Metal" "-framework MetalFX" "-framework IOKit" "-framework QuartzCore" AMD::FidelityFX::fsr)
+        target_link_libraries(TrinityAL_metal PUBLIC "-framework Metal" "-framework IOKit" "-framework QuartzCore" AMD::FidelityFX::fsr)
+        # MetalFX.framework ships for macOS and real iOS devices, but not for any
+        # iPhoneSimulator SDK (Tr2MetalFxUpscaling.h/.mm already compile it out
+        # there under TARGET_OS_SIMULATOR) -- linking it unconditionally makes the
+        # simulator triplet fail at link, not compile.
+        if(NOT (IOS AND CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator"))
+            target_link_libraries(TrinityAL_metal PUBLIC "-framework MetalFX")
+        endif()
+        # UIKit for iOS: Tr2VideoAdapterInfoALMetal.mm reads UIScreen for the
+        # one screen's pixel extent (the CGDisplay role), and UIScreen lives in
+        # UIKit. Window-less by design, but reading the screen descriptor is not
+        # building a UI (spec D6).
+        if(IOS)
+            target_link_libraries(TrinityAL_metal PUBLIC "-framework UIKit")
+        endif()
         #[[
             FIXME because we're mixing objective-c++ and c++ headers in our precompiled headers then we need to force
             one specific language for macOS. This can be fixed once we revisit our usage of precompiled headers, which is

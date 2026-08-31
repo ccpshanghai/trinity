@@ -82,6 +82,72 @@
       }
     },
     {
+      "name": "arm64-osx-metal",
+      "displayName": "M3 Metal verification (Release, AL tests)",
+      "inherits": "arm64-osx-release",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "BUILD_METAL": "ON",
+        "BUILD_SHADER_COMPILER": "OFF",
+        "BUILD_TESTING": "ON",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "OFF"
+      }
+    },
+    {
+      "name": "arm64-ios-simulator-metal",
+      "displayName": "M3 Metal AL for the iOS simulator (Release, AL tests)",
+      "inherits": "arm64-ios-simulator-release",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "BUILD_METAL": "ON",
+        "BUILD_SHADER_COMPILER": "OFF",
+        "BUILD_TESTING": "ON",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "OFF"
+      }
+    },
+    {
+      "name": "arm64-ios-simulator-metal-xcode",
+      "displayName": "M3 Metal AL for the iOS simulator (Xcode project, browse and debug)",
+      "inherits": "arm64-ios-simulator-metal",
+      "generator": "Xcode",
+      "description": "Same configuration as arm64-ios-simulator-metal, generated as an .xcodeproj for browsing and debugging in Xcode; its own build tree, because a build tree carries its generator. Xcode is multi-config and CcpBuildConfigurations.cmake FORCEs the four CCP flavors, so the configuration list cannot be narrowed from here — instead the generated schemes launch Release, because the arm64-ios-simulator-release triplet installs release dependencies only and Xcode would otherwise default to Debug. Code signing is off: nothing here leaves the simulator.",
+      "cacheVariables": {
+        "CMAKE_XCODE_GENERATE_SCHEME": "ON",
+        "CMAKE_XCODE_SCHEME_LAUNCH_CONFIGURATION": "Release",
+        "CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED": "NO",
+        "CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED": "NO",
+        "CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY": "",
+        "CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH": "NO"
+      }
+    },
+    {
+      "name": "arm64-ios-metal",
+      "displayName": "M3 Metal AL for iOS devices (Release, AL tests)",
+      "inherits": "arm64-ios-release",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "BUILD_METAL": "ON",
+        "BUILD_SHADER_COMPILER": "OFF",
+        "BUILD_TESTING": "ON",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "OFF"
+      }
+    },
+    {
+      "name": "arm64-ios-metal-xcode",
+      "displayName": "M3 Metal AL for an iOS device (Xcode project, signed)",
+      "inherits": "arm64-ios-metal",
+      "generator": "Xcode",
+      "description": "Same configuration as arm64-ios-metal, generated as an .xcodeproj because a device build has to be signed and signing is Xcode's. The Ninja preset beside this one compiles and links for the device without signing, which is enough to find compile and link errors and not enough to install anything.\n\nSigning is automatic and the team is CCP ehf. (PC6EP52JKP), read off the provisioning profiles already on the M3 machine rather than chosen. Automatic because the alternative is a profile per bundle id kept in step by hand; Xcode creates and renews both once someone is signed in to an account with access to that team. Override with -DCMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM=<id> for a different one.\n\nONLY_ACTIVE_ARCH stays NO for the same reason as the simulator preset: the triplet installs one architecture and Xcode must not decide it is building another.",
+      "cacheVariables": {
+        "CMAKE_XCODE_GENERATE_SCHEME": "ON",
+        "CMAKE_XCODE_SCHEME_LAUNCH_CONFIGURATION": "Release",
+        "CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_STYLE": "Automatic",
+        "CMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM": "PC6EP52JKP",
+        "CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY": "Apple Development",
+        "CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH": "NO"
+      }
+    },
+    {
       "name": "x64-windows-internal",
       "inherits": "x64-windows",
       "cacheVariables": {
@@ -225,6 +291,7 @@
         "CMAKE_SYSTEM_NAME": "iOS",
         "CMAKE_OSX_ARCHITECTURES": "arm64",
         "CMAKE_OSX_DEPLOYMENT_TARGET": "26.0",
+        "VCPKG_TARGET_ARCHITECTURE": "arm64",
         "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/vendor/github.com/carbonengine/vcpkg-registry/toolchains/arm64-ios-triplet.cmake"
       },
       "hidden": true

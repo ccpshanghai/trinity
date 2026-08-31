@@ -344,26 +344,67 @@ protected:
 	Tr2UpscalingTechniqueAL* m_upscalingTechnique;
 
 public:
-	// See the DX12 backend for what this is for. There is no DX12 command list
-	// here; Metal's equivalent (MTLRenderCommandEncoder) arrives with M3, and 0 is
-	// the documented "not now" value until then.
+	// The DX12 command-list slot has no Metal meaning and stays 0; Metal's
+	// equivalents are GetNativeCommandBuffer and GetNativeRenderEncoder below.
+	// Spec D3: a getter is named for what it returns.
 	uint64_t GetNativeCommandList() const
 	{
 		return 0;
 	}
 
-	// See the DX12 backend. No DX12 device or descriptor heap here.
 	uint64_t GetNativeDevice() const
 	{
-		return 0;
-	}
-
-	uint64_t GetNativeSrvHeap() const
-	{
-		return 0;
+		return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( (__bridge void*)m_metalContext->GetDevice() ) );
 	}
 
 	uint64_t GetNativeCommandQueue() const
+	{
+		return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( (__bridge void*)m_metalContext->GetCommandQueue() ) );
+	}
+
+	// ImGui's Metal backend renders with a command buffer plus the pass's open
+	// encoder; both are only handed out inside a TriStepPythonCB callback, where
+	// the frame guarantees them (S6 -- the call site is the guard).
+	uint64_t GetNativeCommandBuffer() const
+	{
+		return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( (__bridge void*)m_workQueue->GetCommandBuffer() ) );
+	}
+
+	uint64_t GetNativeRenderEncoder() const
+	{
+		return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( (__bridge void*)m_workQueue->GetCurrentRenderEncoder() ) );
+	}
+
+	// Open a render pass on the currently bound targets, if one is not open already.
+	//
+	// This is the frame graph asking, not a getter driving (spec 5). Metal has no
+	// always-recording command list: an encoder exists only between a pass beginning and
+	// ending, and Clear does not open one -- ClearAttachment ends the current encoder and
+	// leaves MTLLoadActionClear on the descriptor for the NEXT pass to apply. So a step that
+	// hands control to something which records draws -- TriStepPythonCB with a hosted UI in it
+	// -- has to say so, or GetNativeRenderEncoder() correctly observes that there is nothing
+	// there and the UI silently draws nowhere.
+	//
+	// A no-op on every other backend, where a command list is always recording.
+	ALResult BeginRenderPass();
+
+	// The back buffer's format as the GPU API spells it -- an MTLPixelFormat here, a
+	// DXGI_FORMAT on the DX backends.
+	//
+	// GetBackBufferFormat() is not this. That one returns Tr2RenderContextEnum::PixelFormat,
+	// Trinity's own enum, and on the DX backends its values ARE DXGI's -- so a caller that
+	// passed it straight to a graphics API worked on Windows and had no reason to notice. It
+	// does not work here: the HUD passed PixelFormat 87 to
+	// texture2DDescriptorWithPixelFormat: and Metal's validation layer aborted the process on
+	// "pixelFormat (87) is not a valid MTLPixelFormat".
+	//
+	// So the translation belongs where the table is -- MetalUtils::GetMTLPixelFormat, the same
+	// one every texture goes through -- and not in the caller, which would have to carry a
+	// copy of it in Python. Defined in the .mm because MetalUtils is not in this header.
+	uint64_t GetNativeBackBufferFormat() const;
+
+	// DX12 descriptor heaps; no Metal meaning, 0 by contract (spec D3).
+	uint64_t GetNativeSrvHeap() const
 	{
 		return 0;
 	}

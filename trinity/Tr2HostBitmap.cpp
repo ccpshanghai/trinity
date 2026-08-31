@@ -250,7 +250,11 @@ bool Tr2HostBitmap::CopyFromTexture( Tr2TextureAL& texture, Tr2RenderContext& re
 			}
 			else
 			{
-				const uint32_t height = IsCompressed() ? GetMipHeight( mipLevel ) / 4 : GetMipHeight( mipLevel );
+				// GetMipNumRows, not a second copy of the block arithmetic. It is BLOCK rows for a
+				// compressed format and texel rows otherwise, rounded up -- which the local form
+				// was not: `/ 4` dropped the last partial block row, and assumed a 4-tall block
+				// that ASTC 6x6 and 8x8 do not have.
+				const uint32_t height = GetMipNumRows( mipLevel );
 				for( uint32_t j = 0; j != height; ++j, src += srcPitch, dst += dstPitch )
 				{
 					memcpy( dst, src, dstPitch );
@@ -347,7 +351,11 @@ bool Tr2HostBitmap::CopyFromTextureRes( TriTextureRes& res, Tr2RenderContext& re
 			}
 			else
 			{
-				const uint32_t height = IsCompressed() ? GetMipHeight( mipLevel ) / 4 : GetMipHeight( mipLevel );
+				// GetMipNumRows, not a second copy of the block arithmetic. It is BLOCK rows for a
+				// compressed format and texel rows otherwise, rounded up -- which the local form
+				// was not: `/ 4` dropped the last partial block row, and assumed a 4-tall block
+				// that ASTC 6x6 and 8x8 do not have.
+				const uint32_t height = GetMipNumRows( mipLevel );
 				for( uint32_t j = 0; j != height; ++j, src += srcPitch, dst += dstPitch )
 				{
 					memcpy( dst, src, dstPitch );
@@ -530,8 +538,20 @@ bool Tr2HostBitmap::Compress( unsigned compressionFormat, unsigned qualityLevel,
 	};
 
 	{
-		unsigned pitch = ( m_width + 3 ) / 4 * Tr2RenderContextEnum::GetBlockByteSize( format[compressionFormat] );
-		CcpMallocBuffer destination( "Tr2HostBitmap::Compress", pitch * ( m_height + 3 ) / 4 );
+		// Through the enum's block extent rather than a hardcoded 4. Every format in the table
+		// above is BC and therefore 4x4, so this is not a behaviour change for any caller today
+		// -- it is the same expression stated once, where a sixth entry cannot get it wrong.
+		//
+		// The buffer size also had a precedence bug: `pitch * ( m_height + 3 ) / 4` groups as
+		// `( pitch * ( m_height + 3 ) ) / 4`, which is not pitch times the block rows. It
+		// over-allocated, so nothing failed.
+		const Tr2RenderContextEnum::PixelFormat compressedFormat = format[compressionFormat];
+		const unsigned pitch = Tr2RenderContextEnum::GetBlockCount(
+								   m_width, Tr2RenderContextEnum::GetBlockWidth( compressedFormat ) )
+			* Tr2RenderContextEnum::GetBlockByteSize( compressedFormat );
+		const unsigned blockRows = Tr2RenderContextEnum::GetBlockCount(
+			m_height, Tr2RenderContextEnum::GetBlockHeight( compressedFormat ) );
+		CcpMallocBuffer destination( "Tr2HostBitmap::Compress", pitch * blockRows );
 
 		Tr2DxtCompressControl* control = CCP_NEW( "TriDevice::CompressSurface/control" ) Tr2DxtCompressControl;
 		ON_BLOCK_EXIT( [&] { CCP_DELETE( control ); } );

@@ -303,6 +303,39 @@ public:
 		return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( m_commandList.p ) );
 	}
 
+	// Metal opens a render pass here; every other backend has an always-recording command
+	// list and there is nothing to do. Present on all of them so the shared TriStep that
+	// calls it compiles everywhere (spec 5: the frame graph asks, getters never drive).
+	ALResult BeginRenderPass()
+	{
+		return S_OK;
+	}
+
+	// The back buffer's format as the GPU API spells it. On the DX backends
+	// Tr2RenderContextEnum::PixelFormat already holds DXGI's values, so this is
+	// GetBackBufferFormat() widened -- and the getter exists precisely so a caller does not
+	// have to know that, because on Metal the two are different numbers and passing the wrong
+	// one aborts the process inside Metal's validation layer.
+	//
+	// Out-of-line, unlike dx11 and stub: there GetPrimaryRenderContext() is static and an
+	// inline body can call it, but here it is an accessor over m_ownerDevice, which the
+	// note below explains cannot be dereferenced at this point in the header.
+	uint64_t GetNativeBackBufferFormat() const;
+
+	// Metal's two, so the Python-side handle table is the same shape on every backend
+	// (spec D3): a getter is named for what it returns, and returns 0 where the concept
+	// does not exist. ImGui's Metal backend renders with a command buffer plus the pass's
+	// open encoder; neither has a DX12 counterpart.
+	uint64_t GetNativeCommandBuffer() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeRenderEncoder() const
+	{
+		return 0;
+	}
+
 	// The other four — device, command queue, SRV heap, sampler heap — live on
 	// Tr2PrimaryRenderContextAL rather than here: that is where m_device, m_commandQueue and
 	// the two GetGlobal*Heap accessors are, and at this point in the header

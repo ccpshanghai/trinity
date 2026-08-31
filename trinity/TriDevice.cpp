@@ -5,6 +5,7 @@
 #include "TriDevice.h"
 #include "Tr2Renderer.h"
 #include "Resources/TriGeometryRes.h"
+#include "Resources/TriTextureRes.h"
 
 #include "TriPythonContext.h"
 #include "RenderJob/Tr2RenderJobs.h"
@@ -91,6 +92,11 @@ HRESULT CreateDeviceInt(
 #endif
 
 	Tr2Renderer::InitializeSystemShaderOptions();
+
+	// The one place the device's ASTC answer becomes a resource-loading policy (spec O3, D7).
+	// Here rather than in TriTextureRes because this is where a render context first exists and
+	// where the main thread still owns it -- the loader threads that read the flag cannot ask.
+	TriTextureRes::SetSubstituteKtx2ForDds( renderContext.GetCaps().SupportsAstcTextures() );
 
 	return hr;
 }

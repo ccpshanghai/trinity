@@ -23,7 +23,10 @@
 #ifdef _WIN32
 typedef HWND Tr2WindowHandle;
 #elif defined( __APPLE__ )
-#include <objc/objc-runtime.h>
+// objc/objc.h (not objc-runtime.h) is the one header this typedef needs and the
+// one that ships in every Apple platform SDK -- objc-runtime.h is macOS-SDK-only
+// and isn't present under iPhoneOS/iPhoneSimulator.
+#include <objc/objc.h>
 typedef id Tr2WindowHandle;
 #else
 typedef uintptr_t Tr2WindowHandle;

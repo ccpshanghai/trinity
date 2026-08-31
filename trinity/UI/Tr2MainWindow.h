@@ -3,7 +3,10 @@
 #pragma once
 
 #ifdef __APPLE__
-#include <objc/objc-runtime.h>
+// objc/objc.h (not objc-runtime.h) is the one header the `id` members below need,
+// and the one that ships in every Apple platform SDK -- objc-runtime.h is
+// macOS-SDK-only. Same swap as Include/Tr2WindowHandle.h.
+#include <objc/objc.h>
 #endif
 
 
