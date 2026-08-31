@@ -1730,6 +1730,7 @@ set(_SOURCES
     TriDevice_Blue.cpp
     TriDeviceMetal.cpp
     TriDeviceStub.cpp
+    TriDeviceVulkan.cpp
     TriFloat.cpp
     TriFloat.h
     TriFloat_Blue.cpp

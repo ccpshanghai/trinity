@@ -21,6 +21,8 @@ set(_SOURCES
     EffectCompilerDX11.h
     EffectCompilerDX12.cpp
     EffectCompilerDX12.h
+    EffectCompilerVulkan.cpp
+    EffectCompilerVulkan.h
     EffectCompilerMetal.cpp
     EffectCompilerMetal.h
     EffectData.cpp
@@ -74,6 +76,7 @@ set(_TEST_SOURCES
     tests/RayTracingTest.cpp
     tests/ShaderCompilerTest.cpp
     tests/TesingUtils.h
+    tests/VulkanCompilerTest.cpp
 )
 
 
@@ -197,6 +200,7 @@ function(configure_shader_compiler target)
 
     target_include_directories(${target} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
         ${GENERATED_SOURCES_DIR}
     )
 

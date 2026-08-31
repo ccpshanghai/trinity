@@ -122,17 +122,10 @@ namespace
 			}
 
 			// apiVersion is what the application declares it is written against, and it
-			// governs which core version's behaviour and entry points are available. It
-			// was 1.0, which is not the same thing as being portable -- it is the lowest
-			// common denominator, and it cost real capability: vkResetQueryPool is core
-			// 1.2, so the query pools have to be reset on a command buffer outside a
-			// render pass instead.
-			//
-			// The portable form is to ask what is there and clamp.
+			// governs which core version's behaviour and entry points are available.
 			// vkEnumerateInstanceVersion is itself a 1.1 entry point, so on a 1.0 loader
 			// vkGetInstanceProcAddr returns null for it -- which is exactly how 1.0 is
-			// detected. Declaring more than we use is harmless; declaring more than the
-			// loader has is not, hence the clamp.
+			// detected.
 			//
 			// Per-device version is a separate question: VkPhysicalDeviceProperties::
 			// apiVersion can be lower than the instance's, so anything device-level has
@@ -146,9 +139,18 @@ namespace
 					instanceVersion = VK_API_VERSION_1_0;
 				}
 			}
-			const uint32_t desiredVersion = instanceVersion < VK_API_VERSION_1_3
-				? instanceVersion
-				: VK_API_VERSION_1_3;
+			// The shader pipeline emits SPIR-V 1.6 for vulkan1.3, and a module
+			// targeting a newer environment than the instance declares is a
+			// validation error. A loader older than 1.3 therefore cannot run
+			// anything this backend produces: fail here, loudly, instead of
+			// creating an instance the first shader would invalidate.
+			if( instanceVersion < VK_API_VERSION_1_3 )
+			{
+				CCP_AL_LOGERR( "Vulkan loader reports %u.%u; this backend requires 1.3",
+					VK_VERSION_MAJOR( instanceVersion ), VK_VERSION_MINOR( instanceVersion ) );
+				return E_FAIL;
+			}
+			const uint32_t desiredVersion = VK_API_VERSION_1_3;
 
 			VkApplicationInfo applicationInfo = {
 				VK_STRUCTURE_TYPE_APPLICATION_INFO,

@@ -6,6 +6,7 @@
 #include "StringTable.h"
 #include "EffectCompilerDX11.h"
 #include "EffectCompilerDX12.h"
+#include "EffectCompilerVulkan.h"
 #include "EffectCompilerMetal.h"
 #include "EffectData.h"
 #include "WorkQueue.h"
@@ -151,6 +152,9 @@ bool CompileShader( const CompileShaderArguments& arguments, IWorkQueue* workQue
 				break;
 			case PLATFORM_DX12:
 				newCompiler.reset( new EffectCompilerDX12() );
+				break;
+			case PLATFORM_VULKAN:
+				newCompiler.reset( new EffectCompilerVulkan() );
 				break;
 #endif
 			case PLATFORM_METAL:

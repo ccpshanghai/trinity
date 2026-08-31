@@ -53,6 +53,19 @@ extern bool IsUniformInputArgument( ASTNode* argument );
 
 extern void AssignRegisters( ASTNode* root, int32_t stage, const std::vector<GlobalInputElement>& globalInput = {} );
 
+// Names the declaration ForceVulkanRegisterSpaces had to refuse.
+struct VulkanRegisterSpaceReject
+{
+	InlineString name;
+	int space = 0;
+	char registerType = '\0';
+};
+
+// Puts every t/s/u declaration on the register space the Vulkan binding ABI reads as
+// its descriptor set. Returns false, filling in the reject, for a declaration whose
+// space cannot be reached; the caller reports it.
+extern bool ForceVulkanRegisterSpaces( ASTNode* root, VulkanRegisterSpaceReject& reject );
+
 extern void SortProgramNodes( ASTNode* root );
 
 extern void CreateGlobalsCB( ParserState& state );

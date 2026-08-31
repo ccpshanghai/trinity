@@ -58,6 +58,22 @@ namespace TrinityALImpl
 		CcpMallocBuffer m_bytecode;
 		Tr2RenderContextEnum::ShaderType m_type;
 
+		// The name of this module's OpEntryPoint, read out of the SPIR-V at Create.
+		//
+		// It is NOT "main". dxc is invoked with -E <the HLSL entry point>
+		// (shadercompiler/EffectCompilerDX11.cpp:1518) and -spirv names the SPIR-V entry point
+		// after it, so what arrives here is whatever the .fx called its function -- "SpritePS",
+		// "_new_symbol_0005" out of the preprocessor, and so on. A pipeline built with pName
+		// "main" against such a module fails vkCreateGraphicsPipelines with VK_ERROR_UNKNOWN
+		// (VUID-VkPipelineShaderStageCreateInfo-pName-00707), and every draw that wanted it is
+		// then a no-op -- a black frame with no other symptom.
+		//
+		// Read from the module rather than plumbed down from the compiler because the module is
+		// what the name has to agree with, and Tr2ShaderAL already holds the bytecode.
+		// Tr2ShaderProgramAL points VkPipelineShaderStageCreateInfo::pName at this string, so
+		// its lifetime has to be the shader's -- the same assumption pStages::module makes.
+		std::string m_entryPoint;
+
 		friend class TrinityALImpl::Tr2ShaderProgramAL;
 	};
 }
