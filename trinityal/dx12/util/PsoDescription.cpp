@@ -129,6 +129,16 @@ ALResult PSODescription::CreatePipelineState( ID3D12Device* device, CComPtr<ID3D
 		desc.SampleDesc.Count = m_sampleDesc.samples;
 		desc.SampleDesc.Quality = m_sampleDesc.quality;
 
+		if( getenv( "CARBON_DX_DUMP" ) )
+		{
+			fprintf( stderr, "DXDUMP pso dsvFormat=%d depthEnable=%d depthWrite=%d depthFunc=%d cull=%d frontCCW=%d rtCount=%u rt0=%d\n",
+				int( desc.DSVFormat ), int( desc.DepthStencilState.DepthEnable ),
+				int( desc.DepthStencilState.DepthWriteMask ), int( desc.DepthStencilState.DepthFunc ),
+				int( desc.RasterizerState.CullMode ), int( desc.RasterizerState.FrontCounterClockwise ),
+				desc.NumRenderTargets, int( desc.RTVFormats[0] ) );
+			fflush( stderr );
+		}
+
 		return device->CreateGraphicsPipelineState( &desc, IID_PPV_ARGS( &pipelineState ) );
 	}
 }

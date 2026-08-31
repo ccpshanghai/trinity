@@ -39,6 +39,18 @@ namespace
 		std::make_pair( 1, 0 ),
 	};
 
+	// Trinity's viewport has y down from the top left; Vulkan's has y up, and this backend
+	// flips it by giving the viewport a negative height and moving the origin to the bottom
+	// edge -- which is what VK_KHR_MAINTENANCE1, in the device extension list, exists to
+	// allow. One function because there are two places that need the flip and they must not
+	// be able to disagree: SetPass, which opens a pass, and SetViewport, which changes the
+	// dynamic state inside one already open.
+	VkViewport FlippedViewport( float x, float y, float width, float height, float minZ, float maxZ )
+	{
+		VkViewport viewport = { x, y + height, width, -height, minZ, maxZ };
+		return viewport;
+	}
+
 }
 
 size_t Tr2RenderContextAL::RenderPassSource::GetHash() const
@@ -185,6 +197,16 @@ ALResult Tr2RenderContextAL::Clear(
 	uint32_t stencil,
 	uint32_t slot ) throw( )
 {
+	if( getenv( "CARBON_VK_DUMP" ) )
+	{
+		static int budget = 20;
+		if( budget-- > 0 )
+		{
+			fprintf( stderr, "VKDUMP clear flags=%u color=%08x depth=%f stencil=%u slot=%u\n",
+				clearFlags, color, depth, stencil, slot );
+			fflush( stderr );
+		}
+	}
 	if( clearFlags & Tr2RenderContextEnum::CLEARFLAGS_TARGET )
 	{
 		if( m_boundRenderTargets[slot].IsValid() )
@@ -444,6 +466,15 @@ namespace
 
 ALResult Tr2RenderContextAL::SetRenderState( Tr2RenderContextEnum::RenderState state, uint32_t value ) throw( )
 {
+	if( getenv( "CARBON_VK_DUMP" ) )
+	{
+		static int budget = 400;
+		if( budget-- > 0 )
+		{
+			fprintf( stderr, "VKDUMP rs state=%d value=%u\n", int( state ), value );
+			fflush( stderr );
+		}
+	}
 	switch( state )
 	{
 	case Tr2RenderContextEnum::RS_ZENABLE:
@@ -466,7 +497,7 @@ ALResult Tr2RenderContextAL::SetRenderState( Tr2RenderContextEnum::RenderState s
 		m_dirtyPso = true;
 		return S_OK;
 	case Tr2RenderContextEnum::RS_CULLMODE:
-		m_pipelineSource.m_rasterizationState.cullMode = value - 1;
+		m_pipelineSource.m_rasterizationState.cullMode = getenv( "CARBON_VK_NOCULL" ) ? 0 : ( value - 1 );
 		m_dirtyPso = true;
 		return S_OK;
 	case Tr2RenderContextEnum::RS_ALPHABLENDENABLE:
@@ -749,13 +780,30 @@ ALResult Tr2RenderContextAL::PopDepthStencil() throw()
 ALResult Tr2RenderContextAL::SetViewport( const Tr2Viewport& viewport ) throw()
 {
 	m_viewport = viewport;
-	m_viewportSet = true;
 
-	// Nothing is recorded here. The viewport is dynamic state, but it is set from SetPass
-	// alongside the scissor, and SetPass runs before every draw that needs a pass. Doing
-	// it in both places would be two vkCmdSetViewport calls for one value, and doing it
-	// only here would lose the value to the next pass restart -- which the clear path and
-	// the query pools both cause.
+	// A degenerate rectangle is not a viewport. TriDevice::Render pushes mViewport on every
+	// frame (TriDevice.cpp:1165), and mViewport is 0x0 for the whole life of a device created
+	// as CreateWindowedDevice( hwnd, 0, 0 ) -- "render to the entire window area" -- because
+	// mWidth/mHeight are set from the *arguments* (TriDevice.cpp:286) and nothing back-fills
+	// them from the swap chain. DX11 and DX12 hand that straight to the API, which accepts a
+	// zero-extent viewport and simply draws nothing; Vulkan rejects it outright
+	// (VUID-VkViewport-width-01770). So it is read here as "no viewport chosen", which is the
+	// state the context starts in and whose fallback is the whole render target.
+	m_viewportSet = viewport.m_width > 0.0f && viewport.m_height > 0.0f;
+
+	// Recorded here *as well as* in SetPass, and that is not a duplicate. The viewport is
+	// dynamic state, so a change made while a pass is open has to be recorded into that pass:
+	// SetPass returns early when !m_dirtyPass, so without this the value the pass opened with
+	// stands for every draw inside it. That is what the primitives sample hit -- the pass
+	// opened with the 0x0 viewport above, Tr2EffectStateManager set the real one immediately
+	// afterwards, and nothing ever reached the command buffer. Keeping it in SetPass too is
+	// what survives a pass restart, which the clear path and the query pools both cause.
+	if( m_renderingActive && m_viewportSet )
+	{
+		VkViewport vp = FlippedViewport( m_viewport.m_x, m_viewport.m_y, m_viewport.m_width,
+			m_viewport.m_height, m_viewport.m_minZ, m_viewport.m_maxZ );
+		vkCmdSetViewport( m_commandBuffer, 0, 1, &vp );
+	}
 	return S_OK;
 }
 
@@ -1126,25 +1174,14 @@ ALResult Tr2RenderContextAL::SetPass()
 	m_owner->m_vkCmdBeginRendering( m_commandBuffer, &renderingInfo );
 	m_renderingActive = true;
 
-	// Trinity's viewport has y down from the top left; Vulkan's has y up, and this
-	// backend flips it by giving the viewport a negative height and moving the origin to
-	// the bottom edge -- which is what VK_KHR_MAINTENANCE1, in the device extension list,
-	// exists to allow. Both branches below apply the same flip; only the source of the
-	// rectangle differs.
+	// FlippedViewport applies the y flip; only the source of the rectangle differs. m_viewportSet
+	// is false both before any SetViewport and after one with a degenerate rectangle, and the
+	// fallback for both is the whole render target.
 	const bool haveViewport = m_viewportSet;
-	const float vpX = haveViewport ? m_viewport.m_x : 0.0f;
-	const float vpY = haveViewport ? m_viewport.m_y : 0.0f;
-	const float vpWidth = haveViewport ? m_viewport.m_width : float( width );
-	const float vpHeight = haveViewport ? m_viewport.m_height : float( height );
-
-	VkViewport viewport = {
-		vpX,
-		vpY + vpHeight,
-		vpWidth,
-		-vpHeight,
-		haveViewport ? m_viewport.m_minZ : 0.0f,
-		haveViewport ? m_viewport.m_maxZ : 1.0f
-	};
+	VkViewport viewport = haveViewport
+		? FlippedViewport( m_viewport.m_x, m_viewport.m_y, m_viewport.m_width,
+			m_viewport.m_height, m_viewport.m_minZ, m_viewport.m_maxZ )
+		: FlippedViewport( 0.0f, 0.0f, float( width ), float( height ), 0.0f, 1.0f );
 
 	VkRect2D scissor = {
 		{ 0, 0 },
@@ -1153,6 +1190,15 @@ ALResult Tr2RenderContextAL::SetPass()
 
 	vkCmdSetViewport( m_commandBuffer, 0, 1, &viewport );
 	vkCmdSetScissor( m_commandBuffer, 0, 1, &scissor );
+
+	if( getenv( "CARBON_VK_DUMP" ) )
+	{
+		fprintf( stderr, "VKDUMP pass %ux%u viewport x=%.1f y=%.1f w=%.1f h=%.1f z=%.2f..%.2f (set=%d) colorAtt=%u depth=%d stencil=%d\n",
+			width, height, viewport.x, viewport.y, viewport.width, viewport.height,
+			viewport.minDepth, viewport.maxDepth, int( haveViewport ), colorAttachmentCount,
+			int( haveDepth ), int( haveStencil ) );
+		fflush( stderr );
+	}
 
 	m_dirtyPass = false;
 	m_dirtyPso = true;
@@ -1607,6 +1653,56 @@ ALResult Tr2RenderContextAL::CreatePipeline( VkPipeline& pipeline )
 		VK_NULL_HANDLE,
 		-1
 	};
+
+	if( const char* zf = getenv( "CARBON_VK_ZFUNC" ) )
+	{
+		m_pipelineSource.m_depthStencilState.depthCompareOp = VkCompareOp( atoi( zf ) );
+	}
+	if( getenv( "CARBON_VK_FRONTCW" ) )
+	{
+		m_pipelineSource.m_rasterizationState.frontFace = VK_FRONT_FACE_CLOCKWISE;
+	}
+	if( getenv( "CARBON_VK_DUMP" ) )
+	{
+		auto& rs = m_pipelineSource.m_rasterizationState;
+		auto& ds = m_pipelineSource.m_depthStencilState;
+		fprintf( stderr, "VKDUMP pipeline topology=%d streams=%u attrs=%u colorAtt=%u dsFormat=%d msaa=%d\n",
+			int( m_pipelineSource.m_topology ), streamCount, uint32_t( layout.size() ),
+			colorAttachmentCount, int( depthStencilFormat ), int( sampleCount ) );
+		for( uint32_t i = 0; i < streamCount && i < MAX_VERTEX_STREAMS; ++i )
+		{
+			fprintf( stderr, "VKDUMP   binding %u stride=%u rate=%d\n", i, bindings[i].stride, int( bindings[i].inputRate ) );
+		}
+		for( size_t i = 0; i < layout.size(); ++i )
+		{
+			fprintf( stderr, "VKDUMP   attr loc=%u binding=%u format=%d offset=%u\n",
+				layout[i].location, layout[i].binding, int( layout[i].format ), layout[i].offset );
+		}
+		fprintf( stderr, "VKDUMP   raster cull=%u front=%d polygon=%d discard=%d depthClamp=%d\n",
+			rs.cullMode, int( rs.frontFace ), int( rs.polygonMode ), int( rs.rasterizerDiscardEnable ), int( rs.depthClampEnable ) );
+		fprintf( stderr, "VKDUMP   depth test=%d write=%d op=%d bounds=%d stencil=%d\n",
+			int( ds.depthTestEnable ), int( ds.depthWriteEnable ), int( ds.depthCompareOp ),
+			int( ds.depthBoundsTestEnable ), int( ds.stencilTestEnable ) );
+		fprintf( stderr, "VKDUMP   blend attachments=%u enable0=%d writeMask0=%u\n",
+			colorBlendState.attachmentCount, int( m_pipelineSource.m_attachmentBlend[0].blendEnable ),
+			m_pipelineSource.m_attachmentBlend[0].colorWriteMask );
+		auto* prog = m_pipelineSource.m_shaderProgram.m_program.get();
+		if( prog )
+		{
+			for( size_t i = 0; i < prog->m_shaderInfo.size(); ++i )
+			{
+				fprintf( stderr, "VKDUMP   stage %d pName=%s\n", int( prog->m_shaderInfo[i].stage ),
+					prog->m_shaderInfo[i].pName ? prog->m_shaderInfo[i].pName : "(null)" );
+			}
+			for( size_t i = 0; i < prog->m_shaderInputs.size(); ++i )
+			{
+				fprintf( stderr, "VKDUMP   shaderInput usage=%d index=%d reg=%d\n",
+					int( prog->m_shaderInputs[i].usage ), int( prog->m_shaderInputs[i].usageIndex ),
+					int( prog->m_shaderInputs[i].registerIndex ) );
+			}
+		}
+		fflush( stderr );
+	}
 
 	return Vk2Al( vkCreateGraphicsPipelines( m_owner->m_device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline ) );
 }
