@@ -15,7 +15,11 @@ ANativeWindow* WaitForWindow();
 ANativeWindow* WaitForWindow( int timeoutSeconds );
 // The window currently stored by the host, or null. Not a wait.
 ANativeWindow* LiveWindow();
-// True when the framework has asked for the current window back (soak mode).
+// True once the current window has been destroyed (onNativeWindowDestroyed),
+// in any run mode -- not soak-only. R11 added gtest/smoke fixtures as readers:
+// WithWindow::SetUpTestCase and WithValidRenderContext::SetUpTestCase check
+// this before ever touching the window, because nothing outside a live soak
+// cycle will recreate it, and WaitForWindow() would otherwise block forever.
 bool WindowLost();
 // The render side has released every object referencing the lost window;
 // unblocks the waiting onNativeWindowDestroyed callback.

@@ -34,8 +34,8 @@ public:
 	bool Resize( uint32_t width, uint32_t height );
 
 #if defined( __ANDROID__ )
-	// Soak hands a new ANativeWindow after surface loss. Releases the previous
-	// acquire and takes one on `window`.
+	// Soak hands a new ANativeWindow after surface loss. A non-owning swap: the
+	// activity owns the window, so there is no acquire to release (R9).
 	void AdoptWindow( ANativeWindow* window );
 #endif
 

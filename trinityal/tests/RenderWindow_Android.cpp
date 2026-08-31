@@ -37,11 +37,20 @@ void RenderWindow::AdoptWindow( ANativeWindow* window )
 
 uint32_t RenderWindow::GetClientWidth() const
 {
+	// F10: a null m_handle means no live surface -- ANativeWindow_getWidth has
+	// no null check of its own and segfaults on a null base pointer (observed
+	// on-device inside SwapChainResizing). 0 is the honest answer, not a
+	// crash: there is nothing to measure.
+	if( !m_handle )
+		return 0;
 	return (uint32_t)ANativeWindow_getWidth( reinterpret_cast<ANativeWindow*>( m_handle ) );
 }
 
 uint32_t RenderWindow::GetClientHeight() const
 {
+	// See GetClientWidth() above: same null-handle exposure, same answer.
+	if( !m_handle )
+		return 0;
 	return (uint32_t)ANativeWindow_getHeight( reinterpret_cast<ANativeWindow*>( m_handle ) );
 }
 
