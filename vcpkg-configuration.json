@@ -32,8 +32,8 @@
         "protobuf"
       ],
       "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
-      "reference": "m3-imgui-ios",
-      "baseline": "c33f95de34ba47de6f108469af78713e71af0eef"
+      "reference": "mobile-exp",
+      "baseline": "1e6c62c4edd71875ff892446e1eee086087ade4c"
     }
   ]
 }
