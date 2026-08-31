@@ -1,7 +1,7 @@
 // Copyright © 2026 CCP ehf.
 
 #pragma once
-#include "include/upscaling/Tr2UpscalingAL.h"
+#include "../include/upscaling/Tr2UpscalingAL.h"
 
 #if TRINITY_PLATFORM == TRINITY_VULKAN
 namespace TrinityALImpl

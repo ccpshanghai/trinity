@@ -19,6 +19,13 @@
 
 bool g_gatherPipelineStatistics = false;
 
+// The AL owns this counter on every backend -- dx11, dx12, metal and the stub all declare it
+// in their render-context translation unit, while TriStepRenderFps.cpp and Tr2InstancedMesh.cpp
+// say CCP_STATS_DECLARED_ELSEWHERE and read it. The engine does not link without a definition,
+// so it is the AL's to provide. The draws below feed it: a declared counter nobody adds to
+// reads a confident zero, which is worse than no counter at all.
+CCP_STATS_DECLARE( vertexCount, "Trinity/AL/vertexCount", true, CST_COUNTER_HIGH, "Vertex count in DrawPrimitive calls." );
+
 namespace
 {
 
@@ -31,6 +38,18 @@ namespace
 		std::make_pair( 1, 1 ),
 		std::make_pair( 1, 0 ),
 	};
+
+	// Trinity's viewport has y down from the top left; Vulkan's has y up, and this backend
+	// flips it by giving the viewport a negative height and moving the origin to the bottom
+	// edge -- which is what VK_KHR_MAINTENANCE1, in the device extension list, exists to
+	// allow. One function because there are two places that need the flip and they must not
+	// be able to disagree: SetPass, which opens a pass, and SetViewport, which changes the
+	// dynamic state inside one already open.
+	VkViewport FlippedViewport( float x, float y, float width, float height, float minZ, float maxZ )
+	{
+		VkViewport viewport = { x, y + height, width, -height, minZ, maxZ };
+		return viewport;
+	}
 
 }
 
@@ -75,6 +94,25 @@ Tr2RenderContextAL::Tr2RenderContextAL() throw( )
 	m_pipelineSource.m_depthStencilState.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
 	m_pipelineSource.m_rasterizationState.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
 	m_pipelineSource.m_rasterizationState.lineWidth = 1;
+	// Clockwise is the front face, because that is what the D3D-shaped AL above this means by
+	// one: dx12 builds every pipeline from a rasterizer whose FrontCounterClockwise is FALSE
+	// (PsoDescription.cpp s_defaultRasterizer), and *no render state on either backend ever
+	// changes it* -- there is no RS_ for winding, so whatever is set here is what ships. The
+	// memset above leaves VK_FRONT_FACE_COUNTER_CLOCKWISE, the opposite of it.
+	//
+	// What that cost, and why it was hard to see: RS_CULLMODE still arrived and was still
+	// mapped correctly, so exactly one half of every mesh was culled -- the wrong half. A
+	// closed mesh has the same silhouette whichever half survives, so the primitives cube
+	// rendered at precisely the right size, place and perspective, matching the dx12 readback
+	// in outline. Every visible face was a back face, its normal pointing away from the
+	// camera, and SolidsWithZ shades with colour * saturate( dot( worldNormal, viewForward ) )
+	// -- zero for all of them. A perfectly shaped black cube.
+	//
+	// CLOCKWISE is the value that reproduces dx12, verified against its readback rather than
+	// reasoned about: this backend also flips the viewport in y (FlippedViewport), which
+	// reverses the winding the rasterizer sees, so the two conventions compose and arguing
+	// from either one alone gets the answer wrong half the time.
+	m_pipelineSource.m_rasterizationState.frontFace = VK_FRONT_FACE_CLOCKWISE;
 
 	VkPipelineColorBlendAttachmentState defaultAttachment = {
 		VK_FALSE,                                                     // VkBool32                                       blendEnable
@@ -275,6 +313,20 @@ ALResult Tr2RenderContextAL::SetIndices( const Tr2BufferAL & buffer ) throw( )
 		return S_OK;
 	}
 	vkCmdBindIndexBuffer( m_commandBuffer, buffer.m_buffer->m_buffer, 0, buffer.GetDesc().stride == 4 ?  VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16 );
+	return S_OK;
+}
+
+// The caller-supplied-stride form. The overload above reads the stride out of the buffer
+// description; Tr2EffectStateManager tracks index stride separately and passes it, which
+// matters for a buffer bound with a stride other than the one it was created with.
+ALResult Tr2RenderContextAL::SetIndices( const Tr2BufferAL & buffer, uint32_t stride ) throw( )
+{
+	if( !buffer.IsValid() )
+	{
+		vkCmdBindIndexBuffer( m_commandBuffer, m_owner->GetZeroBufferVulkan(), 0, VK_INDEX_TYPE_UINT16 );
+		return S_OK;
+	}
+	vkCmdBindIndexBuffer( m_commandBuffer, buffer.m_buffer->m_buffer, 0, stride == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32 );
 	return S_OK;
 }
 
@@ -587,7 +639,22 @@ ALResult Tr2RenderContextAL::SetRenderStates( const uint32_t* stateValuePairs, u
 	{
 		const uint32_t state = *stateValuePairs++;
 		const uint32_t value = *stateValuePairs++;
-		FORWARD_HR( SetRenderState( Tr2RenderContextEnum::RenderState( state ), value ) );
+		// Deliberately not FORWARD_HR, and dx12 is the reference for that: its SetRenderStates
+		// calls SetRenderState and discards the result. A state block is applied best-effort, so
+		// one state this backend has no case for must not drop the states after it. It used to,
+		// and the cost was the whole primitives frame. SolidsWithZ sends CULLMODE FILLMODE
+		// ALPHABLENDENABLE ALPHATESTENABLE ZENABLE ZWRITEENABLE ZFUNC COLORWRITEENABLE DEPTHBIAS
+		// SLOPESCALEDEPTHBIAS SEPARATEALPHABLENDENABLE; FILLMODE is the second entry and is
+		// E_NOTIMPL here, so the nine after it never arrived. ZFUNC was among them -- the
+		// inverted-depth override had just mapped it to GREATEREQUAL -- so the pipeline kept its
+		// LESS_OR_EQUAL default and every fragment failed against a depth buffer cleared to the
+		// reversed-Z far plane of 0. A blank frame, from a state nobody asked about.
+		//
+		// Five states in that one block are still E_NOTIMPL here: FILLMODE, ALPHATESTENABLE,
+		// DEPTHBIAS, SLOPESCALEDEPTHBIAS and SEPARATEALPHABLENDENABLE. Each is asked for with the
+		// value this backend already defaults to, which is why skipping them is right and not
+		// merely survivable. Implementing them is AL work, and it is not what this fixes.
+		SetRenderState( Tr2RenderContextEnum::RenderState( state ), value );
 	}
 	return S_OK;
 }
@@ -728,13 +795,30 @@ ALResult Tr2RenderContextAL::PopDepthStencil() throw()
 ALResult Tr2RenderContextAL::SetViewport( const Tr2Viewport& viewport ) throw()
 {
 	m_viewport = viewport;
-	m_viewportSet = true;
 
-	// Nothing is recorded here. The viewport is dynamic state, but it is set from SetPass
-	// alongside the scissor, and SetPass runs before every draw that needs a pass. Doing
-	// it in both places would be two vkCmdSetViewport calls for one value, and doing it
-	// only here would lose the value to the next pass restart -- which the clear path and
-	// the query pools both cause.
+	// A degenerate rectangle is not a viewport. TriDevice::Render pushes mViewport on every
+	// frame (TriDevice.cpp:1165), and mViewport is 0x0 for the whole life of a device created
+	// as CreateWindowedDevice( hwnd, 0, 0 ) -- "render to the entire window area" -- because
+	// mWidth/mHeight are set from the *arguments* (TriDevice.cpp:286) and nothing back-fills
+	// them from the swap chain. DX11 and DX12 hand that straight to the API, which accepts a
+	// zero-extent viewport and simply draws nothing; Vulkan rejects it outright
+	// (VUID-VkViewport-width-01770). So it is read here as "no viewport chosen", which is the
+	// state the context starts in and whose fallback is the whole render target.
+	m_viewportSet = viewport.m_width > 0.0f && viewport.m_height > 0.0f;
+
+	// Recorded here *as well as* in SetPass, and that is not a duplicate. The viewport is
+	// dynamic state, so a change made while a pass is open has to be recorded into that pass:
+	// SetPass returns early when !m_dirtyPass, so without this the value the pass opened with
+	// stands for every draw inside it. That is what the primitives sample hit -- the pass
+	// opened with the 0x0 viewport above, Tr2EffectStateManager set the real one immediately
+	// afterwards, and nothing ever reached the command buffer. Keeping it in SetPass too is
+	// what survives a pass restart, which the clear path and the query pools both cause.
+	if( m_renderingActive && m_viewportSet )
+	{
+		VkViewport vp = FlippedViewport( m_viewport.m_x, m_viewport.m_y, m_viewport.m_width,
+			m_viewport.m_height, m_viewport.m_minZ, m_viewport.m_maxZ );
+		vkCmdSetViewport( m_commandBuffer, 0, 1, &vp );
+	}
 	return S_OK;
 }
 
@@ -764,7 +848,10 @@ ALResult Tr2RenderContextAL::DrawIndexedPrimitive(
 {
 	SetPipeline();
 
-	vkCmdDrawIndexed( m_commandBuffer, m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second, 1, 0, 0, 0 );
+	auto vc = m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second;
+	CCP_STATS_ADD( vertexCount, vc );
+
+	vkCmdDrawIndexed( m_commandBuffer, vc, 1, 0, 0, 0 );
 	return S_OK;
 }
 
@@ -772,7 +859,10 @@ ALResult Tr2RenderContextAL::DrawPrimitive( uint32_t startVertex, uint32_t primi
 {
 	SetPipeline();
 
-	vkCmdDraw( m_commandBuffer, m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second, 1, 0, 0 );
+	auto vc = m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second;
+	CCP_STATS_ADD( vertexCount, vc );
+
+	vkCmdDraw( m_commandBuffer, vc, 1, 0, 0 );
 	return S_OK;
 }
 
@@ -784,15 +874,58 @@ ALResult Tr2RenderContextAL::DrawIndexedInstanced(
 {
 	SetPipeline();
 
+	auto vc = m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second;
+	CCP_STATS_ADD( vertexCount, vc * numInstances );
+
 	// startIndex is honoured here even though DrawIndexedPrimitive above still ignores it.
 	// Passing it is free and leaving it out would be a second copy of that defect.
 	vkCmdDrawIndexed(
 		m_commandBuffer,
-		m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second,
+		vc,
 		numInstances,
 		startIndex,
 		0,
 		0 );
+	return S_OK;
+}
+
+ALResult Tr2RenderContextAL::DrawIndexedInstanced(
+	uint32_t indexCountPerInstance,
+	uint32_t instanceCount,
+	uint32_t startIndexLocation,
+	int32_t baseVertexLocation,
+	uint32_t startInstanceLocation ) throw( )
+{
+	SetPipeline();
+
+	CCP_STATS_ADD( vertexCount, indexCountPerInstance * instanceCount );
+
+	vkCmdDrawIndexed(
+		m_commandBuffer,
+		indexCountPerInstance,
+		instanceCount,
+		startIndexLocation,
+		baseVertexLocation,
+		startInstanceLocation );
+	return S_OK;
+}
+
+ALResult Tr2RenderContextAL::DrawInstanced(
+	uint32_t vertexCountPerInstance,
+	uint32_t instanceCount,
+	uint32_t startVertexLocation,
+	uint32_t startInstanceLocation ) throw( )
+{
+	SetPipeline();
+
+	CCP_STATS_ADD( vertexCount, vertexCountPerInstance * instanceCount );
+
+	vkCmdDraw(
+		m_commandBuffer,
+		vertexCountPerInstance,
+		instanceCount,
+		startVertexLocation,
+		startInstanceLocation );
 	return S_OK;
 }
 
@@ -858,7 +991,7 @@ namespace
 	const VkImageLayout UAV_CLEAR_LAYOUT = VK_IMAGE_LAYOUT_GENERAL;
 }
 
-ALResult Tr2RenderContextAL::ClearUav( Tr2TextureAL& rt, uint32_t mip, const float values[4] ) throw( )
+ALResult Tr2RenderContextAL::ClearUav( const Tr2TextureAL& rt, uint32_t mip, const float values[4] ) throw( )
 {
 	if( !rt.IsValid() )
 	{
@@ -875,7 +1008,7 @@ ALResult Tr2RenderContextAL::ClearUav( Tr2TextureAL& rt, uint32_t mip, const flo
 	return S_OK;
 }
 
-ALResult Tr2RenderContextAL::ClearUav( Tr2TextureAL& rt, uint32_t mip, const uint32_t values[4] ) throw( )
+ALResult Tr2RenderContextAL::ClearUav( const Tr2TextureAL& rt, uint32_t mip, const uint32_t values[4] ) throw( )
 {
 	if( !rt.IsValid() )
 	{
@@ -892,7 +1025,7 @@ ALResult Tr2RenderContextAL::ClearUav( Tr2TextureAL& rt, uint32_t mip, const uin
 	return S_OK;
 }
 
-ALResult Tr2RenderContextAL::ClearUav( Tr2BufferAL& buffer, const float values[4] ) throw( )
+ALResult Tr2RenderContextAL::ClearUav( const Tr2BufferAL& buffer, const float values[4] ) throw( )
 {
 	if( !buffer.IsValid() )
 	{
@@ -906,7 +1039,7 @@ ALResult Tr2RenderContextAL::ClearUav( Tr2BufferAL& buffer, const float values[4
 	return S_OK;
 }
 
-ALResult Tr2RenderContextAL::ClearUav( Tr2BufferAL& buffer, const uint32_t values[4] ) throw( )
+ALResult Tr2RenderContextAL::ClearUav( const Tr2BufferAL& buffer, const uint32_t values[4] ) throw( )
 {
 	if( !buffer.IsValid() )
 	{
@@ -1056,25 +1189,14 @@ ALResult Tr2RenderContextAL::SetPass()
 	m_owner->m_vkCmdBeginRendering( m_commandBuffer, &renderingInfo );
 	m_renderingActive = true;
 
-	// Trinity's viewport has y down from the top left; Vulkan's has y up, and this
-	// backend flips it by giving the viewport a negative height and moving the origin to
-	// the bottom edge -- which is what VK_KHR_MAINTENANCE1, in the device extension list,
-	// exists to allow. Both branches below apply the same flip; only the source of the
-	// rectangle differs.
+	// FlippedViewport applies the y flip; only the source of the rectangle differs. m_viewportSet
+	// is false both before any SetViewport and after one with a degenerate rectangle, and the
+	// fallback for both is the whole render target.
 	const bool haveViewport = m_viewportSet;
-	const float vpX = haveViewport ? m_viewport.m_x : 0.0f;
-	const float vpY = haveViewport ? m_viewport.m_y : 0.0f;
-	const float vpWidth = haveViewport ? m_viewport.m_width : float( width );
-	const float vpHeight = haveViewport ? m_viewport.m_height : float( height );
-
-	VkViewport viewport = {
-		vpX,
-		vpY + vpHeight,
-		vpWidth,
-		-vpHeight,
-		haveViewport ? m_viewport.m_minZ : 0.0f,
-		haveViewport ? m_viewport.m_maxZ : 1.0f
-	};
+	VkViewport viewport = haveViewport
+		? FlippedViewport( m_viewport.m_x, m_viewport.m_y, m_viewport.m_width,
+			m_viewport.m_height, m_viewport.m_minZ, m_viewport.m_maxZ )
+		: FlippedViewport( 0.0f, 0.0f, float( width ), float( height ), 0.0f, 1.0f );
 
 	VkRect2D scissor = {
 		{ 0, 0 },
@@ -1083,7 +1205,6 @@ ALResult Tr2RenderContextAL::SetPass()
 
 	vkCmdSetViewport( m_commandBuffer, 0, 1, &viewport );
 	vkCmdSetScissor( m_commandBuffer, 0, 1, &scissor );
-
 	m_dirtyPass = false;
 	m_dirtyPso = true;
 	return S_OK;
@@ -1537,7 +1658,6 @@ ALResult Tr2RenderContextAL::CreatePipeline( VkPipeline& pipeline )
 		VK_NULL_HANDLE,
 		-1
 	};
-
 	return Vk2Al( vkCreateGraphicsPipelines( m_owner->m_device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline ) );
 }
 

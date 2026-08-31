@@ -200,6 +200,17 @@ struct ReflectionDx11
 	using SignatureParamDesc = D3D11_SIGNATURE_PARAMETER_DESC;
 };
 
+struct ReflectionDx12
+{
+	using Reflection = ID3D12ShaderReflection;
+	using ShaderDesc = D3D12_SHADER_DESC;
+	using BufferDesc = D3D12_SHADER_BUFFER_DESC;
+	using InputBindDesc = D3D12_SHADER_INPUT_BIND_DESC;
+	using VariableDesc = D3D12_SHADER_VARIABLE_DESC;
+	using TypeDesc = D3D12_SHADER_TYPE_DESC;
+	using SignatureParamDesc = D3D12_SIGNATURE_PARAMETER_DESC;
+};
+
 struct FunctionDx12
 {
 	using Reflection = ID3D12FunctionReflection;

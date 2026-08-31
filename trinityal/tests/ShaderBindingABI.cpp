@@ -15,6 +15,11 @@
 #include <sstream>
 #include <vector>
 
+static_assert( Tr2VulkanBindingABI::REGISTER_TYPE_CONSTANT_BUFFER == uint32_t( Tr2ShaderRegisterAL::CONSTANT_BUFFER ), "ABI header drifted from Tr2ShaderRegisterAL" );
+static_assert( Tr2VulkanBindingABI::REGISTER_TYPE_SAMPLER == uint32_t( Tr2ShaderRegisterAL::SAMPLER ), "ABI header drifted from Tr2ShaderRegisterAL" );
+static_assert( Tr2VulkanBindingABI::SRV_REGISTER_FLAG == Tr2ShaderRegisterAL::SRV_REGISTER_FLAG, "ABI header drifted from Tr2ShaderRegisterAL" );
+static_assert( Tr2VulkanBindingABI::UAV_REGISTER_FLAG == Tr2ShaderRegisterAL::UAV_REGISTER_FLAG, "ABI header drifted from Tr2ShaderRegisterAL" );
+
 // Asserts the Vulkan binding ABI, statically, with no GPU and no VkDevice.
 //
 // Three artifacts have to agree on every descriptor set and binding number, in three
