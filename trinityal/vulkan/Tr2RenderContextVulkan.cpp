@@ -94,6 +94,25 @@ Tr2RenderContextAL::Tr2RenderContextAL() throw( )
 	m_pipelineSource.m_depthStencilState.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
 	m_pipelineSource.m_rasterizationState.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
 	m_pipelineSource.m_rasterizationState.lineWidth = 1;
+	// Clockwise is the front face, because that is what the D3D-shaped AL above this means by
+	// one: dx12 builds every pipeline from a rasterizer whose FrontCounterClockwise is FALSE
+	// (PsoDescription.cpp s_defaultRasterizer), and *no render state on either backend ever
+	// changes it* -- there is no RS_ for winding, so whatever is set here is what ships. The
+	// memset above leaves VK_FRONT_FACE_COUNTER_CLOCKWISE, the opposite of it.
+	//
+	// What that cost, and why it was hard to see: RS_CULLMODE still arrived and was still
+	// mapped correctly, so exactly one half of every mesh was culled -- the wrong half. A
+	// closed mesh has the same silhouette whichever half survives, so the primitives cube
+	// rendered at precisely the right size, place and perspective, matching the dx12 readback
+	// in outline. Every visible face was a back face, its normal pointing away from the
+	// camera, and SolidsWithZ shades with colour * saturate( dot( worldNormal, viewForward ) )
+	// -- zero for all of them. A perfectly shaped black cube.
+	//
+	// CLOCKWISE is the value that reproduces dx12, verified against its readback rather than
+	// reasoned about: this backend also flips the viewport in y (FlippedViewport), which
+	// reverses the winding the rasterizer sees, so the two conventions compose and arguing
+	// from either one alone gets the answer wrong half the time.
+	m_pipelineSource.m_rasterizationState.frontFace = VK_FRONT_FACE_CLOCKWISE;
 
 	VkPipelineColorBlendAttachmentState defaultAttachment = {
 		VK_FALSE,                                                     // VkBool32                                       blendEnable
@@ -197,16 +216,6 @@ ALResult Tr2RenderContextAL::Clear(
 	uint32_t stencil,
 	uint32_t slot ) throw( )
 {
-	if( getenv( "CARBON_VK_DUMP" ) )
-	{
-		static int budget = 20;
-		if( budget-- > 0 )
-		{
-			fprintf( stderr, "VKDUMP clear flags=%u color=%08x depth=%f stencil=%u slot=%u\n",
-				clearFlags, color, depth, stencil, slot );
-			fflush( stderr );
-		}
-	}
 	if( clearFlags & Tr2RenderContextEnum::CLEARFLAGS_TARGET )
 	{
 		if( m_boundRenderTargets[slot].IsValid() )
@@ -466,15 +475,6 @@ namespace
 
 ALResult Tr2RenderContextAL::SetRenderState( Tr2RenderContextEnum::RenderState state, uint32_t value ) throw( )
 {
-	if( getenv( "CARBON_VK_DUMP" ) )
-	{
-		static int budget = 400;
-		if( budget-- > 0 )
-		{
-			fprintf( stderr, "VKDUMP rs state=%d value=%u\n", int( state ), value );
-			fflush( stderr );
-		}
-	}
 	switch( state )
 	{
 	case Tr2RenderContextEnum::RS_ZENABLE:
@@ -497,7 +497,7 @@ ALResult Tr2RenderContextAL::SetRenderState( Tr2RenderContextEnum::RenderState s
 		m_dirtyPso = true;
 		return S_OK;
 	case Tr2RenderContextEnum::RS_CULLMODE:
-		m_pipelineSource.m_rasterizationState.cullMode = getenv( "CARBON_VK_NOCULL" ) ? 0 : ( value - 1 );
+		m_pipelineSource.m_rasterizationState.cullMode = value - 1;
 		m_dirtyPso = true;
 		return S_OK;
 	case Tr2RenderContextEnum::RS_ALPHABLENDENABLE:
@@ -639,7 +639,22 @@ ALResult Tr2RenderContextAL::SetRenderStates( const uint32_t* stateValuePairs, u
 	{
 		const uint32_t state = *stateValuePairs++;
 		const uint32_t value = *stateValuePairs++;
-		FORWARD_HR( SetRenderState( Tr2RenderContextEnum::RenderState( state ), value ) );
+		// Deliberately not FORWARD_HR, and dx12 is the reference for that: its SetRenderStates
+		// calls SetRenderState and discards the result. A state block is applied best-effort, so
+		// one state this backend has no case for must not drop the states after it. It used to,
+		// and the cost was the whole primitives frame. SolidsWithZ sends CULLMODE FILLMODE
+		// ALPHABLENDENABLE ALPHATESTENABLE ZENABLE ZWRITEENABLE ZFUNC COLORWRITEENABLE DEPTHBIAS
+		// SLOPESCALEDEPTHBIAS SEPARATEALPHABLENDENABLE; FILLMODE is the second entry and is
+		// E_NOTIMPL here, so the nine after it never arrived. ZFUNC was among them -- the
+		// inverted-depth override had just mapped it to GREATEREQUAL -- so the pipeline kept its
+		// LESS_OR_EQUAL default and every fragment failed against a depth buffer cleared to the
+		// reversed-Z far plane of 0. A blank frame, from a state nobody asked about.
+		//
+		// Five states in that one block are still E_NOTIMPL here: FILLMODE, ALPHATESTENABLE,
+		// DEPTHBIAS, SLOPESCALEDEPTHBIAS and SEPARATEALPHABLENDENABLE. Each is asked for with the
+		// value this backend already defaults to, which is why skipping them is right and not
+		// merely survivable. Implementing them is AL work, and it is not what this fixes.
+		SetRenderState( Tr2RenderContextEnum::RenderState( state ), value );
 	}
 	return S_OK;
 }
@@ -1190,16 +1205,6 @@ ALResult Tr2RenderContextAL::SetPass()
 
 	vkCmdSetViewport( m_commandBuffer, 0, 1, &viewport );
 	vkCmdSetScissor( m_commandBuffer, 0, 1, &scissor );
-
-	if( getenv( "CARBON_VK_DUMP" ) )
-	{
-		fprintf( stderr, "VKDUMP pass %ux%u viewport x=%.1f y=%.1f w=%.1f h=%.1f z=%.2f..%.2f (set=%d) colorAtt=%u depth=%d stencil=%d\n",
-			width, height, viewport.x, viewport.y, viewport.width, viewport.height,
-			viewport.minDepth, viewport.maxDepth, int( haveViewport ), colorAttachmentCount,
-			int( haveDepth ), int( haveStencil ) );
-		fflush( stderr );
-	}
-
 	m_dirtyPass = false;
 	m_dirtyPso = true;
 	return S_OK;
@@ -1653,57 +1658,6 @@ ALResult Tr2RenderContextAL::CreatePipeline( VkPipeline& pipeline )
 		VK_NULL_HANDLE,
 		-1
 	};
-
-	if( const char* zf = getenv( "CARBON_VK_ZFUNC" ) )
-	{
-		m_pipelineSource.m_depthStencilState.depthCompareOp = VkCompareOp( atoi( zf ) );
-	}
-	if( getenv( "CARBON_VK_FRONTCW" ) )
-	{
-		m_pipelineSource.m_rasterizationState.frontFace = VK_FRONT_FACE_CLOCKWISE;
-	}
-	if( getenv( "CARBON_VK_DUMP" ) )
-	{
-		auto& rs = m_pipelineSource.m_rasterizationState;
-		auto& ds = m_pipelineSource.m_depthStencilState;
-		fprintf( stderr, "VKDUMP pipeline topology=%d streams=%u attrs=%u colorAtt=%u dsFormat=%d msaa=%d\n",
-			int( m_pipelineSource.m_topology ), streamCount, uint32_t( layout.size() ),
-			colorAttachmentCount, int( depthStencilFormat ), int( sampleCount ) );
-		for( uint32_t i = 0; i < streamCount && i < MAX_VERTEX_STREAMS; ++i )
-		{
-			fprintf( stderr, "VKDUMP   binding %u stride=%u rate=%d\n", i, bindings[i].stride, int( bindings[i].inputRate ) );
-		}
-		for( size_t i = 0; i < layout.size(); ++i )
-		{
-			fprintf( stderr, "VKDUMP   attr loc=%u binding=%u format=%d offset=%u\n",
-				layout[i].location, layout[i].binding, int( layout[i].format ), layout[i].offset );
-		}
-		fprintf( stderr, "VKDUMP   raster cull=%u front=%d polygon=%d discard=%d depthClamp=%d\n",
-			rs.cullMode, int( rs.frontFace ), int( rs.polygonMode ), int( rs.rasterizerDiscardEnable ), int( rs.depthClampEnable ) );
-		fprintf( stderr, "VKDUMP   depth test=%d write=%d op=%d bounds=%d stencil=%d\n",
-			int( ds.depthTestEnable ), int( ds.depthWriteEnable ), int( ds.depthCompareOp ),
-			int( ds.depthBoundsTestEnable ), int( ds.stencilTestEnable ) );
-		fprintf( stderr, "VKDUMP   blend attachments=%u enable0=%d writeMask0=%u\n",
-			colorBlendState.attachmentCount, int( m_pipelineSource.m_attachmentBlend[0].blendEnable ),
-			m_pipelineSource.m_attachmentBlend[0].colorWriteMask );
-		auto* prog = m_pipelineSource.m_shaderProgram.m_program.get();
-		if( prog )
-		{
-			for( size_t i = 0; i < prog->m_shaderInfo.size(); ++i )
-			{
-				fprintf( stderr, "VKDUMP   stage %d pName=%s\n", int( prog->m_shaderInfo[i].stage ),
-					prog->m_shaderInfo[i].pName ? prog->m_shaderInfo[i].pName : "(null)" );
-			}
-			for( size_t i = 0; i < prog->m_shaderInputs.size(); ++i )
-			{
-				fprintf( stderr, "VKDUMP   shaderInput usage=%d index=%d reg=%d\n",
-					int( prog->m_shaderInputs[i].usage ), int( prog->m_shaderInputs[i].usageIndex ),
-					int( prog->m_shaderInputs[i].registerIndex ) );
-			}
-		}
-		fflush( stderr );
-	}
-
 	return Vk2Al( vkCreateGraphicsPipelines( m_owner->m_device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline ) );
 }
 
