@@ -14,8 +14,7 @@
     },
     {
       "name": "libsquish",
-      "version>=": "1.15",
-      "platform": "!android"
+      "version>=": "1.15"
     },
     {
       "name": "amd-fidelityfx-cas",
@@ -29,8 +28,7 @@
     },
     {
       "name": "tbb",
-      "version>=": "2021.5.0#1",
-      "platform": "!android"
+      "version>=": "2021.5.0#1"
     },
     {
       "name": "vulkan-headers",
@@ -42,53 +40,43 @@
     },
     {
       "name": "carbon-trinityaudioapi",
-      "version>=": "2.0.3",
-      "platform": "!android"
+      "version>=": "2.0.3"
     },
     {
       "name": "freetype",
-      "version>=": "2.13.3",
-      "platform": "!android"
+      "version>=": "2.13.3"
     },
     {
       "name": "carbon-pdmprotowrapper",
-      "version>=": "2.0.4",
-      "platform": "!android"
+      "version>=": "2.0.4"
     },
     {
       "name": "carbon-blue",
-      "version>=": "6.0.0",
-      "platform": "!android"
+      "version>=": "6.0.0"
     },
     {
       "name": "carbon-math",
-      "version>=": "1.2.1",
-      "platform": "!android"
+      "version>=": "1.2.1"
     },
     {
       "name": "carbon-parser",
-      "version>=": "1.0.2",
-      "platform": "!android"
+      "version>=": "1.0.2"
     },
     {
       "name": "libpng",
-      "version>=": "1.6.37",
-      "platform": "!android"
+      "version>=": "1.6.37"
     },
     {
       "name": "libjpeg-turbo",
-      "version>=": "2.1.2",
-      "platform": "!android"
+      "version>=": "2.1.2"
     },
     {
       "name": "zlib-ng",
-      "version>=": "2.2.5",
-      "platform": "!android"
+      "version>=": "2.2.5"
     },
     {
       "name": "carbon-mesh",
-      "version>=": "1.0.1",
-      "platform": "!android"
+      "version>=": "1.0.1"
     }
   ],
   "features": {
@@ -252,5 +240,5 @@
       "version": "3.3.0"
     }
   ],
-  "$comment-android": "The !android platform gates mirror trinity/CMakeLists.txt: the Android configuration builds the abstraction layer only (no trinity_* engine target yet), so the engine's dependencies are not resolved for it. They lift together with the engine port. python3 via carbon-blue is additionally blocked cross-building from a Windows host -- CPython's cross build requires a POSIX build python (the make pybuilddir.txt step runs sysconfig --generate-posix-vars, which a Windows build python cannot satisfy)."
+  "$comment-android": "Two !android gates remain -- amd-fidelityfx-cas and amd-fidelityfx-cacao -- and they are permanent rather than pending: upscaling is a non-goal (M12-if-ever, mobile-only, and the Vulkan backend keeps the stub), and both are Windows-shader-stack ports that would never belong in an Android closure. Every other gate lifted in M6 Task 12: the full carbon port set resolves and builds for arm64-android. What still keeps the engine out of the Android configuration is trinity/CMakeLists.txt's ANDROID early-return, not this manifest -- deliberately two separate facts now, and the early-return is the second half's to lift. One host constraint remains, and it is a fact about hosts rather than a gate: python3 cannot cross-build for android from a Windows host (CPython's pybuilddir.txt step runs sysconfig --generate-posix-vars, which a Windows build python cannot satisfy), and a POSIX-built artifact cannot be restored on Windows either, because vcpkg's ABI hash embeds host identity by design -- measured field by field in docs/spikes/artifacts/m6-python3-abi-probe-20260901.txt. The android port set is therefore built on a POSIX host."
 }
