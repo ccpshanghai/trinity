@@ -116,6 +116,7 @@ int main( int argc, char** argv )
 #if defined( __ANDROID__ )
 
 #include "AndroidTestHost.h"
+#include <CCPLog.h>
 #include <android/native_activity.h>
 #include <android/native_window.h>
 #include <android/log.h>
@@ -132,7 +133,7 @@ int main( int argc, char** argv )
 #include <vector>
 
 extern bool g_requestDeviceDebugLayer;
-// extern const char* g_pipelineCacheDirectory; // Task 9 wires this
+extern const char* g_pipelineCacheDirectory;
 
 ANativeActivity* g_androidActivity = nullptr;
 ANativeWindow* g_androidWindow = nullptr; // read by RenderWindow_Android
@@ -163,6 +164,21 @@ void* StdioPumpThread( void* )
 		__android_log_write( ANDROID_LOG_INFO, "TrinityALTest", buf );
 	}
 	return nullptr;
+}
+
+// CcpCore's log stream has no Android sink of its own: every CCP_LOG and CCP_AL_LOGERR
+// in the AL -- "Found Vulkan device", "Vulkan validation error", every honest-degradation
+// message -- goes nowhere on this platform, which was only discovered when Task 9's
+// "pipeline cache: cold" line failed to appear in a run that had certainly produced it.
+// One echo makes all of them visible, which beats sprinkling __android_log_print through
+// the backend. Severity maps onto logcat's, and the channel name becomes the tag suffix
+// so the AL's channel stays greppable on its own.
+void LogEchoToLogcat( CcpLogChannel_t& channel, CCP::LogType type, unsigned long, const char* message )
+{
+	const int priority = type >= CCP::LOGTYPE_ERR ? ANDROID_LOG_ERROR
+		: type >= CCP::LOGTYPE_WARN ? ANDROID_LOG_WARN
+		: ANDROID_LOG_INFO;
+	__android_log_print( priority, "TrinityALTest.log", "[%s] %s", channel.object ? channel.object : "?", message );
 }
 
 void StartStdioToLogcat()
@@ -357,6 +373,9 @@ extern "C" __attribute__( ( visibility( "default" ) ) ) void ANativeActivity_onC
 {
 	g_androidActivity = activity;
 	StartStdioToLogcat();
+	// Thread-safe: the AL logs from the test thread, not the activity thread, and an
+	// echo that is not declared thread-safe only ever receives main-thread messages.
+	CCP::RegisterLogEcho( LogEchoToLogcat, CCP::LOGTYPE_INFO, true );
 
 	std::string mode = GetIntentStringExtra( activity, "mode" );
 	if( !mode.empty() ) s_mode = mode;
@@ -364,7 +383,12 @@ extern "C" __attribute__( ( visibility( "default" ) ) ) void ANativeActivity_onC
 	std::string cycles = GetIntentStringExtra( activity, "cycles" );
 	if( !cycles.empty() ) s_soakCycles = atoi( cycles.c_str() );
 	if( GetIntentStringExtra( activity, "validation" ) == "1" ) g_requestDeviceDebugLayer = true;
-	// g_pipelineCacheDirectory = strdup( activity->internalDataPath ); // Task 9 wires this
+	// The app's files directory: private, writable, and it survives the process, which is
+	// the whole point -- the second run of the day is the one that benefits. strdup because
+	// the global outlives the ANativeActivity that owns internalDataPath. Every Android run
+	// persists the cache; there is no extra to switch it off, because a cold cache is the
+	// only thing it can cost and the two-run measurement wants it on by default.
+	g_pipelineCacheDirectory = strdup( activity->internalDataPath );
 
 	activity->callbacks->onNativeWindowCreated = onNativeWindowCreated;
 	activity->callbacks->onNativeWindowDestroyed = onNativeWindowDestroyed;

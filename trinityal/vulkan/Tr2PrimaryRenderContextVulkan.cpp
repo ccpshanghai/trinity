@@ -13,6 +13,14 @@
 #include "UtilitiesVulkan.h"
 #include "Tr2TextureALVulkan.h"
 
+#include <cstdio>
+#include <string>
+#include <vector>
+
+// Defined in ALResult.cpp beside g_requestDeviceDebugLayer, and declared here the same
+// way that one is: null means the pipeline cache is not persisted.
+extern const char* g_pipelineCacheDirectory;
+
 namespace
 {
 	// Ten seconds. Long enough that no amount of validation-layer overhead reaches it --
@@ -468,6 +476,42 @@ Tr2PrimaryRenderContextAL::~Tr2PrimaryRenderContextAL()
 	Destroy();
 }
 
+namespace
+{
+	// The blob's name has to identify the device it was built for, because a cache from
+	// another GPU is worse than none: vkCreatePipelineCache is allowed to accept it and
+	// then quietly ignore every entry. The UUID check below is the authoritative one --
+	// this is just so two devices on one machine do not overwrite each other.
+	std::string PipelineCachePath( const VkPhysicalDeviceProperties& properties )
+	{
+		char name[128];
+		snprintf( name, sizeof( name ), "/TrinityALVkPipelineCache-%u-%u.bin",
+			properties.vendorID, properties.deviceID );
+		return std::string( g_pipelineCacheDirectory ) + name;
+	}
+
+	// A blob whose header does not match this device must be dropped rather than handed to
+	// the driver. The header is the first 32 bytes and its layout is fixed by the spec
+	// (VkPipelineCacheHeaderVersionOne), so this can be read without trusting the rest.
+	bool PipelineCacheBlobMatches( const std::vector<uint8_t>& blob, const VkPhysicalDeviceProperties& properties )
+	{
+		if( blob.size() <= 32 )
+		{
+			return false;
+		}
+		uint32_t headerSize = 0, headerVersion = 0, vendorID = 0, deviceID = 0;
+		memcpy( &headerSize, &blob[0], 4 );
+		memcpy( &headerVersion, &blob[4], 4 );
+		memcpy( &vendorID, &blob[8], 4 );
+		memcpy( &deviceID, &blob[12], 4 );
+		return headerSize == 32
+			&& headerVersion == VK_PIPELINE_CACHE_HEADER_VERSION_ONE
+			&& vendorID == properties.vendorID
+			&& deviceID == properties.deviceID
+			&& memcmp( &blob[16], properties.pipelineCacheUUID, VK_UUID_SIZE ) == 0;
+	}
+}
+
 ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	uint32_t adapter,
 	Tr2WindowHandle  focusWindow,
@@ -768,6 +812,55 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	// detection and the surface rebuild it drives would work off a value nobody used.
 	m_presentParameters.outputWindow = focusWindow;
 	m_needsSwapChainRebuild = false;
+
+	// The pipeline cache, loaded before anything can build a pipeline. Every failure here
+	// is non-fatal by design: a missing, stale or corrupt blob costs a cold start, and a
+	// cold start is what the feature exists to avoid, not something it must guarantee.
+	{
+		VkPipelineCacheCreateInfo cacheCreateInfo = { VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
+		std::vector<uint8_t> blob;
+		if( g_pipelineCacheDirectory )
+		{
+			FILE* file = fopen( PipelineCachePath( m_physicalDeviceProperties ).c_str(), "rb" );
+			if( file )
+			{
+				fseek( file, 0, SEEK_END );
+				const long size = ftell( file );
+				fseek( file, 0, SEEK_SET );
+				if( size > 0 )
+				{
+					blob.resize( (size_t)size );
+					if( fread( blob.data(), 1, blob.size(), file ) != blob.size() )
+					{
+						blob.clear();
+					}
+				}
+				fclose( file );
+			}
+			if( !blob.empty() && !PipelineCacheBlobMatches( blob, m_physicalDeviceProperties ) )
+			{
+				CCP_LOG( "pipeline cache: blob does not match this device, discarded" );
+				blob.clear();
+			}
+			if( !blob.empty() )
+			{
+				cacheCreateInfo.initialDataSize = blob.size();
+				cacheCreateInfo.pInitialData = blob.data();
+				CCP_LOG( "pipeline cache: loaded %zu bytes", blob.size() );
+			}
+			else
+			{
+				CCP_LOG( "pipeline cache: cold" );
+			}
+		}
+		// Created even with no directory configured: one handle to pass everywhere beats a
+		// conditional at every vkCreate*Pipelines site, and an in-memory cache still helps
+		// within a single run.
+		if( vkCreatePipelineCache( m_device, &cacheCreateInfo, nullptr, &m_pipelineCache ) != VK_SUCCESS )
+		{
+			m_pipelineCache = VK_NULL_HANDLE;
+		}
+	}
 	m_surface = surface;
 	m_swapChain = swapChain;
 	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
@@ -912,6 +1005,35 @@ void Tr2PrimaryRenderContextAL::Destroy()
 		vkDestroySurfaceKHR( instance, m_surface, nullptr );
 		m_surface = VK_NULL_HANDLE;
 	}
+	if( m_pipelineCache != VK_NULL_HANDLE )
+	{
+		if( g_pipelineCacheDirectory )
+		{
+			size_t size = 0;
+			if( vkGetPipelineCacheData( m_device, m_pipelineCache, &size, nullptr ) == VK_SUCCESS && size > 0 )
+			{
+				std::vector<uint8_t> blob( size );
+				if( vkGetPipelineCacheData( m_device, m_pipelineCache, &size, blob.data() ) == VK_SUCCESS )
+				{
+					const std::string path = PipelineCachePath( m_physicalDeviceProperties );
+					FILE* file = fopen( path.c_str(), "wb" );
+					if( file )
+					{
+						fwrite( blob.data(), 1, size, file );
+						fclose( file );
+						CCP_LOG( "pipeline cache: wrote %zu bytes", size );
+					}
+					else
+					{
+						CCP_AL_LOGERR( "pipeline cache: could not open %s for writing", path.c_str() );
+					}
+				}
+			}
+		}
+		vkDestroyPipelineCache( m_device, m_pipelineCache, nullptr );
+		m_pipelineCache = VK_NULL_HANDLE;
+	}
+
 	if( m_device != VK_NULL_HANDLE )
 	{
 		vkDestroyDevice( m_device, nullptr );

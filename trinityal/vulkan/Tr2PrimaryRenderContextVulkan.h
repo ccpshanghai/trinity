@@ -23,6 +23,11 @@ public:
 	ALResult CreateDevice( uint32_t adapter, Tr2WindowHandle focusWindow, const Tr2PresentParametersAL& presentationParameters );
 	void Destroy();
 
+	// Loaded from disk at device creation and written back at teardown when
+	// g_pipelineCacheDirectory is set; VK_NULL_HANDLE otherwise, which every
+	// vkCreate*Pipelines call accepts as "no cache".
+	VkPipelineCache m_pipelineCache = VK_NULL_HANDLE;
+
 	ALResult SetPresentParameters( unsigned adapter, const Tr2PresentParametersAL& pPresentationParameters );
 
 	const Tr2CapsAL& GetCaps() const

@@ -20,6 +20,7 @@ set(_SOURCES
     GPUTimer.cpp
     Ktx2AstcRoundTrip.cpp
     OcclusionQuery.cpp
+    PipelineCache.cpp
     Raytracing.cpp
     RenderContext.cpp
     RenderContextCreation.cpp
