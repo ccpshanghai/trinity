@@ -377,9 +377,13 @@ namespace KeyboardHelpers
 const AppKey INVALID_APP_KEY = 0xffff;
 const AppKey INVALID_PLATFORM_KEY = 0xffff;
 
-CGKeyCode ApplyKeyboardLayout( CGKeyCode keyCode );
-CGKeyCode UnapplyKeyboardLayout( CGKeyCode keyCode );
-std::string CreateStringForKey( CGKeyCode keyCode );
+// Defined in Scancodes.mm. Spelled PlatformKey, not CGKeyCode: CGKeyCode is
+// uint16_t like PlatformKey, but it lives in CoreGraphics' CGRemoteOperation.h,
+// which is macOS-SDK-only -- and this branch compiles for iOS too, where the
+// three lookups degrade to identity because there is no keyboard layout to map.
+PlatformKey ApplyKeyboardLayout( PlatformKey keyCode );
+PlatformKey UnapplyKeyboardLayout( PlatformKey keyCode );
+std::string CreateStringForKey( PlatformKey keyCode );
 
 PlatformKey AppKeyToPlatformKey( AppKey appCode )
 {

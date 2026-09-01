@@ -10,7 +10,7 @@
     },
     {
       "name": "carbon-imageio",
-      "version>=": "2.0.6#1"
+      "version>=": "2.0.6#4"
     },
     {
       "name": "libsquish",
@@ -186,7 +186,7 @@
     },
     "metal": {
       "description": "Create Metal targets",
-      "supports": "osx",
+      "supports": "osx | ios",
       "dependencies": [
         {
           "name": "amd-fidelityfx-fsr",

@@ -71,6 +71,16 @@ public:
 	bool PopulateParameters();
 	bool PruneParameters();
 
+	// The path this effect will actually open, given the ".fx" path it was handed: "/effect/"
+	// becomes "/effect.<platform>/" and the extension becomes the current shader model's.
+	//
+	// Public because it is the answer to a question callers legitimately have before loading --
+	// "is my effect staged for this backend?" -- and the only place that can answer it. It was
+	// file-static, and the Python layer kept its own copy of the rewrite with the platform token
+	// spelled "dx12"; the copy did not learn about Metal when Metal arrived, so every sample's
+	// pre-flight check reported a miss and drew nothing. One implementation, exposed.
+	static bool ActualEffectPath( const std::string& path, std::string& actualPath );
+
 	// Suppress notification to changed lists
 	void StartUpdate();
 	void EndUpdate();

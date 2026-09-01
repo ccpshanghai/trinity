@@ -7,10 +7,9 @@
   "registries": [
     {
       "kind": "git",
-      "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
-      "reference": "mobile-exp",
-      "baseline": "a00be131e1d19afe53ec8c8014b8fcb0451587c2",
       "packages": [
+        "curl",
+        "imgui",
         "python3",
         "carbon-*",
         "tracy",
@@ -31,7 +30,10 @@
         "nvidia-streamline",
         "openvdb",
         "protobuf"
-      ]
+      ],
+      "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
+      "reference": "mobile-exp",
+      "baseline": "1e6c62c4edd71875ff892446e1eee086087ade4c"
     }
   ]
 }

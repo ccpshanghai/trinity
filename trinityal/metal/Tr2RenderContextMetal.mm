@@ -3,6 +3,7 @@
 #include "StdAfx.h"
 
 #if ( TRINITY_PLATFORM == TRINITY_METAL )
+#include <TargetConditionals.h>
 
 #include "Tr2RenderContextMetal.h"
 #include "ITr2RenderContextEvents.h"
@@ -774,14 +775,16 @@ ALResult Tr2RenderContextAL::CreateDevice( uint32_t Adapter,
 {
 	m_isValid = true;
 	m_workQueue = m_metalContext->GetPrimaryWorkQueue();
-#if 0
-	NSView *view = (NSView *)hFocusWindow;
-#else
-	NSView* view = (NSView*)presentationParameters.outputWindow;
-#endif
-	m_caMetalLayer = (CAMetalLayer*)view.layer;
+	m_caMetalLayer = (CAMetalLayer*)presentationParameters.outputWindow;
 	METAL_LOG( @"Creating device" );
-	SetPresentParameters( Adapter, presentationParameters );
+
+	// Checked, which it was not. A failure here leaves a context with no back buffer, and the
+	// only thing that showed downstream was GetBackBufferFormat() returning UNKNOWN -- which
+	// Python saw as ui_init refusing an invalid colour format, with nothing anywhere naming the
+	// swap chain. Three results were discarded in a row (here, in SetPresentParameters, and
+	// Tr2SwapChainAL::Create's own early-outs) and that is most of what made a 0 x 0 back buffer
+	// expensive to find.
+	CR_RETURN_HR( SetPresentParameters( Adapter, presentationParameters ) );
 
 	if( m_events )
 	{
@@ -791,9 +794,20 @@ ALResult Tr2RenderContextAL::CreateDevice( uint32_t Adapter,
 	if( @available( macOS 11.0, * ) )
 	{
 		auto device = m_metalContext->GetDevice();
-		bool isAppleSilicon = [device supportsFamily:MTLGPUFamilyMac2] && [device supportsFamily:MTLGPUFamilyApple7];
+		// Apple7 alone: an M1 reports it and so does an iPhone 12. The old
+		// Mac2 && Apple7 conjunction was false on every iPhone (spec D7).
+		bool isAppleSilicon = [device supportsFamily:MTLGPUFamilyApple7];
 		bool raytracingAvailable = device.supportsRaytracing && isAppleSilicon;
 		m_caps.m_supportsRaytracing = raytracingAvailable;
+
+		// ASTC: Apple2, not Apple7. Every Apple GPU family from 2 upward samples LDR ASTC --
+		// including the Simulator's software renderer, which reports Apple1/2 and nothing above.
+		// Asking for Apple7 here would have made the capability track raytracing's answer and
+		// turned the whole ASTC path off on the one device M3 has to demonstrate it on. Intel
+		// Macs (MTLGPUFamilyMac2, no Apple family) correctly answer no.
+		m_caps.m_supportsAstcTextures = [device supportsFamily:MTLGPUFamilyApple2];
+		CCP_LOGNOTICE( m_caps.m_supportsAstcTextures ? "Device samples ASTC textures"
+													: "Device does not sample ASTC textures" );
 		if( m_caps.m_supportsRaytracing )
 		{
 			CCP_LOGNOTICE( "Device supports raytracing" );
@@ -809,6 +823,29 @@ ALResult Tr2RenderContextAL::CreateDevice( uint32_t Adapter,
 PixelFormat Tr2RenderContextAL::GetBackBufferFormat() const
 {
 	return m_defaultBackBuffer.GetFormat();
+}
+
+ALResult Tr2RenderContextAL::BeginRenderPass()
+{
+	if( !IsValid() )
+	{
+		return E_FAIL;
+	}
+	// GetRenderEncoder, not GetCurrentRenderEncoder: this one opens the pass (and applies any
+	// pending clear) when none is open, and returns the existing encoder when one is. It is the
+	// same call the four DrawPrimitives overloads make for the same reason.
+	m_workQueue->GetRenderEncoder( @"TriStepBeginRenderPass" );
+	return S_OK;
+}
+
+uint64_t Tr2RenderContextAL::GetNativeBackBufferFormat() const
+{
+	// Through the AL's own table, so the HUD's pipeline state is built for exactly the format
+	// every other texture in this context was created with. MTLPixelFormatInvalid is 0, which
+	// is also what the other backends' version of this getter returns where it has no meaning
+	// (spec D3), so a caller checking for 0 is right on all of them.
+	return static_cast<uint64_t>(
+		m_metalContext->m_utils->GetMTLPixelFormat( m_defaultBackBuffer.GetFormat() ) );
 }
 
 ALResult Tr2RenderContextAL::SetPresentParameters( unsigned adapter,
@@ -832,14 +869,22 @@ ALResult Tr2RenderContextAL::SetPresentParameters( unsigned adapter,
 	{
 		m_presentParameters.mode.format = PIXEL_FORMAT_B8G8R8A8_UNORM;
 	}
-	m_swapChain.m_swapChain->Create( presentationParameters.outputWindow, *this );
+	// Checked. Create refuses a handle that is not a CAMetalLayer, an invalid context and a
+	// layer with no geometry, and every one of those used to be silent.
+	CR_RETURN_HR( m_swapChain.m_swapChain->Create( presentationParameters.outputWindow, *this ) );
 
-	NSView* view = (NSView*)presentationParameters.outputWindow;
-	if( view.layer && [view.layer isKindOfClass:CAMetalLayer.class] )
+	CAMetalLayer* layer = (CAMetalLayer*)presentationParameters.outputWindow;
+#if TARGET_OS_OSX
+	// displaySyncEnabled is macOS-only CAMetalLayer surface -- iOS layers have no
+	// equivalent toggle for disabling display sync, so PRESENT_INTERVAL_IMMEDIATE
+	// has no layer-level lever to pull there (unchanged from today: iOS never
+	// reaches this line either way).
+	if( layer && [layer isKindOfClass:CAMetalLayer.class] )
 	{
-		( (CAMetalLayer*)view.layer ).displaySyncEnabled =
+		layer.displaySyncEnabled =
 			presentationParameters.presentInterval == Tr2RenderContextEnum::PRESENT_INTERVAL_IMMEDIATE ? NO : YES;
 	}
+#endif
 	m_defaultBackBuffer = m_swapChain.GetBackBuffer();
 
 	// Set a default viewport based around this

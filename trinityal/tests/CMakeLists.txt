@@ -4,7 +4,9 @@ project(TrinityALTest VERSION 1.0.0)
 
 set(_SOURCES 
     ALResultTest.cpp
+    Astc6x6TwoTone.h
     BitmapDimensions.cpp
+    BcDecompressTest.cpp
     Buffer.cpp
     Compute.cpp
     ConstantBuffer.cpp
@@ -16,6 +18,7 @@ set(_SOURCES
     FakeGoogleTest.h
     Fence.cpp
     GPUTimer.cpp
+    Ktx2AstcRoundTrip.cpp
     OcclusionQuery.cpp
     Raytracing.cpp
     RenderContext.cpp
@@ -25,6 +28,7 @@ set(_SOURCES
     RenderWindow_Stub.cpp
     RenderWindow_Win32.cpp
     RenderWindow_Macos.mm
+    RenderWindow_iOS.mm
     Rendering.cpp
     SamplerState.cpp
     Shader.cpp
@@ -51,6 +55,7 @@ set(_SOURCES
     WithWindowFixture_Stub.cpp
     WithWindowFixture_Win32.cpp
     WithWindowFixture_Macos.mm
+    WithWindowFixture_iOS.mm
     XrgbVolume.h
 )
 
@@ -167,7 +172,10 @@ function(set_shared_trinityaltest_properties target)
         set_target_properties(${target} PROPERTIES LINKER_LANGUAGE OBJCXX)
 
         target_link_libraries(${target} PRIVATE "-framework CoreFoundation")
-        target_link_libraries(${target} PRIVATE "-framework Cocoa")
+        target_link_libraries(${target} PRIVATE "-framework QuartzCore")
+        if(NOT IOS)
+            target_link_libraries(${target} PRIVATE "-framework Cocoa")
+        endif()
     elseif(WIN32)
         target_link_options(${target} PRIVATE "/IGNORE:4049")
     endif()
@@ -388,7 +396,10 @@ elseif(ANDROID)
         # The tests are a SHARED library on Android: android.app.NativeActivity
         # loads it and TrinityALTest.cpp's ANativeActivity_onCreate is the entry
         # point. Everywhere else they are an executable.
-        list(FILTER _SOURCES EXCLUDE REGEX "_Win32\\.cpp$|_Macos\\.mm$|_Stub\\.cpp$")
+        # Other platforms' window implementations, dropped by suffix. _iOS.mm joined
+        # the list when M3 merged in: the NDK toolchain has no Objective-C++, so an
+        # .mm file that reaches this target is a build error, not a no-op.
+        list(FILTER _SOURCES EXCLUDE REGEX "_Win32\\.cpp$|_Macos\\.mm$|_iOS\\.mm$|_Stub\\.cpp$")
         list(APPEND _SOURCES
             AndroidTestHost.h
             AndroidBringup.cpp
@@ -413,6 +424,73 @@ elseif(ANDROID)
             PATHS "${VCPKG_INSTALLED_DIR}/${VCPKG_HOST_TRIPLET}/tools/directx-dxc"
             NO_DEFAULT_PATH REQUIRED)
         ccp_add_vulkan_test_shaders(TrinityALTest_vulkan)
+    endif()
+endif()
+
+if(APPLE)
+    if (BUILD_METAL)
+        ccp_add_executable(TrinityALTest_metal ${_SOURCES})
+        target_link_libraries(TrinityALTest_metal PRIVATE TrinityAL_metal)
+        target_compile_definitions(TrinityALTest_metal PRIVATE TRINITY_PLATFORM=TRINITY_METAL)
+        set_shared_trinityaltest_properties(TrinityALTest_metal)
+
+        target_sources(TrinityALTest_metal PRIVATE ${_SHADERS_METAL})
+        source_group(Shaders FILES ${_SHADERS_METAL})
+
+        # The tests include their shaders as byte arrays via INCLUDE_SHADER_CODE
+        # (StdAfx.h maps TRINITY_METAL to Shaders.metal/<name>.h), and the backend
+        # loads them with newLibraryWithData — so each MSL source becomes a metallib
+        # at build time, then a generated header. The SDK is a cache variable so the
+        # same block serves macosx, iphoneos and iphonesimulator builds.
+        if(NOT DEFINED TRINITY_METAL_TEST_SDK)
+            if(IOS)
+                if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+                    set(TRINITY_METAL_TEST_SDK iphonesimulator)
+                else()
+                    set(TRINITY_METAL_TEST_SDK iphoneos)
+                endif()
+            else()
+                set(TRINITY_METAL_TEST_SDK macosx)
+            endif()
+        endif()
+
+        # The metallib deployment target follows the OS min version, not -std:
+        # the iOS 26 SDK default produces air64_v28 (0x00020008), and the
+        # simulator's software Metal device ("Apple iOS simulator GPU") only
+        # loads up to air64_v26 (0x00020006) -- newComputePipelineStateWithFunction
+        # then fails with "deployment target incompatible with this OS" and the
+        # dispatch silently drops. 17.0 selects air64_v26 for both iOS SDKs;
+        # macOS stays on its SDK default.
+        if(TRINITY_METAL_TEST_SDK STREQUAL "iphonesimulator")
+            set(TRINITY_METAL_TEST_MIN_VERSION -mios-simulator-version-min=17.0)
+        elseif(TRINITY_METAL_TEST_SDK STREQUAL "iphoneos")
+            set(TRINITY_METAL_TEST_MIN_VERSION -mios-version-min=17.0)
+        else()
+            set(TRINITY_METAL_TEST_MIN_VERSION)
+        endif()
+
+        foreach(shaderSource ${_SHADERS_METAL})
+            if(${shaderSource} MATCHES "\\.h$")
+                continue()   # MetalDefines.h is an include, not a shader
+            endif()
+            string(REGEX REPLACE "h$" ".h" shaderOutput ${shaderSource})
+            add_custom_command(
+                OUTPUT ${GENERATED_SOURCES_DIR}/${shaderOutput}
+                COMMAND ${CMAKE_COMMAND} -E make_directory ${GENERATED_SOURCES_DIR}/Shaders.metal
+                COMMAND xcrun -sdk ${TRINITY_METAL_TEST_SDK} metal -x metal -std=metal3.0
+                        ${TRINITY_METAL_TEST_MIN_VERSION}
+                        -I ${CMAKE_CURRENT_SOURCE_DIR}/Shaders.metal
+                        ${CMAKE_CURRENT_SOURCE_DIR}/${shaderSource}
+                        -o ${GENERATED_SOURCES_DIR}/${shaderSource}.bin
+                COMMAND python ${CMAKE_CURRENT_SOURCE_DIR}/bin2h.cmd ${GENERATED_SOURCES_DIR}/${shaderSource}.bin ${GENERATED_SOURCES_DIR}/${shaderOutput}
+                MAIN_DEPENDENCY ${shaderSource}
+            )
+        endforeach()
+
+        set_target_properties(TrinityALTest_metal PROPERTIES FOLDER "Tests")
+
+        enable_testing()
+        add_test(NAME TrinityALTest_metal COMMAND TrinityALTest_metal)
     endif()
 endif()
 

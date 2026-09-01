@@ -2,7 +2,16 @@
 
 #include "StdAfx.h"
 
+// TARGET_OS_SIMULATOR is needed by the guard below, so the include cannot go inside it --
+// but it is an Apple header and every other platform compiles this file too, so it is
+// wrapped rather than left bare. Off Metal the undefined TARGET_OS_SIMULATOR evaluates to
+// 0 and the first conjunct is already false.
 #if ( TRINITY_PLATFORM == TRINITY_METAL )
+#include <TargetConditionals.h>
+#endif
+
+// See Tr2MetalFxUpscaling.h: no MetalFX framework on the iOS Simulator SDK.
+#if ( TRINITY_PLATFORM == TRINITY_METAL ) && !TARGET_OS_SIMULATOR
 #include <MetalFx/MetalFX.h>
 
 #include "Tr2MetalFxUpscaling.h"

@@ -16,6 +16,7 @@
 #define TRINITY_PLATFORM_SUPPORTS_PARALLEL_CONTEXTS 1
 #define TRINITY_PLATFORM_SUPPORTS_HEAP_VIEW 1
 #define TRINITY_PLATFORM_SUPPORTS_RAY_TRACING 1
+#define TRINITY_PLATFORM_SUPPORTS_ASTC_TEXTURES 1
 
 class Tr2CapsAL
 {
@@ -26,8 +27,12 @@ public:
 	bool SupportsVertexShaderTextures() const;
 	bool SupportsVariableRefreshRate() const;
 	bool SupportsRaytracing() const;
+	// ASTC sampling, the one M3 asks about. A capability, not a platform (spec D7): the answer
+	// differs between two Metal devices, so a compile-time #if would be wrong even here.
+	bool SupportsAstcTextures() const;
 
 	bool m_supportsRaytracing;
+	bool m_supportsAstcTextures;
 
 	Tr2CapsAL();
 	Tr2CapsAL( const Tr2CapsAL& other );

@@ -1,4 +1,4 @@
-// Copyright © 2023 CCP ehf.
+// Copyright © 2026 CCP ehf.
 
 #include "StdAfx.h"
 
@@ -10,11 +10,10 @@
 #include <TargetConditionals.h>
 #endif
 
-#if defined( __APPLE__ ) && TARGET_OS_OSX && ( TRINITY_PLATFORM != TRINITY_STUB )
+#if defined( __APPLE__ ) && TARGET_OS_IPHONE && ( TRINITY_PLATFORM != TRINITY_STUB )
 
 #include "WithWindowFixture.h"
 #include "RenderWindow.h"
-#import <Cocoa/Cocoa.h>
 
 
 extern bool s_keyPressed;
@@ -43,18 +42,7 @@ void WithWindow::BeginLoopProcessing()
 
 bool WithWindow::DoLoopProcessing()
 {
-	while( true )
-	{
-		NSEvent* event = [NSApp nextEventMatchingMask:NSEventMaskAny
-											untilDate:[NSDate distantPast]
-											   inMode:NSDefaultRunLoopMode
-											  dequeue:YES];
-		if( event == nil )
-		{
-			break;
-		}
-		[NSApp sendEvent:event];
-	}
+	// No event pump: interactive mode has no meaning under simctl spawn.
 	return !s_keyPressed;
 }
 
