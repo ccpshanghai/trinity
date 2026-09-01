@@ -32,8 +32,8 @@
         "protobuf"
       ],
       "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
-      "reference": "m6-carbon-core-heap-fix",
-      "baseline": "a9e77640660dd620ffeb98aee8e93e9a3f7b80ea"
+      "reference": "mobile-exp",
+      "baseline": "a724d54a318b9a5cb38a1ea349a93c5ca83580af"
     }
   ]
 }

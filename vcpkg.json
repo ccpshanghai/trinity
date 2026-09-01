@@ -14,7 +14,8 @@
     },
     {
       "name": "libsquish",
-      "version>=": "1.15"
+      "version>=": "1.15",
+      "platform": "!android"
     },
     {
       "name": "amd-fidelityfx-cas",
@@ -28,7 +29,8 @@
     },
     {
       "name": "tbb",
-      "version>=": "2021.5.0#1"
+      "version>=": "2021.5.0#1",
+      "platform": "!android"
     },
     {
       "name": "vulkan-headers",
@@ -40,43 +42,53 @@
     },
     {
       "name": "carbon-trinityaudioapi",
-      "version>=": "2.0.3"
+      "version>=": "2.0.3",
+      "platform": "!android"
     },
     {
       "name": "freetype",
-      "version>=": "2.13.3"
+      "version>=": "2.13.3",
+      "platform": "!android"
     },
     {
       "name": "carbon-pdmprotowrapper",
-      "version>=": "2.0.4"
+      "version>=": "2.0.4",
+      "platform": "!android"
     },
     {
       "name": "carbon-blue",
-      "version>=": "6.0.0"
+      "version>=": "6.0.0",
+      "platform": "!android"
     },
     {
       "name": "carbon-math",
-      "version>=": "1.2.1"
+      "version>=": "1.2.1",
+      "platform": "!android"
     },
     {
       "name": "carbon-parser",
-      "version>=": "1.0.2"
+      "version>=": "1.0.2",
+      "platform": "!android"
     },
     {
       "name": "libpng",
-      "version>=": "1.6.37"
+      "version>=": "1.6.37",
+      "platform": "!android"
     },
     {
       "name": "libjpeg-turbo",
-      "version>=": "2.1.2"
+      "version>=": "2.1.2",
+      "platform": "!android"
     },
     {
       "name": "zlib-ng",
-      "version>=": "2.2.5"
+      "version>=": "2.2.5",
+      "platform": "!android"
     },
     {
       "name": "carbon-mesh",
-      "version>=": "1.0.1"
+      "version>=": "1.0.1",
+      "platform": "!android"
     }
   ],
   "features": {
@@ -240,5 +252,5 @@
       "version": "3.3.0"
     }
   ],
-  "$comment-android": "Two !android gates remain -- amd-fidelityfx-cas and amd-fidelityfx-cacao -- and they are permanent rather than pending: upscaling is a non-goal (M12-if-ever, mobile-only, and the Vulkan backend keeps the stub), and both are Windows-shader-stack ports that would never belong in an Android closure. Every other gate lifted in M6 Task 12: the full carbon port set resolves and builds for arm64-android. What still keeps the engine out of the Android configuration is trinity/CMakeLists.txt's ANDROID early-return, not this manifest -- deliberately two separate facts now, and the early-return is the second half's to lift. One host constraint remains, and it is a fact about hosts rather than a gate: python3 cannot cross-build for android from a Windows host (CPython's pybuilddir.txt step runs sysconfig --generate-posix-vars, which a Windows build python cannot satisfy), and a POSIX-built artifact cannot be restored on Windows either, because vcpkg's ABI hash embeds host identity by design -- measured field by field in docs/spikes/artifacts/m6-python3-abi-probe-20260901.txt. The android port set is therefore built on a POSIX host."
+  "$comment-android": "The !android gates keep the engine's dependencies out of the Android closure. They lift together with trinity/CMakeLists.txt's ANDROID early-return, in the second half, and on a POSIX host -- those three are one decision, not three. M6 Task 12 measured why: python3 cannot cross-build for android from a Windows host (CPython's pybuilddir.txt step runs sysconfig --generate-posix-vars, which a Windows build python cannot satisfy), and a POSIX-built artifact cannot be restored on Windows either, because vcpkg's ABI hash embeds host identity by design -- four measured causes in docs/spikes/artifacts/m6-python3-abi-probe-20260901.txt. carbon-blue pulls python3, so ungating it makes the arm64-android tree unconfigurable on Windows, which is the host every device run in M6's first half was driven from. The spec asked for the gates and the early-return to be split into two independent facts; the probe result couples them again, and this comment says so rather than pretending otherwise. The port set itself IS proven for arm64-android -- 137/137 installed, 114 android packages, zero failures, on the POSIX host, logged in docs/spikes/artifacts/m6-fullset-vcpkg-20260901.txt with the manifest recipe beside it. amd-fidelityfx-cas and amd-fidelityfx-cacao are the two gates that never lift: upscaling is a non-goal (M12-if-ever, mobile-only, the Vulkan backend keeps the stub) and both are Windows-shader-stack ports."
 }
