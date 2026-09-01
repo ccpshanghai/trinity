@@ -193,6 +193,30 @@ namespace
 		}
 	}
 
+	VkCompositeAlphaFlagBitsKHR GetSwapChainCompositeAlpha( VkSurfaceCapabilitiesKHR& surface_capabilities )
+	{
+		// OPAQUE is the meaning we want -- the AL never composites the window against
+		// what is behind it -- but a surface is only required to support *some* bit,
+		// not that one. Android surfaces commonly report INHERIT alone (the Adreno 740
+		// does), where the compositor decides and an opaque window ends up opaque
+		// anyway. Prefer OPAQUE, then INHERIT, then whatever the surface does support:
+		// passing an unsupported bit is VUID-VkSwapchainCreateInfoKHR-compositeAlpha-01280.
+		const VkCompositeAlphaFlagBitsKHR preferred[] = {
+			VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+			VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+			VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+			VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+		};
+		for( auto bit : preferred )
+		{
+			if( surface_capabilities.supportedCompositeAlpha & bit )
+			{
+				return bit;
+			}
+		}
+		return VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+	}
+
 	VkPresentModeKHR GetSwapChainPresentMode( Tr2RenderContextEnum::PresentInterval interval, std::vector<VkPresentModeKHR> &present_modes ) 
 	{
 		if( interval == Tr2RenderContextEnum::PRESENT_INTERVAL_IMMEDIATE )
@@ -284,6 +308,7 @@ namespace
 		const VkSurfaceFormatKHR desiredFormat = GetSwapChainFormat( surfaceFormats, parameters.mode.format );
 		const VkImageUsageFlags desiredUsage = GetSwapChainUsageFlags( surfaceCapabilities );
 		const VkSurfaceTransformFlagBitsKHR desiredTransform = GetSwapChainTransform( surfaceCapabilities );
+		const VkCompositeAlphaFlagBitsKHR desiredCompositeAlpha = GetSwapChainCompositeAlpha( surfaceCapabilities );
 		const VkPresentModeKHR desiredPresentMode = GetSwapChainPresentMode( parameters.presentInterval, presentModes );
 
 		if( static_cast<int>( desiredUsage ) == -1 || static_cast<int>( desiredPresentMode ) == -1 )
@@ -306,7 +331,7 @@ namespace
 			0,
 			nullptr,
 			desiredTransform,
-			VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+			desiredCompositeAlpha,
 			desiredPresentMode,
 			VK_TRUE,
 			// Handing the old swapchain over lets the driver reuse what it can and avoids a

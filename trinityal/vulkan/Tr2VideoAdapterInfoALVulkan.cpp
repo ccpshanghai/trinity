@@ -8,6 +8,9 @@
 #include "Tr2AdapterStructures.h"
 #include "VkResult.h"
 #include "ALLog.h"
+#if defined( __ANDROID__ )
+#include <android/log.h>
+#endif
 #include "UtilitiesVulkan.h"
 
 // The Windows build enumerates adapters and display modes through DXGI and matches
@@ -108,6 +111,12 @@ namespace
 #ifdef _WIN32
 		OutputDebugString( pMessage );
 		OutputDebugString( "\n" );
+#elif defined( __ANDROID__ )
+		// The full message stream, errors and warnings alike, under its own tag so a
+		// device run can be graded by grepping logcat for TrinityALTest.vk -- the
+		// CCP_AL_LOGERR below fires for errors only, through the generic channel tag.
+		__android_log_print( ( flags & VK_DEBUG_REPORT_ERROR_BIT_EXT ) ? ANDROID_LOG_ERROR : ANDROID_LOG_WARN,
+			"TrinityALTest.vk", "%s: %s", pLayerPrefix, pMessage );
 #endif
 		if( ( flags & VK_DEBUG_REPORT_ERROR_BIT_EXT ) != 0 )
 		{
