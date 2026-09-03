@@ -17,6 +17,14 @@ ICrashReporter* TrinityALCrashes = nullptr;
 // the app's files directory; PipelineCache.cpp points it at a directory of its own.
 const char* g_pipelineCacheDirectory = nullptr;
 
+// How many bytes of cache blob the most recent CreateDevice actually started the device
+// from: 0 for a cold start, for a blob rejected by the header check, for a blob the driver
+// refused, and for no directory configured. It exists because CreateDevice's own return
+// value cannot tell those apart from a warm start -- the whole cache path is non-fatal by
+// design -- so without it "the loaded blob is accepted" is unassertable. Unsynchronised,
+// like g_pipelineCacheDirectory beside it: both assume one device being created at a time.
+size_t g_pipelineCacheBytesLoaded = 0;
+
 
 namespace
 {
