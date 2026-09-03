@@ -159,6 +159,28 @@ namespace TrinityALImpl
 		if( HasFlag( gpuUsage, Tr2GpuUsage::UNORDERED_ACCESS ) )
 		{
 			usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+
+			// Ask before asking for it. B8G8R8A8_UNORM carries STORAGE_IMAGE on every desktop
+			// driver but the spec never required it -- the mandatory storage list has the RGBA
+			// orderings, not the BGRA ones -- and the Adreno 740 does not offer it. Creating the
+			// image anyway is what the AL used to do: vkGetPhysicalDeviceImageFormatProperties2
+			// answered VK_ERROR_FORMAT_NOT_SUPPORTED, vkCreateImage and vkCreateImageView were
+			// issued regardless (VUID-VkImageCreateInfo-imageCreateMaxMipLevels-02251 and
+			// VUID-VkImageViewCreateInfo-usage-02275), the driver tolerated it, and
+			// Rendering.CanUsePsUavs reported a pass for work the driver had just said it could
+			// not do. Refusing here costs a caller nothing it actually had: the texture was
+			// never legally a storage image on this device.
+			//
+			// The sibling check below does the same thing for the sRGB view candidate. This is
+			// that check reaching the format the caller actually named.
+			VkFormatProperties storageProperties = {};
+			vkGetPhysicalDeviceFormatProperties( renderContext.m_physicalDevice, GetVulkanFormat( desc.GetFormat() ), &storageProperties );
+			if( !( storageProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT ) )
+			{
+				CCP_AL_LOGERR( "Texture format %d cannot be an unordered-access (storage) image on this device",
+					(int)desc.GetFormat() );
+				return E_FAIL;
+			}
 		}
 
 		// Whether this texture can carry an sRGB view has to be settled before the image

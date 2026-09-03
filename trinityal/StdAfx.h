@@ -20,6 +20,13 @@
 #include <cstdint>
 #include <memory>
 
+#ifndef _WIN32
+// MSVC's _countof, for the call sites that use it; the expression is the portable
+// classic and mismatched pointer arguments still fail to compile via the array bind.
+template <typename T, size_t N>
+constexpr size_t _countof( T ( & )[N] ) { return N; }
+#endif
+
 #ifdef _WIN32
 typedef HWND Tr2WindowHandle;
 #elif defined( __APPLE__ )

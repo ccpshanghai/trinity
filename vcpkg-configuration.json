@@ -33,7 +33,7 @@
       ],
       "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
       "reference": "mobile-exp",
-      "baseline": "1e6c62c4edd71875ff892446e1eee086087ade4c"
+      "baseline": "a724d54a318b9a5cb38a1ea349a93c5ca83580af"
     }
   ]
 }

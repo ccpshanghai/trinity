@@ -1482,7 +1482,7 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 			VK_NULL_HANDLE,
 			0
 		};
-		CR_RETURN_HR( Vk2Al( vkCreateComputePipelines( m_owner->m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_computePipeline ) ) );
+		CR_RETURN_HR( Vk2Al( vkCreateComputePipelines( m_owner->m_device, m_owner->m_pipelineCache, 1, &pipelineInfo, nullptr, &m_computePipeline ) ) );
 	}
 
 	vkCmdBindPipeline( m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_computePipeline );
@@ -1658,7 +1658,7 @@ ALResult Tr2RenderContextAL::CreatePipeline( VkPipeline& pipeline )
 		VK_NULL_HANDLE,
 		-1
 	};
-	return Vk2Al( vkCreateGraphicsPipelines( m_owner->m_device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline ) );
+	return Vk2Al( vkCreateGraphicsPipelines( m_owner->m_device, m_owner->m_pipelineCache, 1, &pipelineCreateInfo, nullptr, &pipeline ) );
 }
 
 void Tr2RenderContextAL::RenderPassHint( const Tr2ColorAttachment&, const Tr2DepthAttachment& )

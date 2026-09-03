@@ -5,6 +5,35 @@
 
 using namespace Tr2RenderContextEnum;
 
+namespace
+{
+// A platform can have no desktop, and then it has no display mode to report.
+// Tr2VideoAdapterInfoALVulkan.cpp's GetAdapterDisplayMode has two arms: a Win32 one
+// that reads the real mode through EnumDisplaySettings, and a fallback for everywhere
+// else that sets width = height = 0 on purpose -- the surface dictates the extent
+// (GetSwapChainExtent always takes currentExtent on Android), and a made-up 1080p
+// there would only masquerade as information. GetAdapterModeCount and GetAdapterMode
+// forward to that same fallback.
+//
+// The two display-mode tests below assume every platform has a real mode to
+// enumerate. On Android that assumption is what is wrong, not the AL, so they skip by
+// name here instead of asserting through it (M6 spec, section 4: skips named). The
+// condition mirrors the AL's own rather than naming Android -- a Vulkan target
+// without Win32 is exactly the arm that reports no mode.
+//
+// Counting note: GTEST_SKIP reports as Passed on the console. Skip counts come from
+// the XML (result="skipped"), never from the console totals.
+#if ( TRINITY_PLATFORM == TRINITY_VULKAN ) && !defined( _WIN32 )
+constexpr bool s_hasDesktopDisplayMode = false;
+#else
+constexpr bool s_hasDesktopDisplayMode = true;
+#endif
+
+const char* const s_noDisplayModeReason =
+	"No desktop on this platform, so no display mode to report: the Vulkan AL answers "
+	"0x0 by design and the surface dictates the real extent.";
+}
+
 TEST( VideoAdapterInfo, HasAtLeastOneAdapter )
 {
 	unsigned count = 0;
@@ -51,6 +80,11 @@ TEST( VideoAdapterInfo, CanGetDefaultAdapterDisplayMode )
 		GTEST_SKIP() << "Test Skipped as no adapters present on machine.";
 	}
 
+	if( !s_hasDesktopDisplayMode )
+	{
+		GTEST_SKIP() << s_noDisplayModeReason;
+	}
+
 	Tr2DisplayModeInfo mode;
 	memset( &mode, 0, sizeof( mode ) );
 	ASSERT_HRESULT_SUCCEEDED( Tr2VideoAdapterInfo::GetAdapterDisplayMode( Tr2VideoAdapterInfo::DEFAULT_ADAPTER, mode ) );
@@ -66,6 +100,11 @@ TEST( VideoAdapterInfo, CanEnumerateModesForDefaultAdapter )
 	if( !adapter_count )
 	{
 		GTEST_SKIP() << "Test Skipped as no adapters present on machine.";
+	}
+
+	if( !s_hasDesktopDisplayMode )
+	{
+		GTEST_SKIP() << s_noDisplayModeReason;
 	}
 
 	Tr2DisplayModeInfo mode;

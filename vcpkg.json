@@ -14,19 +14,23 @@
     },
     {
       "name": "libsquish",
-      "version>=": "1.15"
+      "version>=": "1.15",
+      "platform": "!android"
     },
     {
       "name": "amd-fidelityfx-cas",
-      "version>=": "1.0"
+      "version>=": "1.0",
+      "platform": "!android"
     },
     {
       "name": "amd-fidelityfx-cacao",
-      "version>=": "1.2"
+      "version>=": "1.2",
+      "platform": "!android"
     },
     {
       "name": "tbb",
-      "version>=": "2021.5.0#1"
+      "version>=": "2021.5.0#1",
+      "platform": "!android"
     },
     {
       "name": "vulkan-headers",
@@ -38,43 +42,53 @@
     },
     {
       "name": "carbon-trinityaudioapi",
-      "version>=": "2.0.3"
+      "version>=": "2.0.3",
+      "platform": "!android"
     },
     {
       "name": "freetype",
-      "version>=": "2.13.3"
+      "version>=": "2.13.3",
+      "platform": "!android"
     },
     {
       "name": "carbon-pdmprotowrapper",
-      "version>=": "2.0.4"
+      "version>=": "2.0.4",
+      "platform": "!android"
     },
     {
       "name": "carbon-blue",
-      "version>=": "6.0.0"
+      "version>=": "6.0.0",
+      "platform": "!android"
     },
     {
       "name": "carbon-math",
-      "version>=": "1.2.1"
+      "version>=": "1.2.1",
+      "platform": "!android"
     },
     {
       "name": "carbon-parser",
-      "version>=": "1.0.2"
+      "version>=": "1.0.2",
+      "platform": "!android"
     },
     {
       "name": "libpng",
-      "version>=": "1.6.37"
+      "version>=": "1.6.37",
+      "platform": "!android"
     },
     {
       "name": "libjpeg-turbo",
-      "version>=": "2.1.2"
+      "version>=": "2.1.2",
+      "platform": "!android"
     },
     {
       "name": "zlib-ng",
-      "version>=": "2.2.5"
+      "version>=": "2.2.5",
+      "platform": "!android"
     },
     {
       "name": "carbon-mesh",
-      "version>=": "1.0.1"
+      "version>=": "1.0.1",
+      "platform": "!android"
     }
   ],
   "features": {
@@ -101,7 +115,7 @@
     },
     "dx11": {
       "description": "Create DirectX 11 targets",
-       "supports": "windows & x64",
+      "supports": "windows & x64",
       "dependencies": [
         {
           "name": "directx-dxc",
@@ -122,7 +136,11 @@
         {
           "name": "nvidia-streamline",
           "version>=": "2.8.0",
-          "features":["dlss-fg","dlss-sr","nis" ]
+          "features": [
+            "dlss-fg",
+            "dlss-sr",
+            "nis"
+          ]
         }
       ]
     },
@@ -153,7 +171,12 @@
         {
           "name": "nvidia-streamline",
           "version>=": "2.8.0",
-          "features":["dlss-fg","dlss-sr","nis","reflex" ]
+          "features": [
+            "dlss-fg",
+            "dlss-sr",
+            "nis",
+            "reflex"
+          ]
         },
         {
           "name": "intel-xess",
@@ -173,14 +196,17 @@
     },
     "vulkan": {
       "description": "Create Vulkan targets",
-      "supports": "windows & x64",
+      "$comment": "On Android vulkan-loader is not built: the loader is the OS's libvulkan (NDK link library, never a built port). directx-dxc is a host tool for the test-shader step on every configuration that builds tests; it must not set platform:windows, because vcpkg evaluates that expression against the target triplet and would drop the host tool from the Android closure.",
+      "supports": "(windows & x64) | android",
       "dependencies": [
         {
           "name": "directx-dxc",
+          "host": true,
           "version>=": "2023-03-01#2"
         },
         {
           "name": "vulkan-loader",
+          "platform": "windows",
           "version>=": "1.4.304.1"
         }
       ]
@@ -213,7 +239,7 @@
       "version": "1.15#14"
     },
     {
-      "$comment": "vulkan-headers, vulkan-loader and vulkan-memory-allocator are a matched SDK set and must move together: the loader's generated VulkanLoaderConfig.cmake hard-references the Vulkan::Headers target of its own release, so pinning one and leaving the others on a bare version>= lets a baseline move break the configure in whichever direction the unpinned side drifts (observed once already, headers pinned / loader floating -- see docs/spikes/M4-phase2a-test-harness.md §4b).",
+      "$comment": "vulkan-headers, vulkan-loader and vulkan-memory-allocator are a matched SDK set and must move together: the loader's generated VulkanLoaderConfig.cmake hard-references the Vulkan::Headers target of its own release, so pinning one and leaving the others on a bare version>= lets a baseline move break the configure in whichever direction the unpinned side drifts (observed once already, headers pinned / loader floating -- see docs/spikes/M4-phase2a-test-harness.md \u00c2\u00a74b).",
       "name": "vulkan-headers",
       "version": "1.4.304.1#1"
     },
@@ -225,5 +251,6 @@
       "name": "vulkan-memory-allocator",
       "version": "3.3.0"
     }
-  ]
+  ],
+  "$comment-android": "The !android gates keep the engine's dependencies out of the Android closure. They lift together with trinity/CMakeLists.txt's ANDROID early-return, in the second half, and on a POSIX host -- those three are one decision, not three. M6 Task 12 measured why: python3 cannot cross-build for android from a Windows host (CPython's pybuilddir.txt step runs sysconfig --generate-posix-vars, which a Windows build python cannot satisfy), and a POSIX-built artifact cannot be restored on Windows either, because vcpkg's ABI hash embeds host identity by design -- four measured causes in docs/spikes/artifacts/m6-python3-abi-probe-20260901.txt. carbon-blue pulls python3, so ungating it makes the arm64-android tree unconfigurable on Windows, which is the host every device run in M6's first half was driven from. The spec asked for the gates and the early-return to be split into two independent facts; the probe result couples them again, and this comment says so rather than pretending otherwise. The port set itself IS proven for arm64-android -- 137/137 installed, 114 android packages, zero failures, on the POSIX host, logged in docs/spikes/artifacts/m6-fullset-vcpkg-20260901.txt with the manifest recipe beside it. amd-fidelityfx-cas and amd-fidelityfx-cacao are the two gates that never lift: upscaling is a non-goal (M12-if-ever, mobile-only, the Vulkan backend keeps the stub) and both are Windows-shader-stack ports."
 }

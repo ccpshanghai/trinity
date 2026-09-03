@@ -13,6 +13,14 @@
 #include "UtilitiesVulkan.h"
 #include "Tr2TextureALVulkan.h"
 
+#include <cstdio>
+#include <string>
+#include <vector>
+
+// Defined in ALResult.cpp beside g_requestDeviceDebugLayer, and declared here the same
+// way that one is: null means the pipeline cache is not persisted.
+extern const char* g_pipelineCacheDirectory;
+
 namespace
 {
 	// Ten seconds. Long enough that no amount of validation-layer overhead reaches it --
@@ -193,6 +201,30 @@ namespace
 		}
 	}
 
+	VkCompositeAlphaFlagBitsKHR GetSwapChainCompositeAlpha( VkSurfaceCapabilitiesKHR& surface_capabilities )
+	{
+		// OPAQUE is the meaning we want -- the AL never composites the window against
+		// what is behind it -- but a surface is only required to support *some* bit,
+		// not that one. Android surfaces commonly report INHERIT alone (the Adreno 740
+		// does), where the compositor decides and an opaque window ends up opaque
+		// anyway. Prefer OPAQUE, then INHERIT, then whatever the surface does support:
+		// passing an unsupported bit is VUID-VkSwapchainCreateInfoKHR-compositeAlpha-01280.
+		const VkCompositeAlphaFlagBitsKHR preferred[] = {
+			VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+			VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+			VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+			VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+		};
+		for( auto bit : preferred )
+		{
+			if( surface_capabilities.supportedCompositeAlpha & bit )
+			{
+				return bit;
+			}
+		}
+		return VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+	}
+
 	VkPresentModeKHR GetSwapChainPresentMode( Tr2RenderContextEnum::PresentInterval interval, std::vector<VkPresentModeKHR> &present_modes ) 
 	{
 		if( interval == Tr2RenderContextEnum::PRESENT_INTERVAL_IMMEDIATE )
@@ -284,6 +316,7 @@ namespace
 		const VkSurfaceFormatKHR desiredFormat = GetSwapChainFormat( surfaceFormats, parameters.mode.format );
 		const VkImageUsageFlags desiredUsage = GetSwapChainUsageFlags( surfaceCapabilities );
 		const VkSurfaceTransformFlagBitsKHR desiredTransform = GetSwapChainTransform( surfaceCapabilities );
+		const VkCompositeAlphaFlagBitsKHR desiredCompositeAlpha = GetSwapChainCompositeAlpha( surfaceCapabilities );
 		const VkPresentModeKHR desiredPresentMode = GetSwapChainPresentMode( parameters.presentInterval, presentModes );
 
 		if( static_cast<int>( desiredUsage ) == -1 || static_cast<int>( desiredPresentMode ) == -1 )
@@ -306,7 +339,7 @@ namespace
 			0,
 			nullptr,
 			desiredTransform,
-			VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+			desiredCompositeAlpha,
 			desiredPresentMode,
 			VK_TRUE,
 			// Handing the old swapchain over lets the driver reuse what it can and avoids a
@@ -368,6 +401,36 @@ namespace
 		}
 		return S_OK;
 	}
+
+	ALResult CreatePresentationSurface( VkInstance instance, Tr2WindowHandle window, VkSurfaceKHR& surface )
+	{
+		if( window == 0 )
+		{
+			surface = VK_NULL_HANDLE;
+			return S_OK;
+		}
+#if defined( VK_USE_PLATFORM_WIN32_KHR )
+		VkWin32SurfaceCreateInfoKHR surfacecreateInfo = {
+			VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
+			nullptr,
+			0,
+			GetModuleHandle( nullptr ),
+			window
+		};
+		CR_RETURN_HR( Vk2Al( vkCreateWin32SurfaceKHR( instance, &surfacecreateInfo, nullptr, &surface ) ) );
+#elif defined( VK_USE_PLATFORM_ANDROID_KHR )
+		VkAndroidSurfaceCreateInfoKHR surfacecreateInfo = {
+			VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
+			nullptr,
+			0,
+			reinterpret_cast<ANativeWindow*>( window )
+		};
+		CR_RETURN_HR( Vk2Al( vkCreateAndroidSurfaceKHR( instance, &surfacecreateInfo, nullptr, &surface ) ) );
+#else
+		static_assert( false, "Define swapchain creation for this platform here" );
+#endif
+		return S_OK;
+	}
 }
 
 Tr2PrimaryRenderContextAL::FrameData::FrameData()
@@ -413,6 +476,42 @@ Tr2PrimaryRenderContextAL::~Tr2PrimaryRenderContextAL()
 	Destroy();
 }
 
+namespace
+{
+	// The blob's name has to identify the device it was built for, because a cache from
+	// another GPU is worse than none: vkCreatePipelineCache is allowed to accept it and
+	// then quietly ignore every entry. The UUID check below is the authoritative one --
+	// this is just so two devices on one machine do not overwrite each other.
+	std::string PipelineCachePath( const VkPhysicalDeviceProperties& properties )
+	{
+		char name[128];
+		snprintf( name, sizeof( name ), "/TrinityALVkPipelineCache-%u-%u.bin",
+			properties.vendorID, properties.deviceID );
+		return std::string( g_pipelineCacheDirectory ) + name;
+	}
+
+	// A blob whose header does not match this device must be dropped rather than handed to
+	// the driver. The header is the first 32 bytes and its layout is fixed by the spec
+	// (VkPipelineCacheHeaderVersionOne), so this can be read without trusting the rest.
+	bool PipelineCacheBlobMatches( const std::vector<uint8_t>& blob, const VkPhysicalDeviceProperties& properties )
+	{
+		if( blob.size() <= 32 )
+		{
+			return false;
+		}
+		uint32_t headerSize = 0, headerVersion = 0, vendorID = 0, deviceID = 0;
+		memcpy( &headerSize, &blob[0], 4 );
+		memcpy( &headerVersion, &blob[4], 4 );
+		memcpy( &vendorID, &blob[8], 4 );
+		memcpy( &deviceID, &blob[12], 4 );
+		return headerSize == 32
+			&& headerVersion == VK_PIPELINE_CACHE_HEADER_VERSION_ONE
+			&& vendorID == properties.vendorID
+			&& deviceID == properties.deviceID
+			&& memcmp( &blob[16], properties.pipelineCacheUUID, VK_UUID_SIZE ) == 0;
+	}
+}
+
 ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	uint32_t adapter,
 	Tr2WindowHandle  focusWindow,
@@ -441,20 +540,13 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 
 	if( !isWindowless )
 	{
-#if defined(VK_USE_PLATFORM_WIN32_KHR)
-
-		VkWin32SurfaceCreateInfoKHR surfacecreateInfo = {
-			VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
-			nullptr,
-			0,
-			GetModuleHandle( nullptr ),
-			focusWindow
-		};
-
-		CR_RETURN_HR( Vk2Al( vkCreateWin32SurfaceKHR( instance, &surfacecreateInfo, nullptr, &surface ) ) );
-#else
-		static_assert( false, "Define swapchain creation for this platform here" );
-#endif
+		// Tr2WindowHandle is HWND on Windows and uintptr_t elsewhere (StdAfx.h); on
+		// Android the host layer hands the ANativeWindow* it got from the Java Surface
+		// through it. Lifetime is the caller's problem exactly as an HWND's is: the
+		// window must outlive the surface. Surface loss (background) is a new
+		// ANativeWindow, which SetPresentParameters rebuilds via RecreateSurfaceVulkan
+		// rather than a new device. Rotation with configChanges keeps the same window.
+		CR_RETURN_HR( CreatePresentationSurface( instance, focusWindow, surface ) );
 		if( !FindPresentableQueues( physicalDevice.device, surface, graphicsQueue, presentQueue ) )
 		{
 			CCP_AL_LOGERR( "Could not find graphics queues for the selected device" );
@@ -707,7 +799,68 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	// buffer gets sRGB views.
 	m_swapChainMutableFormat = swapChainMutableFormat;
 	m_presentParameters = presentationParameters;
+	// CreatePresentationSurface above was built from focusWindow, not from
+	// presentationParameters.outputWindow -- verified every current caller passes the
+	// same handle for both (trinityal/tests/RenderContextCreation.cpp,
+	// WithValidRenderContextFixture.cpp and SwapChainResizing.cpp; trinity/TriDevice.cpp
+	// CreateSimpleDevice and ChangeDevice/ResetDevice; trinity/UI/Tr2MainWindow.cpp), so
+	// this line changes nothing any of them observe today. It is kept because
+	// RecreateSurfaceVulkan and SetPresentParameters's windowChanged check both read
+	// m_presentParameters.outputWindow as the record of what the live VkSurfaceKHR was
+	// actually built from -- that has to be focusWindow regardless of what a future
+	// caller writes into presentationParameters.outputWindow, or the window-change
+	// detection and the surface rebuild it drives would work off a value nobody used.
+	m_presentParameters.outputWindow = focusWindow;
 	m_needsSwapChainRebuild = false;
+
+	// The pipeline cache, loaded before anything can build a pipeline. Every failure here
+	// is non-fatal by design: a missing, stale or corrupt blob costs a cold start, and a
+	// cold start is what the feature exists to avoid, not something it must guarantee.
+	{
+		VkPipelineCacheCreateInfo cacheCreateInfo = { VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
+		std::vector<uint8_t> blob;
+		if( g_pipelineCacheDirectory )
+		{
+			FILE* file = fopen( PipelineCachePath( m_physicalDeviceProperties ).c_str(), "rb" );
+			if( file )
+			{
+				fseek( file, 0, SEEK_END );
+				const long size = ftell( file );
+				fseek( file, 0, SEEK_SET );
+				if( size > 0 )
+				{
+					blob.resize( (size_t)size );
+					if( fread( blob.data(), 1, blob.size(), file ) != blob.size() )
+					{
+						blob.clear();
+					}
+				}
+				fclose( file );
+			}
+			if( !blob.empty() && !PipelineCacheBlobMatches( blob, m_physicalDeviceProperties ) )
+			{
+				CCP_LOG( "pipeline cache: blob does not match this device, discarded" );
+				blob.clear();
+			}
+			if( !blob.empty() )
+			{
+				cacheCreateInfo.initialDataSize = blob.size();
+				cacheCreateInfo.pInitialData = blob.data();
+				CCP_LOG( "pipeline cache: loaded %zu bytes", blob.size() );
+			}
+			else
+			{
+				CCP_LOG( "pipeline cache: cold" );
+			}
+		}
+		// Created even with no directory configured: one handle to pass everywhere beats a
+		// conditional at every vkCreate*Pipelines site, and an in-memory cache still helps
+		// within a single run.
+		if( vkCreatePipelineCache( m_device, &cacheCreateInfo, nullptr, &m_pipelineCache ) != VK_SUCCESS )
+		{
+			m_pipelineCache = VK_NULL_HANDLE;
+		}
+	}
 	m_surface = surface;
 	m_swapChain = swapChain;
 	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
@@ -852,6 +1005,35 @@ void Tr2PrimaryRenderContextAL::Destroy()
 		vkDestroySurfaceKHR( instance, m_surface, nullptr );
 		m_surface = VK_NULL_HANDLE;
 	}
+	if( m_pipelineCache != VK_NULL_HANDLE )
+	{
+		if( g_pipelineCacheDirectory )
+		{
+			size_t size = 0;
+			if( vkGetPipelineCacheData( m_device, m_pipelineCache, &size, nullptr ) == VK_SUCCESS && size > 0 )
+			{
+				std::vector<uint8_t> blob( size );
+				if( vkGetPipelineCacheData( m_device, m_pipelineCache, &size, blob.data() ) == VK_SUCCESS )
+				{
+					const std::string path = PipelineCachePath( m_physicalDeviceProperties );
+					FILE* file = fopen( path.c_str(), "wb" );
+					if( file )
+					{
+						fwrite( blob.data(), 1, size, file );
+						fclose( file );
+						CCP_LOG( "pipeline cache: wrote %zu bytes", size );
+					}
+					else
+					{
+						CCP_AL_LOGERR( "pipeline cache: could not open %s for writing", path.c_str() );
+					}
+				}
+			}
+		}
+		vkDestroyPipelineCache( m_device, m_pipelineCache, nullptr );
+		m_pipelineCache = VK_NULL_HANDLE;
+	}
+
 	if( m_device != VK_NULL_HANDLE )
 	{
 		vkDestroyDevice( m_device, nullptr );
@@ -867,19 +1049,8 @@ bool Tr2PrimaryRenderContextAL::IsValid() const
 	return m_device != VK_NULL_HANDLE;
 }
 
-ALResult Tr2PrimaryRenderContextAL::RebuildSwapChainVulkan()
+void Tr2PrimaryRenderContextAL::QuiesceSwapChainStateVulkan()
 {
-	if( m_device == VK_NULL_HANDLE )
-	{
-		return E_INVALIDCALL;
-	}
-	if( m_surface == VK_NULL_HANDLE )
-	{
-		// Windowless: there is no swapchain to rebuild and nothing to recover from.
-		m_needsSwapChainRebuild = false;
-		return S_OK;
-	}
-
 	// Everything below assumes nothing is in flight, and that assumption is the reason this
 	// is a device-wide wait rather than a fence wait: the frame that failed may have left a
 	// submit half-done, and the acquire semaphore signalled with nobody to wait on it.
@@ -900,6 +1071,25 @@ ALResult Tr2PrimaryRenderContextAL::RebuildSwapChainVulkan()
 
 	// The next pass must not begin against image views that have just been destroyed.
 	InvalidateAttachmentsVulkan();
+}
+
+ALResult Tr2PrimaryRenderContextAL::RebuildSwapChainVulkan( bool alreadyQuiesced )
+{
+	if( m_device == VK_NULL_HANDLE )
+	{
+		return E_INVALIDCALL;
+	}
+	if( m_surface == VK_NULL_HANDLE )
+	{
+		// Windowless: there is no swapchain to rebuild and nothing to recover from.
+		m_needsSwapChainRebuild = false;
+		return S_OK;
+	}
+
+	if( !alreadyQuiesced )
+	{
+		QuiesceSwapChainStateVulkan();
+	}
 
 	// Build the replacement first, handing the old swapchain over so the driver can reuse
 	// what it can. Nothing is destroyed until this succeeds, so a failure here leaves a
@@ -971,6 +1161,46 @@ ALResult Tr2PrimaryRenderContextAL::RebuildSwapChainVulkan()
 	return S_OK;
 }
 
+ALResult Tr2PrimaryRenderContextAL::RecreateSurfaceVulkan()
+{
+	if( m_device == VK_NULL_HANDLE )
+	{
+		return E_INVALIDCALL;
+	}
+
+	// Same quiesce RebuildSwapChainVulkan uses: nothing referencing the old surface may be
+	// in flight, including a present the frame fence does not cover. SetPresentParameters
+	// always calls RebuildSwapChainVulkan( true ) right after this, so that call skips
+	// repeating it -- see QuiesceSwapChainStateVulkan's comment.
+	QuiesceSwapChainStateVulkan();
+
+	// Swapchain first: destroying it ends outstanding presents, which is what makes the
+	// present-waited semaphores safe to destroy afterwards (RebuildSwapChainVulkan).
+	if( m_swapChain != VK_NULL_HANDLE )
+	{
+		vkDestroySwapchainKHR( m_device, m_swapChain, nullptr );
+		m_swapChain = VK_NULL_HANDLE;
+	}
+
+	VkInstance instance;
+	FORWARD_HR( TrinityALImpl::GetVulkanInstance( instance ) );
+
+	if( m_surface != VK_NULL_HANDLE )
+	{
+		vkDestroySurfaceKHR( instance, m_surface, nullptr );
+		m_surface = VK_NULL_HANDLE;
+	}
+
+	if( m_presentParameters.outputWindow == 0 )
+	{
+		m_needsSwapChainRebuild = false;
+		return S_OK;
+	}
+
+	FORWARD_HR( CreatePresentationSurface( instance, m_presentParameters.outputWindow, m_surface ) );
+	return S_OK;
+}
+
 ALResult Tr2PrimaryRenderContextAL::SetPresentParameters( unsigned, const Tr2PresentParametersAL& presentationParameters )
 {
 	if( !IsValid() )
@@ -978,6 +1208,7 @@ ALResult Tr2PrimaryRenderContextAL::SetPresentParameters( unsigned, const Tr2Pre
 		return E_INVALIDCALL;
 	}
 
+	const bool windowChanged = m_presentParameters.outputWindow != presentationParameters.outputWindow;
 	m_presentParameters = presentationParameters;
 
 	// Rebuilt now rather than flagged for later: the caller asked for this, and a resize
@@ -987,14 +1218,37 @@ ALResult Tr2PrimaryRenderContextAL::SetPresentParameters( unsigned, const Tr2Pre
 	// The command buffer is mid-recording here, and RebuildSwapChainVulkan waits the device
 	// idle -- which is legal, but whatever was recorded for this frame is discarded along
 	// with the framebuffer it referenced. BeginFrame starts a clean one.
-	EndRenderPassVulkan();
-	vkEndCommandBuffer( m_commandBuffer );
-	m_commandBufferRecording = false;
+	//
+	// Guarded: a soak teardown can arrive after Present already ended the buffer, or after
+	// a previous SetPresentParameters dropped the surface. Ending an un-recording buffer
+	// is VUID-vkEndCommandBuffer-commandBuffer-00059.
+	if( m_commandBufferRecording )
+	{
+		EndRenderPassVulkan();
+		vkEndCommandBuffer( m_commandBuffer );
+		m_commandBufferRecording = false;
+	}
 
-	ALResult rebuilt = RebuildSwapChainVulkan();
+	if( windowChanged )
+	{
+		FORWARD_HR( RecreateSurfaceVulkan() );
+	}
+
+	// windowChanged: RecreateSurfaceVulkan just quiesced this state for the surface it
+	// tore down; repeating it here would be the double back-buffer/attachment teardown
+	// F7 found, previously silent only because Tr2TextureAL::Destroy() no-ops on an
+	// already-empty texture.
+	ALResult rebuilt = RebuildSwapChainVulkan( /*alreadyQuiesced=*/windowChanged );
 	if( FAILED( rebuilt ) )
 	{
 		return rebuilt;
+	}
+
+	if( m_surface == VK_NULL_HANDLE )
+	{
+		// Presentation dropped (surface-loss teardown). The next SetPresentParameters
+		// with a live window rebuilds surface + swapchain.
+		return S_OK;
 	}
 
 	FORWARD_HR( BeginFrame() );

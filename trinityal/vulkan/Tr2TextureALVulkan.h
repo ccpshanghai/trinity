@@ -10,6 +10,8 @@
 #include "../include/Tr2TextureAL.h"
 #include "../Tr2HalHelperStructures.h"
 
+class Tr2RenderContextAL;
+
 namespace TrinityALImpl
 {
 	class Tr2ResourceSetAL;
@@ -174,7 +176,10 @@ namespace TrinityALImpl
 		Tr2CpuUsage::Type m_cpuUsage;
 		Tr2GpuUsage::Type m_gpuUsage;
 
-		friend class Tr2RenderContextAL;
+		// ::-qualified: inside namespace TrinityALImpl an unqualified friend declaration
+		// names a new TrinityALImpl::Tr2RenderContextAL instead of the global class --
+		// MSVC resolved it to the global anyway, clang does not.
+		friend class ::Tr2RenderContextAL;
 		friend class TrinityALImpl::Tr2ResourceSetAL;
 	};
 }

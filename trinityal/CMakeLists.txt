@@ -543,6 +543,34 @@ if(WIN32)
         set_shared_trinityal_properties(vulkan)
     endif()
 
+elseif(ANDROID)
+
+    if(BUILD_VULKAN)
+
+        # The same backend as the Windows Vulkan target with the Windows-only pieces
+        # gone: no vulkan-loader port (Android's libvulkan IS the loader -- the NDK link
+        # library), no dxgi (adapter enumeration is the Vulkan physical-device list, see
+        # Tr2VideoAdapterInfoALVulkan.cpp), and VK_USE_PLATFORM_ANDROID_KHR selects the
+        # ANativeWindow surface path.
+        find_package(VulkanHeaders CONFIG REQUIRED)
+        find_package(VulkanMemoryAllocator CONFIG REQUIRED)
+
+        # The metal .mm files are in _SOURCES for every target; MSVC compiles them as
+        # C++ where their TRINITY_PLATFORM guards make them empty, but NDK clang treats
+        # .mm as Objective-C++, which conflicts with the C++ precompiled header before
+        # any guard is seen.
+        list(FILTER _SOURCES EXCLUDE REGEX "\.mm$")
+
+        ccp_add_library(TrinityAL_vulkan STATIC)
+        target_compile_definitions(TrinityAL_vulkan PUBLIC TRINITY_PLATFORM=TRINITY_VULKAN VK_USE_PLATFORM_ANDROID_KHR)
+        target_link_libraries(TrinityAL_vulkan PUBLIC
+                                                    Vulkan::Headers
+                                                    GPUOpen::VulkanMemoryAllocator
+                                                    vulkan
+                                                    android)
+        set_shared_trinityal_properties(vulkan)
+    endif()
+
 elseif(APPLE)
     
     if(BUILD_METAL)

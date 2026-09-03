@@ -20,6 +20,7 @@ set(_SOURCES
     GPUTimer.cpp
     Ktx2AstcRoundTrip.cpp
     OcclusionQuery.cpp
+    PipelineCache.cpp
     Raytracing.cpp
     RenderContext.cpp
     RenderContextCreation.cpp
@@ -195,6 +196,68 @@ function(set_shared_trinityaltest_properties target)
 
 endfunction()
 
+# Generates the SPIR-V test-shader headers for `target`. DIRECTX_DXC_TOOL must
+# already be resolved by the caller: find_package(directx-dxc) on Windows, the
+# host-triplet find_program on Android. The binding-formula comments move here
+# with the code -- they are the ABI documentation, not the Windows target's.
+function(ccp_add_vulkan_test_shaders target)
+    target_sources(${target} PRIVATE ${_SHADERS_VULKAN})
+    source_group(Shaders FILES ${_SHADERS_VULKAN})
+
+    # Reproduces Tr2ShaderProgramALVulkan.cpp's binding formula from the shader
+    # side: binding = registerIndex + classOffset * 6 * 32 + shaderType * 32,
+    # with classOffset b=0, s=2, t=1, u=0 (RegisterClassOffset) and shaderType
+    # from Tr2RenderContextEnum::ShaderType (VERTEX=0, PIXEL=1, COMPUTE=2).
+    # Constant buffers stay in space0 -> descriptor set 0 (m_constantLayout);
+    # t/s/u are declared space1 in the sources -> set 1 (m_resourceLayout).
+    # These two sides are one ABI. Change neither alone.
+    set(_VK_REGISTER_SIZE 32)
+    set(_VK_CLASS_BLOCK 192)   # 6 * _VK_REGISTER_SIZE
+
+    # Matches the instance floor in
+    # trinityal/vulkan/Tr2VideoAdapterInfoALVulkan.cpp: the shader pipeline emits
+    # SPIR-V 1.6 for vulkan1.3, and a module built for a newer environment than
+    # the declared instance is a validation error. This target env therefore
+    # tracks that 1.3 floor and is not a free choice. It is now one floor for two
+    # targets -- Windows and Android compile these shaders through this same
+    # function, and both create the instance from that same file.
+    set(_VK_TARGET_ENV vulkan1.3)
+
+    foreach(shaderSource ${_SHADERS_VULKAN})
+        string(REGEX REPLACE "h$" ".h" shaderOutput ${shaderSource})
+        if(${shaderSource} MATCHES ".*psh$")
+            set(SHADER_TARGET "ps_6_0")
+            set(_VK_STAGE 1)
+        elseif(${shaderSource} MATCHES ".*vsh$")
+            set(SHADER_TARGET "vs_6_0")
+            set(_VK_STAGE 0)
+        else()
+            set(SHADER_TARGET "cs_6_0")
+            set(_VK_STAGE 2)
+        endif()
+
+        math(EXPR _VK_STAGE_BASE "${_VK_STAGE} * ${_VK_REGISTER_SIZE}")
+        math(EXPR _VK_B_SHIFT "0 * ${_VK_CLASS_BLOCK} + ${_VK_STAGE_BASE}")
+        math(EXPR _VK_T_SHIFT "1 * ${_VK_CLASS_BLOCK} + ${_VK_STAGE_BASE}")
+        math(EXPR _VK_S_SHIFT "2 * ${_VK_CLASS_BLOCK} + ${_VK_STAGE_BASE}")
+        math(EXPR _VK_U_SHIFT "0 * ${_VK_CLASS_BLOCK} + ${_VK_STAGE_BASE}")
+
+        add_custom_command(
+            OUTPUT ${GENERATED_SOURCES_DIR}/${shaderOutput}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${GENERATED_SOURCES_DIR}/Shaders.vulkan
+            COMMAND ${DIRECTX_DXC_TOOL} -nologo -spirv -T ${SHADER_TARGET} -E main
+                    -fspv-target-env=${_VK_TARGET_ENV}
+                    -fvk-b-shift ${_VK_B_SHIFT} 0
+                    -fvk-t-shift ${_VK_T_SHIFT} 1
+                    -fvk-s-shift ${_VK_S_SHIFT} 1
+                    -fvk-u-shift ${_VK_U_SHIFT} 1
+                    -Fo ${GENERATED_SOURCES_DIR}/${shaderSource}.bin ${CMAKE_CURRENT_SOURCE_DIR}/${shaderSource}
+            COMMAND python ${CMAKE_CURRENT_SOURCE_DIR}/bin2h.cmd ${GENERATED_SOURCES_DIR}/${shaderSource}.bin ${GENERATED_SOURCES_DIR}/${shaderOutput}
+            MAIN_DEPENDENCY ${shaderSource}
+        )
+    endforeach()
+endfunction()
+
 if(WIN32)
     if (BUILD_DX11)
         ccp_add_executable(TrinityALTest_dx11 ${_SOURCES})
@@ -307,9 +370,6 @@ if(WIN32)
             COMMAND_EXPAND_LISTS
         )
 
-        target_sources(TrinityALTest_vulkan PRIVATE ${_SHADERS_VULKAN})
-        source_group(Shaders FILES ${_SHADERS_VULKAN})
-
         # dxc only -- never fxc. fxc cannot emit SPIR-V, and it is fetched from the
         # internal host vcpkg-prebuilt-sdks.ccpgames.com, which would tie the one
         # Windows configuration that builds outside the CCP network to that host (R6).
@@ -324,57 +384,7 @@ if(WIN32)
         # BUILD_FOR_PYTHON_2 path, where the port is the older `dxc` package that
         # does not set it.
         find_package(directx-dxc CONFIG REQUIRED)
-
-        # Reproduces Tr2ShaderProgramALVulkan.cpp's binding formula from the shader
-        # side: binding = registerIndex + classOffset * 6 * 32 + shaderType * 32,
-        # with classOffset b=0, s=2, t=1, u=0 (RegisterClassOffset) and shaderType
-        # from Tr2RenderContextEnum::ShaderType (VERTEX=0, PIXEL=1, COMPUTE=2).
-        # Constant buffers stay in space0 -> descriptor set 0 (m_constantLayout);
-        # t/s/u are declared space1 in the sources -> set 1 (m_resourceLayout).
-        # These two sides are one ABI. Change neither alone.
-        set(_VK_REGISTER_SIZE 32)
-        set(_VK_CLASS_BLOCK 192)   # 6 * _VK_REGISTER_SIZE
-
-        # Matches the instance floor in
-        # trinityal/vulkan/Tr2VideoAdapterInfoALVulkan.cpp: the shader pipeline emits
-        # SPIR-V 1.6 for vulkan1.3, and a module built for a newer environment than
-        # the declared instance is a validation error. This target env therefore
-        # tracks that 1.3 floor and is not a free choice.
-        set(_VK_TARGET_ENV vulkan1.3)
-
-        foreach(shaderSource ${_SHADERS_VULKAN})
-            string(REGEX REPLACE "h$" ".h" shaderOutput ${shaderSource})
-            if(${shaderSource} MATCHES ".*psh$")
-                set(SHADER_TARGET "ps_6_0")
-                set(_VK_STAGE 1)
-            elseif(${shaderSource} MATCHES ".*vsh$")
-                set(SHADER_TARGET "vs_6_0")
-                set(_VK_STAGE 0)
-            else()
-                set(SHADER_TARGET "cs_6_0")
-                set(_VK_STAGE 2)
-            endif()
-
-            math(EXPR _VK_STAGE_BASE "${_VK_STAGE} * ${_VK_REGISTER_SIZE}")
-            math(EXPR _VK_B_SHIFT "0 * ${_VK_CLASS_BLOCK} + ${_VK_STAGE_BASE}")
-            math(EXPR _VK_T_SHIFT "1 * ${_VK_CLASS_BLOCK} + ${_VK_STAGE_BASE}")
-            math(EXPR _VK_S_SHIFT "2 * ${_VK_CLASS_BLOCK} + ${_VK_STAGE_BASE}")
-            math(EXPR _VK_U_SHIFT "0 * ${_VK_CLASS_BLOCK} + ${_VK_STAGE_BASE}")
-
-            add_custom_command(
-                OUTPUT ${GENERATED_SOURCES_DIR}/${shaderOutput}
-                COMMAND ${CMAKE_COMMAND} -E make_directory ${GENERATED_SOURCES_DIR}/Shaders.vulkan
-                COMMAND ${DIRECTX_DXC_TOOL} -nologo -spirv -T ${SHADER_TARGET} -E main
-                        -fspv-target-env=${_VK_TARGET_ENV}
-                        -fvk-b-shift ${_VK_B_SHIFT} 0
-                        -fvk-t-shift ${_VK_T_SHIFT} 1
-                        -fvk-s-shift ${_VK_S_SHIFT} 1
-                        -fvk-u-shift ${_VK_U_SHIFT} 1
-                        -Fo ${GENERATED_SOURCES_DIR}/${shaderSource}.bin ${CMAKE_CURRENT_SOURCE_DIR}/${shaderSource}
-                COMMAND python ${CMAKE_CURRENT_SOURCE_DIR}/bin2h.cmd ${GENERATED_SOURCES_DIR}/${shaderSource}.bin ${GENERATED_SOURCES_DIR}/${shaderOutput}
-                MAIN_DEPENDENCY ${shaderSource}
-            )
-        endforeach()
+        ccp_add_vulkan_test_shaders(TrinityALTest_vulkan)
 
         set_target_properties(TrinityALTest_vulkan PROPERTIES FOLDER "Tests")
 
@@ -382,6 +392,40 @@ if(WIN32)
         add_test(NAME TrinityALTest_vulkan COMMAND TrinityALTest_vulkan)
     endif()
 
+elseif(ANDROID)
+    if(BUILD_VULKAN)
+        # The tests are a SHARED library on Android: android.app.NativeActivity
+        # loads it and TrinityALTest.cpp's ANativeActivity_onCreate is the entry
+        # point. Everywhere else they are an executable.
+        # Other platforms' window implementations, dropped by suffix. _iOS.mm joined
+        # the list when M3 merged in: the NDK toolchain has no Objective-C++, so an
+        # .mm file that reaches this target is a build error, not a no-op.
+        list(FILTER _SOURCES EXCLUDE REGEX "_Win32\\.cpp$|_Macos\\.mm$|_iOS\\.mm$|_Stub\\.cpp$")
+        list(APPEND _SOURCES
+            AndroidTestHost.h
+            AndroidBringup.cpp
+            RenderWindow_Android.cpp
+            WithWindowFixture_Android.cpp
+        )
+        ccp_add_library(TrinityALTest_vulkan SHARED ${_SOURCES})
+        target_link_libraries(TrinityALTest_vulkan PRIVATE TrinityAL_vulkan log android)
+        target_compile_definitions(TrinityALTest_vulkan PRIVATE TRINITY_PLATFORM=TRINITY_VULKAN)
+        set_shared_trinityaltest_properties(TrinityALTest_vulkan)
+
+        # ANativeActivity_onCreate is looked up with dlsym by the framework.
+        # ccp_add_library clears PREFIX; NativeActivity's loadLibrary("TrinityALTest_vulkan")
+        # looks for libTrinityALTest_vulkan.so, so restore the Android lib prefix here.
+        set_target_properties(TrinityALTest_vulkan PROPERTIES
+            CXX_VISIBILITY_PRESET default
+            PREFIX "lib"
+            LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/android-jniLibs/arm64-v8a)
+
+        # dxc is a HOST tool here; Task 2 put it in the closure for the host triplet.
+        find_program(DIRECTX_DXC_TOOL dxc
+            PATHS "${VCPKG_INSTALLED_DIR}/${VCPKG_HOST_TRIPLET}/tools/directx-dxc"
+            NO_DEFAULT_PATH REQUIRED)
+        ccp_add_vulkan_test_shaders(TrinityALTest_vulkan)
+    endif()
 endif()
 
 if(APPLE)

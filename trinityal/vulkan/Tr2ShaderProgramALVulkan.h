@@ -10,6 +10,8 @@
 #include "../include/Tr2ShaderAL.h"
 #include "../include/Tr2ResourceSetAL.h"
 
+class Tr2RenderContextAL;
+
 namespace TrinityALImpl
 {
 	class Tr2ShaderProgramAL : public Tr2DeviceResourceAL<Tr2ShaderProgramAL>
@@ -77,7 +79,10 @@ namespace TrinityALImpl
 		std::vector<RegisterInput> m_registerInput;
 		Tr2RegisterMapAL m_registerMap;
 
-		friend class Tr2RenderContextAL;
+		// ::-qualified: inside namespace TrinityALImpl an unqualified friend declaration
+		// names a new TrinityALImpl::Tr2RenderContextAL instead of the global class --
+		// MSVC resolved it to the global anyway, clang does not.
+		friend class ::Tr2RenderContextAL;
 		friend class TrinityALImpl::Tr2ResourceSetAL;
 	};
 }

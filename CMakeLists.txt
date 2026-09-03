@@ -36,6 +36,10 @@ else()
         # configuration that builds outside the CCP network -- which is the argument to
         # re-check against this list, not against this comment, before adding a third.
         option(BUILD_VULKAN "Build Vulkan." OFF)
+    elseif(ANDROID)
+        # The same backend as the Windows Vulkan configuration, minus the two
+        # Windows-only feature ports (see vcpkg.json's vulkan feature comment).
+        option(BUILD_VULKAN "Build Vulkan." OFF)
     elseif(APPLE)
         option(BUILD_METAL "Build Metal." OFF)
     endif()

@@ -9,6 +9,8 @@
 #include "../include/Tr2ShaderAL.h"
 
 
+class Tr2RenderContextAL;
+
 namespace TrinityALImpl
 {
 	class Tr2VertexLayoutAL : public Tr2DeviceResourceAL<Tr2VertexLayoutAL>
@@ -33,7 +35,9 @@ namespace TrinityALImpl
 		uint32_t m_streamCount;
 		bool m_isValid;
 
-		friend class Tr2RenderContextAL;
+		// ::-qualified for the same reason as the other impl headers: an unqualified
+		// friend inside namespace TrinityALImpl names a namespace-local phantom on clang.
+		friend class ::Tr2RenderContextAL;
 	};
 }
 

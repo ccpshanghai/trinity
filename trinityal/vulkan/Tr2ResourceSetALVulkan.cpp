@@ -48,7 +48,7 @@ namespace TrinityALImpl
 				nullptr, 
 				0, 
 				1,
-				program.m_program->m_poolSizes.size(),
+				uint32_t( program.m_program->m_poolSizes.size() ),
 				program.m_program->m_poolSizes.data()
 			};
 

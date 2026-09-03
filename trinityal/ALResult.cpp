@@ -11,6 +11,12 @@ bool g_requestDeviceDebugLayer = false;
 #endif
 ICrashReporter* TrinityALCrashes = nullptr;
 
+// Where the Vulkan backend persists its VkPipelineCache, or null for "do not". Null is
+// the default everywhere: a cache file is only useful to something that runs repeatedly
+// on one machine, and a host that wants it says so. The Android test host points this at
+// the app's files directory; PipelineCache.cpp points it at a directory of its own.
+const char* g_pipelineCacheDirectory = nullptr;
+
 
 namespace
 {
