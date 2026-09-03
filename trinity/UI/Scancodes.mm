@@ -10,6 +10,12 @@
 // Now, Carbon and blue have name conflicts, so we can't include Carbon.h along side StdAfx.h, hence all this
 // code is in a separate file set up to skip using PCH.
 #if __APPLE__
+#include <TargetConditionals.h>
+
+// Carbon, and the Text Input Sources API this file is built on, are macOS-only:
+// iOS has no keyboard layout to interrogate, so the three lookups degrade to
+// identity there -- see the #else below.
+#if TARGET_OS_OSX
 #import <Carbon/Carbon.h>
 #include <string>
 #include <cstdint>
@@ -266,4 +272,36 @@ std::string CreateStringForKey( CGKeyCode keyCode )
 }
 
 }
-#endif
+
+#else
+
+#include <cstdint>
+#include <string>
+
+// iOS: no Carbon, no Text Input Sources, no physical keyboard layout. The mapping
+// tables in Scancodes.cpp are shared by every Apple target and call these three,
+// so they exist as identity/empty rather than not at all -- GetAppKeyName then
+// falls back to the hardcoded label beside each key code.
+namespace KeyboardHelpers
+{
+
+uint16_t ApplyKeyboardLayout( uint16_t keyCode )
+{
+	return keyCode;
+}
+
+uint16_t UnapplyKeyboardLayout( uint16_t keyCode )
+{
+	return keyCode;
+}
+
+std::string CreateStringForKey( uint16_t )
+{
+	return "";
+}
+
+}
+
+#endif // TARGET_OS_OSX
+
+#endif // __APPLE__

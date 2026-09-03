@@ -337,6 +337,95 @@ const Be::ClassInfo* Tr2PrimaryRenderContext::ExposeToBlue()
 			GetBackBufferFormat,
 			"Returns the PixelFormat of the default back buffer" )
 
+		MAP_METHOD_AND_WRAP(
+			"GetNativeCommandList",
+			GetNativeCommandList,
+			"Returns this context's native command list as an integer.\n"
+			"\n"
+			"For hosting an immediate-mode UI (ImGui) inside Trinity's frame from\n"
+			"Python: the renderer ships as a CPython extension module with no C++\n"
+			"exports, so a C++ UI layer cannot link against it and the handle has to\n"
+			"cross through Python.\n"
+			"\n"
+			"This is NOT a liveness check. The DX12 backend allocates its command list\n"
+			"once and reuses it, so the value is non-zero outside the frame too —\n"
+			"measured identical before, during and after a pump. Record into it only\n"
+			"from inside a TriStepPythonCB callback, and gate on being there rather\n"
+			"than on this value.\n"
+			"\n"
+			"0 on every backend other than DX12, which is the one thing zero does mean." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeDevice",
+			GetNativeDevice,
+			"Returns the ID3D12Device as an integer, or 0 off DX12.\n"
+			"\n"
+			"Needed by ImGui's DX12 backend at init, and by the same route as the command\n"
+			"list: there is no C++ path off this engine." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeSrvHeap",
+			GetNativeSrvHeap,
+			"Returns the shader-visible SRV/UAV descriptor heap as an integer, 0 off DX12.\n"
+			"\n"
+			"This is the heap Trinity binds, exposed so a hosted UI can put that binding\n"
+			"back after it has drawn — not a heap to draw out of. The host brings its own\n"
+			"SRV heap for ImGui's font descriptor and binds it before drawing, and\n"
+			"SetDescriptorHeaps replaces the whole binding rather than adding to it, so\n"
+			"Trinity's heaps have to be restored afterwards. See GetNativeSamplerHeap." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeCommandQueue",
+			GetNativeCommandQueue,
+			"Returns the direct ID3D12CommandQueue as an integer, or 0 off DX12.\n"
+			"\n"
+			"ImGui's DX12 backend uploads its font texture through a command queue at\n"
+			"init; without one that upload has nowhere to go." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeSamplerHeap",
+			GetNativeSamplerHeap,
+			"Returns the shader-visible sampler descriptor heap as an integer, 0 off DX12.\n"
+			"\n"
+			"Needed to put the binding back after a hosted UI has drawn:\n"
+			"SetDescriptorHeaps replaces the whole binding rather than adding to it, so\n"
+			"restoring only the SRV heap leaves later draws without samplers." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeCommandBuffer",
+			GetNativeCommandBuffer,
+			"Returns the MTLCommandBuffer as an integer, or 0 off Metal.\n"
+			"\n"
+			"Metal's half of the pair GetNativeCommandList is on DX12: ImGui's Metal\n"
+			"backend renders with a command buffer plus the pass's open encoder, so a\n"
+			"hosted UI needs both.\n"
+			"\n"
+			"Like the command list, this is NOT a liveness check. Read it only from inside\n"
+			"a TriStepPythonCB callback, where the frame is what guarantees the buffer, and\n"
+			"gate on being there rather than on this value." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeRenderEncoder",
+			GetNativeRenderEncoder,
+			"Returns the pass's open MTLRenderCommandEncoder as an integer, 0 off Metal.\n"
+			"\n"
+			"The other half of GetNativeCommandBuffer, and the one with a real lifetime:\n"
+			"an encoder exists only between the pass beginning and ending, which is exactly\n"
+			"the TriStepPythonCB callback and nowhere else." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeBackBufferFormat",
+			GetNativeBackBufferFormat,
+			"Returns the back buffer's format as the GPU API spells it: an MTLPixelFormat\n"
+			"on Metal, a DXGI_FORMAT on the DX backends, 0 where there is no device.\n"
+			"\n"
+			"NOT GetBackBufferFormat, which returns Trinity's own PixelFormat enum. On the\n"
+			"DX backends those enums hold DXGI's values and the difference is invisible; on\n"
+			"Metal they are different numbers, and passing Trinity's to a Metal call aborts\n"
+			"the process in the validation layer rather than failing. Use this one for\n"
+			"anything that crosses into a graphics API -- a hosted UI's pipeline state --\n"
+			"and GetBackBufferFormat for anything comparing against Trinity's own formats." )
+
 	EXPOSURE_END()
 }
 

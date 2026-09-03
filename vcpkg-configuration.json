@@ -7,27 +7,33 @@
   "registries": [
     {
       "kind": "git",
-      "repository": "git@github.com:carbonengine/vcpkg-registry.git",
-      "baseline": "a83134805f3fa07da6a6add87c4b250d9778bfd1",
-      "packages": ["python3", 
-                   "carbon-*", 
-                   "tracy",
-                   "greenlet",
-                   "ccp-debug-info",
-                   "crashpad",
-                   "zlib",
-                   "re2c",
-                   "amd-fidelityfx",
-                   "amd-fidelityfx-cacao",
-                   "amd-fidelityfx-cas",
-                   "amd-fidelityfx-fsr",
-                   "fxc",
-                   "granny",
-                   "intel-xess",
-                   "nvidia-aftermath",
-                   "nvidia-streamline",
-                   "openvdb"
-          ]
+      "packages": [
+        "curl",
+        "imgui",
+        "python3",
+        "carbon-*",
+        "tracy",
+        "greenlet",
+        "mpdecimal",
+        "ccp-debug-info",
+        "crashpad",
+        "zlib",
+        "re2c",
+        "amd-fidelityfx",
+        "amd-fidelityfx-cacao",
+        "amd-fidelityfx-cas",
+        "amd-fidelityfx-fsr",
+        "fxc",
+        "granny",
+        "intel-xess",
+        "nvidia-aftermath",
+        "nvidia-streamline",
+        "openvdb",
+        "protobuf"
+      ],
+      "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
+      "reference": "mobile-exp",
+      "baseline": "a724d54a318b9a5cb38a1ea349a93c5ca83580af"
     }
   ]
 }

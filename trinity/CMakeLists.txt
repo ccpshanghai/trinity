@@ -8,6 +8,15 @@ endif()
 
 project(trinity VERSION 1.0.0)
 
+if(ANDROID)
+    # No trinity_* engine target on Android yet: this milestone carries the abstraction
+    # layer (TrinityAL_vulkan) to the NDK, and everything below -- the find_packages
+    # included -- is the engine's dependency surface, which vcpkg.json gates off android
+    # to match. Both lift together when the engine library follows the AL on-device.
+    return()
+endif()
+
+
 if(BUILD_FOR_PYTHON_2)
     find_package(libSquish REQUIRED)
     add_library(unofficial::libsquish::squish ALIAS SQUISH::SQUISH)
@@ -1074,6 +1083,9 @@ set(_SOURCES
     RenderJob/TriStepPopProjection.cpp
     RenderJob/TriStepPopProjection.h
     RenderJob/TriStepPopProjection_Blue.cpp
+    RenderJob/TriStepBeginRenderPass.cpp
+    RenderJob/TriStepBeginRenderPass.h
+    RenderJob/TriStepBeginRenderPass_Blue.cpp
     RenderJob/TriStepPopRenderTarget.cpp
     RenderJob/TriStepPopRenderTarget.h
     RenderJob/TriStepPopRenderTarget_Blue.cpp
@@ -1727,6 +1739,7 @@ set(_SOURCES
     TriDevice_Blue.cpp
     TriDeviceMetal.cpp
     TriDeviceStub.cpp
+    TriDeviceVulkan.cpp
     TriFloat.cpp
     TriFloat.h
     TriFloat_Blue.cpp
@@ -1811,6 +1824,30 @@ if(WITH_GRANNY)
     list(APPEND _SOURCES ${GRANNY_RELATED_SOURCES})
 endif()
 
+if(IOS)
+    #[[
+        On iOS the engine owns no OS window: the app shell creates it and hands the AL a
+        CAMetalLayer (M3 spec D5), so Tr2MainWindow's platform half has no iOS counterpart to
+        write -- an NSWindow, an NSCursor, a MacBook touch bar and AppKit's event pump are all
+        macOS-only. The cluster is self-contained (nothing outside UI/ names Tr2MainWindow or
+        Tr2MouseCursor), so it is left out of the iOS build rather than stubbed: trinity.Tr2MainWindow
+        and trinity.Tr2MouseCursor simply do not exist there, which is the truth. UI/Scancodes.*
+        stays -- trinity.cpp's AddScancodesToDict is the VK_* table, not a window.
+    ]]
+    list(REMOVE_ITEM _SOURCES
+        UI/TouchBar.h
+        UI/TouchBar.mm
+        UI/Tr2MainWindow.cpp
+        UI/Tr2MainWindow.h
+        UI/Tr2MainWindow_Blue.cpp
+        UI/Tr2MainWindow_MacOS.mm
+        UI/Tr2MainWindow_Windows.cpp
+        UI/Tr2MouseCursor.cpp
+        UI/Tr2MouseCursor.h
+        UI/Tr2MouseCursor_Blue.cpp
+        UI/Tr2MouseCursor_MacOS.mm
+    )
+endif()
 
 # Ensure that we have a sane file grouping for XCode and VS project files
 if(CMAKE_GENERATOR STREQUAL "Xcode" OR CMAKE_GENERATOR MATCHES "Visual Studio.*")
@@ -2017,6 +2054,20 @@ if(WIN32)
         set_shared_trinity_properties(${TRINITY_DX12_TARGET_NAME})
     endif()
 
+    if (BUILD_VULKAN)
+
+        set(TRINITY_VULKAN_TARGET_NAME trinity_vulkan)
+
+        ccp_add_library(${TRINITY_VULKAN_TARGET_NAME} SHARED)
+        target_compile_definitions(${TRINITY_VULKAN_TARGET_NAME}
+            PRIVATE
+                TRINITY_PLATFORM=TRINITY_VULKAN
+                TRINITYNAME=_trinity_vulkan
+        )
+        target_link_libraries(${TRINITY_VULKAN_TARGET_NAME} PRIVATE TrinityAL_vulkan)
+        set_shared_trinity_properties(${TRINITY_VULKAN_TARGET_NAME})
+    endif()
+
 elseif(APPLE)
     if(BUILD_METAL)
         enable_language(OBJCXX)
@@ -2034,14 +2085,27 @@ elseif(APPLE)
             PRIVATE
                 TrinityAL_metal
                 "-framework CoreFoundation"
-                "-framework Cocoa"
-                "-framework Carbon"
                 "-framework GameController"
                 "-framework Metal"
-                "-framework MetalFX"
                 "-framework IOKit"
                 "-framework QuartzCore"
         )
+        # Cocoa (AppKit) and Carbon are macOS-only frameworks, and so is everything here that
+        # reached for them: Tr2MainWindow's NSWindow, Tr2MouseCursor's NSCursor, the touch bar
+        # (all three left out of the iOS build above) and Scancodes.mm's Text Input Sources
+        # lookups (compiled out under TARGET_OS_OSX).
+        if(NOT IOS)
+            target_link_libraries(${TRINITY_METAL_TARGET_NAME}
+                PRIVATE
+                    "-framework Cocoa"
+                    "-framework Carbon"
+            )
+        endif()
+        # MetalFX.framework: the same absence trinityal/CMakeLists.txt records -- it ships for
+        # macOS and real iOS devices but for no iPhoneSimulator SDK.
+        if(NOT (IOS AND CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator"))
+            target_link_libraries(${TRINITY_METAL_TARGET_NAME} PRIVATE "-framework MetalFX")
+        endif()
 
         #[[
             FIXME because we're mixing objective-c++ and c++ headers in our precompiled headers then we need to force

@@ -55,11 +55,11 @@ public:
 									   size_t width,
 									   size_t height,
 									   size_t depth,
-									   uint32 mipMapCount,
+									   uint32_t mipMapCount,
 									   MTLStorageMode storageMode,
 									   MTLTextureUsage textureUsage,
-									   uint32 sampleCount = 1,
-									   uint32 arrayLength = 1 );
+									   uint32_t sampleCount = 1,
+									   uint32_t arrayLength = 1 );
 
 	id<MTLTexture> CreateSRGBViewOfMetalTexture( id<MTLTexture> texture );
 	id<MTLTexture> CreateUAVOfMetalTexture( id<MTLTexture> texture, uint32_t mipLevel );
@@ -80,11 +80,11 @@ public:
 	// Optional fields will contain info about the buffer
 	id<MTLBuffer> GetDummyBuffer( NSUInteger* outSize = nil, MTLVertexFormat* outFormat = nil );
 
-	bool IsResourceInUse( uint64 resourceLastAccessedFrame ) const;
+	bool IsResourceInUse( uint64_t resourceLastAccessedFrame ) const;
 	uint64_t GetRecordingFrameNumber() const;
 	uint64_t GetRenderedFrameNumber() const;
 
-	void BlitToDrawableAndPresent( id<MTLTexture> srcTexture, NSView* view );
+	void BlitToDrawableAndPresent( id<MTLTexture> srcTexture, CAMetalLayer* layer );
 
 	double GetGpuTimerRate() const;
 
@@ -116,7 +116,13 @@ private:
 	uint64_t m_recordingFrameNumber;
 	uint64_t m_renderedFrameNumber;
 	double m_gpuTimerRate;
-#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 110000
+	// __MAC_OS_X_VERSION_MAX_ALLOWED is a macOS SDK macro -- undefined entirely on
+	// iOS, where it previously read as 0 and fell into the "old SDK" NSUInteger
+	// branch below. But sampleTimestamps:gpuTimestamp: (the only consumer) takes
+	// MTLTimestamp* on every platform that has it at all, iOS included, so the
+	// old-SDK fallback was never actually iOS's type; guard on the macro's
+	// presence, not just its value, so iOS takes the same branch modern macOS does.
+#if !defined( __MAC_OS_X_VERSION_MAX_ALLOWED ) || __MAC_OS_X_VERSION_MAX_ALLOWED >= 110000
 	typedef MTLTimestamp DeviceTimestamp;
 #else
 	typedef NSUInteger DeviceTimestamp;

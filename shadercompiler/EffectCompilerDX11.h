@@ -17,6 +17,7 @@ public:
 		const char* minShaderVersion; // minimal shader version (5_0 by default)
 		bool addSpaces; // add space declarations to shader resources (dx12)
 		bool useStaticSamplers; // dx12
+		bool spirv = false; // vulkan: pass shaders through DXC -spirv; reflection from a DXIL sibling compile
 	};
 	bool CompileEffect( const char* source, size_t sourceLength, const std::vector<Macro>& defines, EffectData& result, const CompileOptions& compileOptions, class IWorkQueue* workQueue );
 
@@ -29,6 +30,8 @@ private:
 		CComPtr<ID3D10Blob> passResource;
 		CComPtr<IDxcBlob> libraryResource;
 		CComPtr<IDxcBlob> libraryReflection;
+		CComPtr<IDxcBlob> passSpirv; // -spirv object
+		CComPtr<IDxcBlob> passSpirvReflection; // DXC_OUT_REFLECTION from the DXIL sibling compile
 	};
 
 	std::unordered_map<std::string, std::shared_ptr<SyncData>> m_compiled;

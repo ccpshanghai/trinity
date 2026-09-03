@@ -290,6 +290,63 @@ private:
 	uint64_t m_frameNumber;
 
 public:
+	// See the DX12 backend for what this is for. There is no DX12 command list
+	// here, and 0 is the documented "not now" value.
+	uint64_t GetNativeCommandList() const
+	{
+		return 0;
+	}
+
+	// See the DX12 backend. No DX12 device or descriptor heap here.
+	uint64_t GetNativeDevice() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeSrvHeap() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeCommandQueue() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeSamplerHeap() const
+	{
+		return 0;
+	}
+
+	// Metal opens a render pass here; every other backend has an always-recording command
+	// list and there is nothing to do. Present on all of them so the shared TriStep that
+	// calls it compiles everywhere (spec 5: the frame graph asks, getters never drive).
+	ALResult BeginRenderPass()
+	{
+		return S_OK;
+	}
+
+	// No device, so no back buffer format. 0 is MTLPixelFormatInvalid and DXGI_FORMAT_UNKNOWN
+	// alike, so a caller checking for 0 is right on every backend (spec D3).
+	uint64_t GetNativeBackBufferFormat() const
+	{
+		return 0;
+	}
+
+	// Metal's two, so the Python-side handle table is the same shape on every backend
+	// (spec D3): a getter is named for what it returns, and returns 0 where the concept
+	// does not exist. ImGui's Metal backend renders with a command buffer plus the pass's
+	// open encoder; neither has a stub counterpart.
+	uint64_t GetNativeCommandBuffer() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeRenderEncoder() const
+	{
+		return 0;
+	}
+
 	TrinityALImpl::Tr2SamplerStateALFactory m_samplerStateFactory;
 };
 

@@ -6,6 +6,7 @@
 #include "StringTable.h"
 #include "EffectCompilerDX11.h"
 #include "EffectCompilerDX12.h"
+#include "EffectCompilerVulkan.h"
 #include "EffectCompilerMetal.h"
 #include "EffectData.h"
 #include "WorkQueue.h"
@@ -152,6 +153,9 @@ bool CompileShader( const CompileShaderArguments& arguments, IWorkQueue* workQue
 			case PLATFORM_DX12:
 				newCompiler.reset( new EffectCompilerDX12() );
 				break;
+			case PLATFORM_VULKAN:
+				newCompiler.reset( new EffectCompilerVulkan() );
+				break;
 #endif
 			case PLATFORM_METAL:
 				newCompiler.reset( new EffectCompilerMetal() );
@@ -212,6 +216,7 @@ void PrintUsage()
 	printf( "  /telemetry - Enable RAD Telemetry\n" );
 #endif
 	printf( "  /metal <path> - Path to Metal Developer Tools for Windows\n" );
+	printf( "  /metal_target <macosx|iphoneos|iphonesimulator> - Air target for the metallib (default macosx)\n" );
 	printf( "  /pdb <path> - Path to output debug files\n" );
 	printf( "input_file - Path to input HLSL file\n" );
 	printf( "output_file - Path to output binary file\n" );
@@ -344,6 +349,35 @@ bool ExtractCommandLineArguments( ProgramArguments& args, int argc, char* argv[]
 			if( i < argc )
 			{
 				g_metalToolsPath = argv[i];
+			}
+			else
+			{
+				return false;
+			}
+		}
+		else if( strcmp( argv[i], "/metal_target" ) == 0 )
+		{
+			// M3 §2.7: the SDK was hardcoded to macosx. Compile-global target for the whole
+			// compile-unit; the staging tool passes it once per metallib.
+			++i;
+			if( i < argc )
+			{
+				if( strcmp( argv[i], "iphoneos" ) == 0 )
+				{
+					g_metalTarget = MetalTarget::IPhoneOS;
+				}
+				else if( strcmp( argv[i], "iphonesimulator" ) == 0 )
+				{
+					g_metalTarget = MetalTarget::IPhoneSimulator;
+				}
+				else if( strcmp( argv[i], "macosx" ) == 0 )
+				{
+					g_metalTarget = MetalTarget::MacOSX;
+				}
+				else
+				{
+					return false;
+				}
 			}
 			else
 			{

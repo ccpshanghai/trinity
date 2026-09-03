@@ -277,6 +277,66 @@ private:
 	SharedConstantBuffer m_sharedConstantBuffers[Tr2RenderContextEnum::SHADER_TYPE_COUNT * CB_SLOT_COUNT];
 
 public:
+	// See the DX12 backend for what this is for. There is no DX12 command list
+	// here, and 0 is the documented "not now" value.
+	uint64_t GetNativeCommandList() const
+	{
+		return 0;
+	}
+
+	// See the DX12 backend. No DX12 device or descriptor heap here.
+	uint64_t GetNativeDevice() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeSrvHeap() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeCommandQueue() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeSamplerHeap() const
+	{
+		return 0;
+	}
+
+	// Metal opens a render pass here; every other backend has an always-recording command
+	// list and there is nothing to do. Present on all of them so the shared TriStep that
+	// calls it compiles everywhere (spec 5: the frame graph asks, getters never drive).
+	ALResult BeginRenderPass()
+	{
+		return S_OK;
+	}
+
+	// The back buffer's format as the GPU API spells it. On the DX backends
+	// Tr2RenderContextEnum::PixelFormat already holds DXGI's values, so this is
+	// GetBackBufferFormat() widened -- and the getter exists precisely so a caller does not
+	// have to know that, because on Metal the two are different numbers and passing the wrong
+	// one aborts the process inside Metal's validation layer.
+	uint64_t GetNativeBackBufferFormat() const
+	{
+		return static_cast<uint64_t>( GetBackBufferFormat() );
+	}
+
+	// Metal's two, so the Python-side handle table is the same shape on every backend
+	// (spec D3): a getter is named for what it returns, and returns 0 where the concept
+	// does not exist. ImGui's Metal backend renders with a command buffer plus the pass's
+	// open encoder; neither has a DX11 counterpart.
+	uint64_t GetNativeCommandBuffer() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeRenderEncoder() const
+	{
+		return 0;
+	}
+
 	uint32_t ComputeVertexCount( uint32_t primitiveCount ) const throw();
 
 	CComPtr<ID3D11Device> m_secondaryDevice11;

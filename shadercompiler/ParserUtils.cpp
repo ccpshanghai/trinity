@@ -896,6 +896,70 @@ void AssignRegisters( ASTNode* root, int32_t stage, const std::vector<GlobalInpu
 	AssignRegisters( root, InputStageType( stage ), registers, globalInput, globalInputRegisters );
 }
 
+bool ForceVulkanRegisterSpaces( ASTNode* root, VulkanRegisterSpaceReject& reject )
+{
+	if( !root )
+	{
+		return true;
+	}
+	switch( root->GetNodeType() )
+	{
+	case NT_CBUFFER:
+	case NT_NAME_DECLARATION:
+		if( root->GetSymbol() && root->GetSymbol()->used )
+		{
+			for( auto& r : root->GetSymbol()->registerSpecifier )
+			{
+				switch( r.second.registerType )
+				{
+				case 't':
+				case 's':
+				case 'u':
+					// space is the descriptor set, and the ABI has exactly two: constant
+					// buffers alone in set 0, every t/s/u in set 1. So only space0 and
+					// space1 can be honoured -- space0 by this rewrite, space1 because it
+					// is already right.
+					//
+					// Anything above that has to be refused rather than moved. The
+					// isArray branch of AssignRegisters gives each array declaration a
+					// space of its own out of a counter seeded with 0, and allocates it a
+					// single register slot -- so a stage's second resource array arrives
+					// here on space2, and rewriting it to space1 would overlap the first
+					// array's range, which dxc rejects outright. Passing it through was
+					// worse than either: -fvk-{t,s,u}-shift names space 1 and nothing
+					// else, so the shift silently did not apply and the module ended up
+					// on a set the AL never builds, with no diagnostic anywhere.
+					if( r.second.space > 1 )
+					{
+						reject.name = root->GetSymbol()->name;
+						reject.space = r.second.space;
+						reject.registerType = r.second.registerType;
+						return false;
+					}
+					r.second.space = 1;
+					break;
+				default:
+					break;
+				}
+			}
+		}
+		break;
+	case NT_PROGRAM:
+	case NT_VAR_DECLARATION_LIST:
+		for( size_t i = 0; i < root->GetChildrenCount(); ++i )
+		{
+			if( !ForceVulkanRegisterSpaces( root->GetChild( i ), reject ) )
+			{
+				return false;
+			}
+		}
+		break;
+	default:
+		break;
+	}
+	return true;
+}
+
 int GetNodeOrder( ASTNode* t )
 {
 	switch( t->GetNodeType() )
