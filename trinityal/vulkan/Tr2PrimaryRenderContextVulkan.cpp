@@ -21,6 +21,9 @@
 // way that one is: null means the pipeline cache is not persisted.
 extern const char* g_pipelineCacheDirectory;
 
+// Written by CreateDevice below, read by the round-trip test. Also in ALResult.cpp.
+extern size_t g_pipelineCacheBytesLoaded;
+
 namespace
 {
 	// Ten seconds. Long enough that no amount of validation-layer overhead reaches it --
@@ -819,6 +822,9 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	{
 		VkPipelineCacheCreateInfo cacheCreateInfo = { VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
 		std::vector<uint8_t> blob;
+		// Cleared here rather than in the loaded branch: every path out of this block has
+		// to leave a truthful value, including the ones that never look at the disk.
+		g_pipelineCacheBytesLoaded = 0;
 		if( g_pipelineCacheDirectory )
 		{
 			FILE* file = fopen( PipelineCachePath( m_physicalDeviceProperties ).c_str(), "rb" );
@@ -859,6 +865,12 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		if( vkCreatePipelineCache( m_device, &cacheCreateInfo, nullptr, &m_pipelineCache ) != VK_SUCCESS )
 		{
 			m_pipelineCache = VK_NULL_HANDLE;
+		}
+		else
+		{
+			// Only now are the bytes load-bearing: a cache the driver refused to create
+			// started this device from nothing, whatever came off the disk.
+			g_pipelineCacheBytesLoaded = cacheCreateInfo.initialDataSize;
 		}
 	}
 	m_surface = surface;
