@@ -1679,5 +1679,21 @@ ALResult Tr2RenderContextAL::UseAccelerationStructure( Tr2RtTopLevelAcceleration
     return S_OK;
 }
 
+uint64_t Tr2RenderContextAL::GetNativeBackBufferFormat() const
+{
+	// 0 is VK_FORMAT_UNDEFINED and the stub's "no device, no format" alike, so a caller
+	// checking for 0 is right on every backend (spec D3).
+	if( !m_owner )
+	{
+		return 0;
+	}
+	const Tr2RenderContextEnum::PixelFormat format = m_owner->GetBackBufferFormat();
+	if( format == Tr2RenderContextEnum::PIXEL_FORMAT_UNKNOWN )
+	{
+		return 0;
+	}
+	return static_cast<uint64_t>( TrinityALImpl::GetVulkanFormat( format ) );
+}
+
 
 #endif

@@ -385,3 +385,21 @@ TEST_F( RenderContext, NativeCommandBufferExistsAfterEndScene )
 	EXPECT_NE( 0u, renderContext->GetNativeCommandBuffer() );
 }
 #endif
+
+#if ( TRINITY_PLATFORM == TRINITY_VULKAN )
+#include "vulkan/UtilitiesVulkan.h"
+
+TEST_F( RenderContext, NativeBackBufferFormatIsTheSwapchainsVkFormat )
+{
+	ENSURE_GPU_OR_SKIP
+	// ui_init's 'color_format' on Vulkan: the VkFormat the swapchain images carry, which is
+	// what ImGui_ImplVulkan's pipeline must declare (spec §7.3). 0 would mean "no device".
+	const uint64_t native = renderContext->GetNativeBackBufferFormat();
+	EXPECT_NE( 0u, native );
+	EXPECT_EQ( static_cast<uint64_t>( TrinityALImpl::GetVulkanFormat( renderContext->GetBackBufferFormat() ) ), native );
+	// The Metal-only encoder and the DX12-only heaps stay 0 here (spec D3).
+	EXPECT_EQ( 0u, renderContext->GetNativeRenderEncoder() );
+	EXPECT_EQ( 0u, renderContext->GetNativeSrvHeap() );
+	EXPECT_EQ( 0u, renderContext->GetNativeSamplerHeap() );
+}
+#endif

@@ -370,7 +370,23 @@ public:
 		return 0;
 	}
 
-    
+	// Metal's two, and the same contract as the five above (spec D3): named for what they
+	// return, 0 where the concept does not exist. The encoder never exists here. The command
+	// buffer does -- Task 6 of the M6 second-half plan fills it in, with the two side effects
+	// spec §7.4 requires -- so this 0 is a placeholder for exactly one plan task.
+	uint64_t GetNativeCommandBuffer() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeRenderEncoder() const
+	{
+		return 0;
+	}
+
+	// The swapchain's VkFormat, or 0 (VK_FORMAT_UNDEFINED) with no device. Out-of-line for
+	// dx12's reason: it reads the owner, which this header cannot dereference.
+	uint64_t GetNativeBackBufferFormat() const;
 
 	Tr2UpscalingAL::Result EnableUpscaling( Tr2UpscalingAL::Technique tech, Tr2UpscalingAL::Setting setting, bool framegeneration, uint32_t adapter )
 	{
