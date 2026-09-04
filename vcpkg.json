@@ -182,18 +182,23 @@
     },
     "vulkan": {
       "description": "Create Vulkan targets",
-      "$comment": "On Android vulkan-loader is not built: the loader is the OS's libvulkan (NDK link library, never a built port). directx-dxc is a host tool for the test-shader step on every configuration that builds tests; it must not set platform:windows, because vcpkg evaluates that expression against the target triplet and would drop the host tool from the Android closure.",
+      "$comment": "On Android vulkan-loader is not built: the loader is the OS's libvulkan (NDK link library, never a built port). This feature is the engine library's Vulkan closure and carries no host tool, because the engine library builds no shaders -- every shader that needs dxc belongs to the AL test suite. So dxc sits in the separate vulkan-tests feature, which the root CMakeLists requests only when BUILD_VULKAN and BUILD_TESTING are both on. It cannot instead stay here behind a platform expression: vcpkg evaluates a dependency's platform against the TARGET triplet, so \"the host is not osx\" is inexpressible -- an Android target would keep the host tool in its closure and resolve it against VCPKG_HOST_TRIPLET, which on the Mac is arm64-osx-release, and directx-dxc's supports excludes osx.",
       "supports": "(windows & x64) | android",
+      "dependencies": [
+        {
+          "name": "vulkan-loader",
+          "platform": "windows",
+          "version>=": "1.4.304.1"
+        }
+      ]
+    },
+    "vulkan-tests": {
+      "description": "The Vulkan AL test suite's host tool: dxc compiles the test shaders to SPIR-V at build time",
       "dependencies": [
         {
           "name": "directx-dxc",
           "host": true,
           "version>=": "2023-03-01#2"
-        },
-        {
-          "name": "vulkan-loader",
-          "platform": "windows",
-          "version>=": "1.4.304.1"
         }
       ]
     },
