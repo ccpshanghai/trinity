@@ -17,6 +17,26 @@
 #include <string>
 #include <vector>
 
+#ifndef _WIN32
+// fopen_s is the spelling the rest of the codebase uses for file I/O, because MSVC
+// deprecates fopen (C4996) and this target now compiles under -WX. It is Annex K,
+// which MSVC has and bionic does not, so non-Windows gets the same inline shim
+// shadercompiler/stdafx.h:270 already provides for its own non-Windows builds. int
+// rather than errno_t, because that typedef is MSVC's too. Leaves *stream null on
+// failure like the real one, so the callers below still just test the pointer.
+#include <cerrno>
+static int fopen_s( FILE** stream, const char* fileName, const char* mode )
+{
+	*stream = fopen( fileName, mode );
+	if( !*stream )
+	{
+		const int error = errno;
+		return error ? error : -1;
+	}
+	return 0;
+}
+#endif
+
 // Defined in ALResult.cpp beside g_requestDeviceDebugLayer, and declared here the same
 // way that one is: null means the pipeline cache is not persisted.
 extern const char* g_pipelineCacheDirectory;
@@ -827,7 +847,8 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		g_pipelineCacheBytesLoaded = 0;
 		if( g_pipelineCacheDirectory )
 		{
-			FILE* file = fopen( PipelineCachePath( m_physicalDeviceProperties ).c_str(), "rb" );
+			FILE* file = nullptr;
+			fopen_s( &file, PipelineCachePath( m_physicalDeviceProperties ).c_str(), "rb" );
 			if( file )
 			{
 				fseek( file, 0, SEEK_END );
@@ -1028,7 +1049,8 @@ void Tr2PrimaryRenderContextAL::Destroy()
 				if( vkGetPipelineCacheData( m_device, m_pipelineCache, &size, blob.data() ) == VK_SUCCESS )
 				{
 					const std::string path = PipelineCachePath( m_physicalDeviceProperties );
-					FILE* file = fopen( path.c_str(), "wb" );
+					FILE* file = nullptr;
+					fopen_s( &file, path.c_str(), "wb" );
 					if( file )
 					{
 						fwrite( blob.data(), 1, size, file );

@@ -176,7 +176,7 @@ namespace TrinityALImpl
 					Tr2VulkanBindingABI::BindingNumber( it->registerType, it->registerIndex, shaders[i].GetType() ),
 					GetDescriptorType( it->registerType ),
 					1,
-					info.stage,
+					static_cast<VkShaderStageFlags>( info.stage ),
 					nullptr
 				};
 
@@ -190,7 +190,7 @@ namespace TrinityALImpl
 					resourceSetBindings.push_back( binding );
 				}
 
-				RegisterInput ri = { binding.binding, shaders[i].GetType(), it->registerIndex, it->registerType };
+				RegisterInput ri = { binding.binding, static_cast<uint32_t>( shaders[i].GetType() ), it->registerIndex, it->registerType };
 				m_registerInput.push_back( ri );
 			}
 		}

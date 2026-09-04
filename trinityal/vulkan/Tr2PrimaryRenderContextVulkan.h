@@ -320,7 +320,11 @@ public:
 	// needs the texture impl's full type.
 	VkImageView GetDummyImageViewVulkan() const;
 
-	std::map<unsigned, VkPipeline> m_pipelines;
+	// size_t, not unsigned: the key is the size_t composite of two GetHash() results
+	// built in Tr2RenderContextVulkan.cpp's SetPipeline, so a 32-bit key truncated it
+	// on both insert and lookup -- a collision between two different pipelines, not
+	// just a warning. Only ever iterated for destruction, never serialized.
+	std::map<size_t, VkPipeline> m_pipelines;
 };
 
 #endif
