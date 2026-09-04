@@ -383,7 +383,17 @@ if(WIN32)
         # want.) The dx12 block above only assigns DIRECTX_DXC_TOOL by hand on the
         # BUILD_FOR_PYTHON_2 path, where the port is the older `dxc` package that
         # does not set it.
-        find_package(directx-dxc CONFIG REQUIRED)
+        #
+        # Guarded because directx-dxc-config.cmake declares its two imported targets
+        # with a bare add_library and no if(TARGET) of its own, so a second
+        # find_package in this same directory scope is a hard error. The dx12 block
+        # above makes exactly that second call once BUILD_DX12 and BUILD_VULKAN are
+        # both ON -- which is the desktop configuration since M6. DIRECTX_DXC_TOOL is
+        # a CACHE PATH, so whichever block resolves the package first leaves it set
+        # for the other.
+        if(NOT TARGET Microsoft::DirectXShaderCompiler)
+            find_package(directx-dxc CONFIG REQUIRED)
+        endif()
         ccp_add_vulkan_test_shaders(TrinityALTest_vulkan)
 
         set_target_properties(TrinityALTest_vulkan PROPERTIES FOLDER "Tests")
