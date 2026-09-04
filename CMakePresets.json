@@ -83,12 +83,47 @@
     },
     {
       "name": "arm64-android-vulkan",
-      "displayName": "M6 Android Vulkan (Release, AL tests)",
-      "inherits": "arm64-android-release",
+      "displayName": "M6 Android Vulkan (Release, AL tests) -- POSIX host",
+      "inherits": "arm64-android-release-darwin",
       "generator": "Ninja",
+      "binaryDir": "${sourceDir}/.cmake-build-arm64-android-vulkan",
       "cacheVariables": {
         "BUILD_VULKAN": "ON",
         "BUILD_TESTING": "ON",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "OFF"
+      }
+    },
+    {
+      "name": "arm64-android-vulkan-engine",
+      "displayName": "M6 Android Vulkan engine library (_trinity_vulkan.so) -- POSIX host",
+      "inherits": "arm64-android-release-darwin",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "BUILD_VULKAN": "ON",
+        "BUILD_TESTING": "OFF",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "OFF"
+      }
+    },
+    {
+      "name": "arm64-android-vulkan-linux",
+      "displayName": "M6 Android Vulkan (Release, AL tests) -- Linux host (WSL2 fallback)",
+      "inherits": "arm64-android-release-linux",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/.cmake-build-arm64-android-vulkan-linux",
+      "cacheVariables": {
+        "BUILD_VULKAN": "ON",
+        "BUILD_TESTING": "ON",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "OFF"
+      }
+    },
+    {
+      "name": "arm64-android-vulkan-engine-linux",
+      "displayName": "M6 Android Vulkan engine library (_trinity_vulkan.so) -- Linux host (WSL2 fallback)",
+      "inherits": "arm64-android-release-linux",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "BUILD_VULKAN": "ON",
+        "BUILD_TESTING": "OFF",
         "CMAKE_COMPILE_WARNING_AS_ERROR": "OFF"
       }
     },
@@ -268,7 +303,7 @@
     },
     {
       "name": "arm64-android",
-      "inherits": "windows",
+      "inherits": "common",
       "cacheVariables": {
         "CMAKE_SYSTEM_NAME": "Android",
         "CMAKE_SYSTEM_VERSION": "31",
@@ -278,22 +313,34 @@
       "hidden": true
     },
     {
-      "name": "arm64-android-release",
+      "name": "arm64-android-release-darwin",
       "inherits": "arm64-android",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "VCPKG_TARGET_TRIPLET": "arm64-android-release",
-        "VCPKG_HOST_TRIPLET": "x64-windows-release"
-      }
+        "VCPKG_HOST_TRIPLET": "arm64-osx-release"
+      },
+      "hidden": true
     },
     {
-      "name": "arm64-android-debug",
+      "name": "arm64-android-release-linux",
       "inherits": "arm64-android",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "VCPKG_TARGET_TRIPLET": "arm64-android-debug",
-        "VCPKG_HOST_TRIPLET": "x64-windows-release"
-      }
+        "CMAKE_BUILD_TYPE": "Release",
+        "VCPKG_TARGET_TRIPLET": "arm64-android-release",
+        "VCPKG_HOST_TRIPLET": "x64-linux-release"
+      },
+      "hidden": true
     },
     {
       "name": "arm64-ios",

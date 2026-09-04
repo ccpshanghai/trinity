@@ -8,13 +8,6 @@ endif()
 
 project(trinity VERSION 1.0.0)
 
-if(ANDROID)
-    # No trinity_* engine target on Android yet: this milestone carries the abstraction
-    # layer (TrinityAL_vulkan) to the NDK, and everything below -- the find_packages
-    # included -- is the engine's dependency surface, which vcpkg.json gates off android
-    # to match. Both lift together when the engine library follows the AL on-device.
-    return()
-endif()
 
 
 if(BUILD_FOR_PYTHON_2)
@@ -1824,15 +1817,17 @@ if(WITH_GRANNY)
     list(APPEND _SOURCES ${GRANNY_RELATED_SOURCES})
 endif()
 
-if(IOS)
+if(IOS OR ANDROID)
     #[[
-        On iOS the engine owns no OS window: the app shell creates it and hands the AL a
-        CAMetalLayer (M3 spec D5), so Tr2MainWindow's platform half has no iOS counterpart to
-        write -- an NSWindow, an NSCursor, a MacBook touch bar and AppKit's event pump are all
-        macOS-only. The cluster is self-contained (nothing outside UI/ names Tr2MainWindow or
-        Tr2MouseCursor), so it is left out of the iOS build rather than stubbed: trinity.Tr2MainWindow
-        and trinity.Tr2MouseCursor simply do not exist there, which is the truth. UI/Scancodes.*
-        stays -- trinity.cpp's AddScancodesToDict is the VK_* table, not a window.
+        On iOS and Android the engine owns no OS window: the app shell creates it and hands the
+        AL a CAMetalLayer or an ANativeWindow (M3 spec D5, M6 second-half spec D3), so
+        Tr2MainWindow's platform half has no iOS or Android counterpart to write -- an NSWindow,
+        an NSCursor, a MacBook touch bar and AppKit's event pump are all macOS-only. The cluster
+        is self-contained (nothing outside UI/ names Tr2MainWindow or Tr2MouseCursor), so it is
+        left out of both builds rather than stubbed: trinity.Tr2MainWindow and trinity.Tr2MouseCursor
+        simply do not exist there, which is the truth. UI/Scancodes.* stays on iOS -- trinity.cpp's
+        AddScancodesToDict is the VK_* table, not a window; Android drops UI/Scancodes.mm below
+        instead, since NDK clang would compile the Objective-C++ file and fail.
     ]]
     list(REMOVE_ITEM _SOURCES
         UI/TouchBar.h
@@ -1847,6 +1842,11 @@ if(IOS)
         UI/Tr2MouseCursor_Blue.cpp
         UI/Tr2MouseCursor_MacOS.mm
     )
+    if(ANDROID)
+        # macOS Text Input Sources, and an .mm file: NDK clang would compile it as
+        # Objective-C++ and fail. trinity.cpp's AddScancodesToDict gets an empty table.
+        list(REMOVE_ITEM _SOURCES UI/Scancodes.mm)
+    endif()
 endif()
 
 # Ensure that we have a sane file grouping for XCode and VS project files
@@ -2133,6 +2133,31 @@ elseif(APPLE)
                 SUFFIX ".so"
                 BUILD_WITH_INSTALL_RPATH TRUE
                 INSTALL_RPATH "@executable_path/."
+        )
+    endif()
+elseif(ANDROID)
+    if(BUILD_VULKAN)
+        set(TRINITY_VULKAN_TARGET_NAME trinity_vulkan)
+        ccp_add_library(${TRINITY_VULKAN_TARGET_NAME} SHARED)
+        target_compile_definitions(${TRINITY_VULKAN_TARGET_NAME}
+            PRIVATE
+                TRINITY_PLATFORM=TRINITY_VULKAN
+                TRINITYNAME=_trinity_vulkan
+        )
+        set_shared_trinity_properties(${TRINITY_VULKAN_TARGET_NAME})
+        target_link_libraries(${TRINITY_VULKAN_TARGET_NAME}
+            PRIVATE
+                TrinityAL_vulkan
+                log
+                android
+        )
+        # A CPython extension module: _trinity_vulkan.so, no lib prefix, .so suffix -- the
+        # spelling the APPLE branch gives _trinity_metal, and the name app/backend.py imports.
+        set_target_properties(${TRINITY_VULKAN_TARGET_NAME}
+            PROPERTIES
+                OUTPUT_NAME _trinity_vulkan
+                PREFIX ""
+                SUFFIX ".so"
         )
     endif()
 else()

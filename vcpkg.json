@@ -14,23 +14,19 @@
     },
     {
       "name": "libsquish",
-      "version>=": "1.15",
-      "platform": "!android"
+      "version>=": "1.15"
     },
     {
       "name": "amd-fidelityfx-cas",
-      "version>=": "1.0",
-      "platform": "!android"
+      "version>=": "1.0"
     },
     {
       "name": "amd-fidelityfx-cacao",
-      "version>=": "1.2",
-      "platform": "!android"
+      "version>=": "1.2"
     },
     {
       "name": "tbb",
-      "version>=": "2021.5.0#1",
-      "platform": "!android"
+      "version>=": "2021.5.0#1"
     },
     {
       "name": "vulkan-headers",
@@ -42,53 +38,43 @@
     },
     {
       "name": "carbon-trinityaudioapi",
-      "version>=": "2.0.3",
-      "platform": "!android"
+      "version>=": "2.0.3"
     },
     {
       "name": "freetype",
-      "version>=": "2.13.3",
-      "platform": "!android"
+      "version>=": "2.13.3"
     },
     {
       "name": "carbon-pdmprotowrapper",
-      "version>=": "2.0.4",
-      "platform": "!android"
+      "version>=": "2.0.4"
     },
     {
       "name": "carbon-blue",
-      "version>=": "6.0.0",
-      "platform": "!android"
+      "version>=": "6.0.0"
     },
     {
       "name": "carbon-math",
-      "version>=": "1.2.1",
-      "platform": "!android"
+      "version>=": "1.2.1"
     },
     {
       "name": "carbon-parser",
-      "version>=": "1.0.2",
-      "platform": "!android"
+      "version>=": "1.0.2"
     },
     {
       "name": "libpng",
-      "version>=": "1.6.37",
-      "platform": "!android"
+      "version>=": "1.6.37"
     },
     {
       "name": "libjpeg-turbo",
-      "version>=": "2.1.2",
-      "platform": "!android"
+      "version>=": "2.1.2"
     },
     {
       "name": "zlib-ng",
-      "version>=": "2.2.5",
-      "platform": "!android"
+      "version>=": "2.2.5"
     },
     {
       "name": "carbon-mesh",
-      "version>=": "1.0.1",
-      "platform": "!android"
+      "version>=": "1.0.1"
     }
   ],
   "features": {
@@ -252,5 +238,5 @@
       "version": "3.3.0"
     }
   ],
-  "$comment-android": "The !android gates keep the engine's dependencies out of the Android closure. They lift together with trinity/CMakeLists.txt's ANDROID early-return, in the second half, and on a POSIX host -- those three are one decision, not three. M6 Task 12 measured why: python3 cannot cross-build for android from a Windows host (CPython's pybuilddir.txt step runs sysconfig --generate-posix-vars, which a Windows build python cannot satisfy), and a POSIX-built artifact cannot be restored on Windows either, because vcpkg's ABI hash embeds host identity by design -- four measured causes in docs/spikes/artifacts/m6-python3-abi-probe-20260901.txt. carbon-blue pulls python3, so ungating it makes the arm64-android tree unconfigurable on Windows, which is the host every device run in M6's first half was driven from. The spec asked for the gates and the early-return to be split into two independent facts; the probe result couples them again, and this comment says so rather than pretending otherwise. The port set itself IS proven for arm64-android -- 137/137 installed, 114 android packages, zero failures, on the POSIX host, logged in docs/spikes/artifacts/m6-fullset-vcpkg-20260901.txt with the manifest recipe beside it. amd-fidelityfx-cas and amd-fidelityfx-cacao are the two gates that never lift: upscaling is a non-goal (M12-if-ever, mobile-only, the Vulkan backend keeps the stub) and both are Windows-shader-stack ports."
+  "$comment-android": "The Android tree is configured only on POSIX hosts. carbon-blue depends on python3, and CPython cannot be cross-built from Windows (its pybuilddir step runs a POSIX-only sysconfig on the build python); a POSIX-built cache entry cannot be restored on Windows either, because vcpkg's ABI hash embeds the host (docs/spikes/artifacts/m6-python3-abi-probe-20260901.txt, four causes). So there are no android platform gates here: the engine's whole dependency set is in the Android closure, and Windows is not an Android build host (M6 second-half spec D3). amd-fidelityfx-cas and -cacao are header-only copies and the engine cannot compile without them (Tr2SSAO.cpp includes ffx_cacao.cpp) -- the first-half note that they never lift was mistaken about what they are."
 }
