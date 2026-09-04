@@ -8,8 +8,6 @@ endif()
 
 project(trinity VERSION 1.0.0)
 
-
-
 if(BUILD_FOR_PYTHON_2)
     find_package(libSquish REQUIRED)
     add_library(unofficial::libsquish::squish ALIAS SQUISH::SQUISH)
@@ -1843,8 +1841,9 @@ if(IOS OR ANDROID)
         UI/Tr2MouseCursor_MacOS.mm
     )
     if(ANDROID)
-        # macOS Text Input Sources, and an .mm file: NDK clang would compile it as
-        # Objective-C++ and fail. trinity.cpp's AddScancodesToDict gets an empty table.
+        # An .mm file: NDK clang would compile it as Objective-C++ and fail. Its whole body
+        # is #if __APPLE__ (the macOS Text Input Sources half of KeyboardHelpers);
+        # UI/Scancodes.cpp carries the non-Apple definitions.
         list(REMOVE_ITEM _SOURCES UI/Scancodes.mm)
     endif()
 endif()

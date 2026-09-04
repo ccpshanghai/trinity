@@ -338,7 +338,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "VCPKG_TARGET_TRIPLET": "arm64-android-release",
-        "VCPKG_HOST_TRIPLET": "x64-linux-release"
+        "VCPKG_HOST_TRIPLET": "x64-linux"
       },
       "hidden": true
     },
