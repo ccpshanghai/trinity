@@ -1,0 +1,25 @@
+{
+  "$comment": "Overlay of the default registry's directx-dxc, adding an osx target. Upstream's supports expression is (windows & !arm32 & !uwp & !xbox) | (linux & x64), because DXC publishes release binaries for Windows and Linux only -- there is no macOS archive to download. That makes dxc unobtainable as a HOST tool on a Mac, which is where the Android AL test suite is configured from: its test shaders are compiled to SPIR-V at build time by dxc running on the host, resolved against VCPKG_HOST_TRIPLET (arm64-osx-release). This overlay adds an osx branch that installs a dxc built from source on the machine, found through DXC_ROOT. Everything the Windows and Linux branches do is untouched, so those two configurations still install the exact same upstream archives, and the port-version bump above upstream's is what makes vcpkg treat this as a distinct package. Delete this overlay the day upstream ships macOS binaries.",
+  "name": "directx-dxc",
+  "version-date": "2026-02-20",
+  "port-version": 1,
+  "description": "DirectX Shader Compiler (LLVM/Clang)",
+  "homepage": "https://github.com/microsoft/DirectXShaderCompiler",
+  "documentation": "https://github.com/microsoft/DirectXShaderCompiler/wiki",
+  "license": null,
+  "supports": "(windows & !arm32 & !uwp & !xbox) | (linux & x64) | osx",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    },
+    {
+      "name": "zlib",
+      "platform": "linux & !static"
+    }
+  ]
+}

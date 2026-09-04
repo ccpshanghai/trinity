@@ -13,7 +13,8 @@
       "cacheVariables": {
         "CMAKE_COMPILE_WARNING_AS_ERROR": "ON",
         "VCPKG_USE_HOST_TOOLS": "ON",
-        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vendor/github.com/carbonengine/vcpkg-registry/triplets"
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vendor/github.com/carbonengine/vcpkg-registry/triplets",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/overlay-ports"
       },
       "environment": {
         "PATH_TO_VCPKG_ROOT": "${sourceDir}/vendor/github.com/microsoft/vcpkg"
