@@ -154,8 +154,16 @@ private:
 // because EXPECT_FATAL_FAILURE's statement may not name the caller's locals.
 void FailFatallyUnderTheDirectoryGuard()
 {
-	const ScopedPipelineCacheDirectory scopedDirectory( TestCacheDirectory() );
-	ASSERT_NE( g_pipelineCacheDirectory, nullptr );
+	// Captured before the guard is constructed: TestCacheDirectory() reads
+	// g_pipelineCacheDirectory itself, so asking it again inside the scope would answer
+	// with a path *under* the one the guard has just installed.
+	const std::string expected = TestCacheDirectory().string();
+	const ScopedPipelineCacheDirectory scopedDirectory( expected );
+	// The path, not merely non-null. On Android the global is already non-null before the
+	// guard runs -- the host points it at the app's files directory -- so a constructor
+	// that forgot to install m_directory would satisfy a null check there and this test
+	// would pass while proving nothing.
+	ASSERT_STREQ( g_pipelineCacheDirectory, expected.c_str() );
 	FAIL() << "deliberate: standing in for the cold CreateDevice failing";
 }
 
@@ -184,13 +192,29 @@ TEST_F( PipelineCache, RoundTripsThroughDisk )
 
 	const ScopedPipelineCacheDirectory scopedDirectory( dir );
 
+	// Declared before the device guard below, so it runs after it: the blob this test's
+	// last device writes has to land in the directory before the directory is removed.
+	ON_BLOCK_EXIT( [&] { std::filesystem::remove_all( dir, ec ); } );
+
+	// The device dies inside the directory guard's scope by construction, not because a
+	// trailing statement happens to sit in the right place -- Fix 2's whole lesson is that
+	// a cleanup step written as a trailing statement is skipped by a fatal assertion, and
+	// "destroy the device while this test's directory is still the configured one" is a
+	// cleanup step. On a scope guard it runs in the same order, for the same reason, on
+	// every way out of the body including the fatal one, so this device's cache write can
+	// never land wherever the host had pointed the backend before. Destroy() is idempotent,
+	// which is what makes the cold leg's own Destroy() below cost nothing here.
+	ON_BLOCK_EXIT( [&] { renderContext->Destroy(); } );
+
 	Tr2PresentParametersAL presentParameters;
 	SetUpPresentParameters( presentParameters );
 
 	// Cold: nothing on disk yet. Asserted, not assumed -- if this leg started warm off a
 	// blob a previous run left behind, the warm leg below proves nothing.
 	ASSERT_HRESULT_SUCCEEDED( renderContext->CreateDevice( 0, WithWindow::GetWindowHandle(), presentParameters ) );
-	EXPECT_EQ( g_pipelineCacheBytesLoaded, 0u ) << "the cold leg started from a blob";
+	// Fatal, per the comment above: a cold leg that started warm makes the warm leg's
+	// equality below pass while proving nothing, so there is nothing left worth running.
+	ASSERT_EQ( g_pipelineCacheBytesLoaded, 0u ) << "the cold leg started from a blob";
 	DrawOneTriangle( *renderContext );
 	renderContext->Destroy();
 
@@ -213,17 +237,22 @@ TEST_F( PipelineCache, RoundTripsThroughDisk )
 	// check, was never found because the read path built a different filename than the
 	// write path, or was handed to a driver that refused it, because the whole cache block
 	// is non-fatal by design. So assert what the device actually started from, against the
-	// file the cold leg wrote. This is the "accepted" half of spec 8's round trip; the size
-	// check above only ever spoke for the cold half.
+	// file the cold leg wrote.
+	//
+	// Exactly what that equality proves: the read path opened the same file the write path
+	// wrote, read all of it, its header matched this device, and vkCreatePipelineCache took
+	// the blob without failing. It does not prove that one pipeline was reused from it --
+	// vkCreatePipelineCache is allowed to accept a blob and then quietly ignore every entry
+	// (see the comment above PipelineCachePath in Tr2PrimaryRenderContextVulkan.cpp), and
+	// Vulkan exposes no in-API count of entries, hits or compiles to assert instead. Reuse
+	// has only one oracle, the device-side timing measurement in the milestone doc; this
+	// test's job is the round trip -- written, found, matched, accepted by the driver.
 	EXPECT_HRESULT_SUCCEEDED( renderContext->CreateDevice( 0, WithWindow::GetWindowHandle(), presentParameters ) );
 	EXPECT_EQ( (uintmax_t)g_pipelineCacheBytesLoaded, coldBytes )
 		<< "the warm device did not start from the " << coldBytes << "-byte blob the cold run wrote";
 
-	// Destroyed while the directory above is still the configured one, so this device's own
-	// cache write lands there instead of wherever the host had pointed the backend before.
-	renderContext->Destroy();
-
-	std::filesystem::remove_all( dir, ec );
+	// No trailing Destroy() and no trailing remove_all: both are on the scope guards at the
+	// top of the body, which run in that order on every exit path.
 }
 
 // The failure path of the test above, which that test cannot exercise about itself: the
