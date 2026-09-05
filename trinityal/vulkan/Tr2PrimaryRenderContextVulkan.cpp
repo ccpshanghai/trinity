@@ -20,21 +20,13 @@
 #ifndef _WIN32
 // fopen_s is the spelling the rest of the codebase uses for file I/O, because MSVC
 // deprecates fopen (C4996) and this target now compiles under -WX. It is Annex K,
-// which MSVC has and bionic does not, so non-Windows gets the same inline shim
-// shadercompiler/stdafx.h:270 already provides for its own non-Windows builds. int
-// rather than errno_t, because that typedef is MSVC's too. Leaves *stream null on
-// failure like the real one, so the callers below still just test the pointer.
-#include <cerrno>
-static int fopen_s( FILE** stream, const char* fileName, const char* mode )
-{
-	*stream = fopen( fileName, mode );
-	if( !*stream )
-	{
-		const int error = errno;
-		return error ? error : -1;
-	}
-	return 0;
-}
+// which MSVC has and bionic does not. carbon-core fills that gap for every non-MSVC
+// build: CcpSecureCrt.h declares `int fopen_s( FILE**, const char*, const char* )`
+// (and the other *_s spellings) and CcpCore, which this target links PUBLIC,
+// defines them. A local static shim here collided with that declaration the first
+// time this file met NDK clang (static-after-non-static, then ambiguous calls), so
+// the header is the shim. Leaves *stream null on failure like the real one.
+#include <CcpSecureCrt.h>
 #endif
 
 // Defined in ALResult.cpp beside g_requestDeviceDebugLayer, and declared here the same
