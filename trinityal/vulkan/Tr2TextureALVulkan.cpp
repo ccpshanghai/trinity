@@ -344,7 +344,12 @@ namespace TrinityALImpl
 						rowPitch ? initialData[index].m_sysMemSlicePitch / rowPitch * blockHeight : 0,   // uint32_t                   bufferImageHeight
 						{ VK_IMAGE_ASPECT_COLOR_BIT, j, i, 1 },
 						{ 0, 0, 0 },
-						{ desc.GetMipWidth( j ), desc.GetMipHeight( j ), desc.GetMipDepth( j ) }
+						// TEXELS of the destination mip, which for a compressed format's 2x2
+						// and 1x1 tail is NOT what GetMipWidth reports -- see
+						// GetCopyTexelExtentVulkan. bufferRowLength/bufferImageHeight above
+						// stay block-rounded, because those really are counted in whole
+						// blocks; only the destination extent is a texel count.
+						GetCopyTexelExtentVulkan( desc, j )
 					};
 					copyInfo.push_back( buffer_image_copy_info );
 					size += initialData[index].m_sysMemSlicePitch * desc.GetMipDepth( j );
@@ -649,9 +654,13 @@ namespace TrinityALImpl
 				offset.x = 0;
 				offset.y = 0;
 				offset.z = 0;
-				extent.width = desc.GetMipWidth( mip );
-				extent.height = desc.GetMipHeight( mip );
-				extent.depth = desc.GetMipDepth( mip );
+				// Texels, not block-rounded storage size: this extent goes straight into a
+				// VkBufferImageCopy for both directions of the map (vkCmdCopyImageToBuffer in
+				// MapForReading, vkCmdCopyBufferToImage in Unmap), and the tail mips of a
+				// compressed texture are the case GetMipWidth answers a different question
+				// about. `pitch` and `size` below are unaffected -- they go through
+				// GetBlockCount, and ceil(2/4) and ceil(4/4) are both one block.
+				extent = GetCopyTexelExtentVulkan( desc, mip );
 			}
 
 			const bool isCompressed = Tr2RenderContextEnum::IsCompressedFormat( desc.GetFormat() );

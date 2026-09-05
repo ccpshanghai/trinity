@@ -121,4 +121,24 @@ namespace TrinityALImpl
 	// hardcode VK_IMAGE_ASPECT_COLOR_BIT, which is why nothing depth-shaped worked.
 	VkImageAspectFlags GetAspectMaskVulkan( VkFormat format );
 
+	// The texel extent of one mip, for `VkBufferImageCopy::imageExtent`.
+	//
+	// NOT BitmapDimensions::GetMipWidth/GetMipHeight, which is the trap this exists to close.
+	// Those round a compressed mip UP to a whole block, because they answer the *storage*
+	// question -- a 2x2 BC2 mip really does occupy one whole 4x4 block, and DX12 wants exactly
+	// that number in D3D12_SUBRESOURCE_FOOTPRINT. Vulkan wants the other number: imageExtent is
+	// counted in texels of the destination subresource and must fit inside it
+	// (VUID-vkCmdCopyBufferToImage-imageSubresource-07971/07972). A copy region is allowed to
+	// end on a partial block precisely when it ends at the mip's edge, which is the case here.
+	//
+	// Passing the block-rounded value cost 168 validation errors in a single shippreview frame
+	// -- every one of them on the 2x2 and 1x1 tail mips of the scene's BC2 cube maps, which is
+	// why nothing smaller than a cube map with a full mip chain ever showed it.
+	//
+	// Depth comes straight from GetMipDepth: it is never block-aligned (no 3D block format is
+	// mapped here) and is 1 for everything that is not TEX_TYPE_3D.
+	//
+	// Returns a zero extent for a level past the chain, keeping GetMipWidth's own convention.
+	VkExtent3D GetCopyTexelExtentVulkan( const Tr2BitmapDimensions& desc, uint32_t level );
+
 }

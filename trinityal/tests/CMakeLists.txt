@@ -43,6 +43,9 @@ set(_SOURCES
     SwapChain.cpp
     SwapChainResizing.cpp
     Texture.cpp
+    # Vulkan-only in its entirety, the same way ShaderBindingABI.cpp is. Asserts the texel
+    # extent rule that VkBufferImageCopy imposes on block-compressed mips; no GPU involved.
+    TextureCopyExtentVulkan.cpp
     TextureSubresource.cpp
     TrinityALTest.cpp
     VertexDefinition.cpp

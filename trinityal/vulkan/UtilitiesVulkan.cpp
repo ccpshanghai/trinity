@@ -285,6 +285,28 @@ namespace TrinityALImpl
 		}
 	}
 
+	VkExtent3D GetCopyTexelExtentVulkan( const Tr2BitmapDimensions& desc, uint32_t level )
+	{
+		// GetMipWidth's own out-of-range convention, so a caller looping on GetMipCount rather
+		// than GetTrueMipCount still gets a zero it can test rather than a whole block.
+		if( level >= desc.GetTrueMipCount() )
+		{
+			return { 0, 0, 0 };
+		}
+
+		// `>> level` with a floor of 1, which is the mip chain's definition and exactly what
+		// GetMipWidth already does for an uncompressed format -- so this is the same number
+		// there, and only the compressed case changes. Deliberately NOT routed through
+		// GetMipWidth with a divide-back-down: the block-rounding loses the information, and
+		// `min( GetMipWidth( level ), width >> level )` would be the same expression wearing
+		// a disguise.
+		return {
+			std::max( desc.GetWidth() >> level, 1u ),
+			std::max( desc.GetHeight() >> level, 1u ),
+			desc.GetMipDepth( level )
+		};
+	}
+
 	ALResult CreateImage( VkImage& image, VkDeviceMemory& memory, const Tr2BitmapDimensions& desc, const Tr2MsaaDesc& msaa, VkImageUsageFlags usage, VkImageCreateFlags flags, VkMemoryPropertyFlagBits memoryProperty, Tr2PrimaryRenderContextAL& renderContext )
 	{
 		image = VK_NULL_HANDLE;
