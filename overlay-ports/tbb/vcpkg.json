@@ -1,0 +1,30 @@
+{
+  "$comment": "Overlay of the default registry's tbb 2022.1.0 (git-tree 2d847cfd) with ONE change: hwloc is no longer a default feature. Upstream lists it under default-features with platform `!static & !osx & !uwp`, so it lies dormant wherever tbb is static and wakes up wherever a triplet makes tbb shared -- which arm64-android-release.cmake does, for the file-scope tbb::global_control in trinity/TriDevice.cpp. hwloc 2.11.2 then joins the Android closure and fails to link its lstopo utility (undefined setJNIEnv / output_android: its Android build expects the hwloc JNI app around it). A top-level `default-features: false` on trinity's own tbb dependency does not help, because openvdb and carbon-audio also depend on tbb and their edges still request the defaults (verified: the plan still read tbb[core,hwloc]). TBBBind -- NUMA / hybrid-CPU binding -- is nothing this engine or a phone uses, so the feature stays available but nobody asks for it; Windows and iOS lose the same never-used feature and rebuild tbb once. Second change, Android only: android-lld-undefined-version.patch appends -Wl,--undefined-version to TBB_LIB_LINK_FLAGS, because the lin64 .def version scripts keep a local: list of names that no longer exist (ITT_DoOneTimeInitialization, the libirc mem-ops helpers) and the NDK r27 lld defaults to --no-undefined-version plus --fatal-warnings, which fails libtbbmalloc.so's link (a static tbb never runs a version script, which is why the first half never saw it; upstream 2022.3.0 still carries the same list). port-version 1 makes vcpkg treat this as a distinct package. Delete this overlay when the manifest can pin tbb without hwloc for transitive dependents, or when the default-registry baseline moves past a tbb that fixes hwloc on Android.",
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "tbb",
+  "version": "2022.1.0",
+  "port-version": 1,
+  "description": "Intel's Threading Building Blocks.",
+  "homepage": "https://github.com/oneapi-src/oneTBB",
+  "license": "Apache-2.0",
+  "supports": "!uwp",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ],
+  "features": {
+    "hwloc": {
+      "description": "Builds TBB with TBBBind support for Hybrid CPUs or NUMA architectures.",
+      "supports": "!static & !osx & !uwp",
+      "dependencies": [
+        "hwloc"
+      ]
+    }
+  }
+}
