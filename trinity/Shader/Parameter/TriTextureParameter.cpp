@@ -84,12 +84,14 @@ void TriTextureParameter::UsedWithScreenSize( float screenSize, float worldRadiu
 				if( resolutionChange > 0 )
 				{
 					// quickly calculate log2 of resolutionChange, which gives us the required LOD
-#if __APPLE__
-					requestedLod = 31 - (uint32_t)__builtin_clz( resolutionChange );
-#else
+#ifdef _MSC_VER
 					unsigned long reverse;
 					_BitScanReverse( &reverse, resolutionChange );
 					requestedLod = reverse;
+#else
+					// Every non-MSVC compiler here (Apple clang, NDK clang) has the GCC builtin;
+					// the guard used to say __APPLE__ and left Android on the MSVC intrinsic.
+					requestedLod = 31 - (uint32_t)__builtin_clz( resolutionChange );
 #endif
 				}
 			}

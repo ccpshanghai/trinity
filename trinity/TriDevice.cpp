@@ -961,8 +961,12 @@ PyObject* TriDevice::PythonCreateDeviceHelper( PyObject* args, DeviceScreenType 
 #if __APPLE__
 	void* hwndAsPtr = (void*)hwnd;
 	bool OK = CreateSimpleDevice( ( __bridge Tr2WindowHandle )( hwndAsPtr ), width, height, screenType, Tr2RenderContextEnum::PresentInterval( presentInterval ), adapter );
-#else
+#elif defined( _WIN32 )
 	bool OK = CreateSimpleDevice( reinterpret_cast<Tr2WindowHandle>( hwnd ), width, height, screenType, Tr2RenderContextEnum::PresentInterval( presentInterval ), adapter );
+#else
+	// Tr2WindowHandle is uintptr_t off Windows and Apple (trinityal/StdAfx.h), so this is
+	// an integer-to-integer conversion: reinterpret_cast is not allowed between those.
+	bool OK = CreateSimpleDevice( static_cast<Tr2WindowHandle>( hwnd ), width, height, screenType, Tr2RenderContextEnum::PresentInterval( presentInterval ), adapter );
 #endif
 
 	if( !OK )
