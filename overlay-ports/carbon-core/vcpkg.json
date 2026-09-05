@@ -1,0 +1,49 @@
+{
+  "$comment": "STAND-IN for a registry bump, delete when carbon-core 3.0.1#7 lands there. The registry's carbon-core (3.0.1#6, ccpshanghai/core 275603a7) verbatim plus one patch: CcpMacros.h's BLUEIMPORT grants default visibility on every GCC/Clang target, not only __APPLE__. Without it Android's blue.so exports none of blue's own API (built under CMAKE_CXX_VISIBILITY_PRESET hidden), and _trinity_vulkan.so cannot link: undefined BeOS, BeResMan, BlueAsyncRes::* ... The same change is committed on ccpshanghai/core branch m6-android-blue-exports; once it is pushed and the registry's port moves its REF there as 3.0.1#7, this overlay is redundant and must go. port-version 7 here so vcpkg treats it as the newer package and rebuilds blue and every other carbon-* dependent against it.",
+  "name": "carbon-core",
+  "version-semver": "3.0.1",
+  "port-version": 7,
+  "description": "Provides generic low-level functionality and cross-platform abstractions for system calls",
+  "homepage": "https://github.com/carbonengine/core",
+  "license": "MIT",
+  "supports": "(windows & x64) | osx | (android & arm64) | (ios & arm64)",
+  "dependencies": [
+    {
+      "name": "ccp-debug-info",
+      "host": true,
+      "version>=": "1.0.1"
+    },
+    {
+      "name": "tracy",
+      "features": [
+        "delayed-init",
+        "fibers",
+        "manual-lifetime",
+        "no-callstack",
+        "no-crash-handler",
+        "on-demand"
+      ],
+      "version>=": "0.13.1#1"
+    },
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ],
+  "features": {
+    "documentation": {
+      "description": "Build Doxygen & Sphinx documentation",
+      "dependencies": [
+        {
+          "name": "python3",
+          "host": true,
+          "version>=": "3.12.9#1"
+        }
+      ]
+    }
+  }
+}
