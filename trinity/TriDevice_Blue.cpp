@@ -343,6 +343,16 @@ const Be::ClassInfo* TriDevice::ExposeToBlue()
 			PyCreateWindowlessDevice,
 			"Create a simple device with no swap chain.\n"
 			":rtype: None" )
+		MAP_METHOD_AS_METHOD(
+			"SetOutputWindow",
+			PySetOutputWindow,
+			"Hand the device a new native window handle and rebuild presentation on it.\n"
+			"For Android's surface loss: the process gets a NEW ANativeWindow after\n"
+			"backgrounding, and the Vulkan AL recreates its surface when the handle changes.\n"
+			"Elsewhere the handle never changes and this is a same-handle rebuild.\n"
+			":param handle: the native window handle, as _carbonshell.native_handle() returns it\n"
+			":type handle: int\n"
+			":rtype: bool -- True on success; the device keeps its previous window on failure" )
 #if BLUE_WITH_PYTHON
 		MAP_METHOD_AND_WRAP(
 			"Render",
