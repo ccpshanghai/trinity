@@ -464,6 +464,7 @@ Tr2PrimaryRenderContextAL::Tr2PrimaryRenderContextAL()
 	m_physicalDevice( VK_NULL_HANDLE ),
 	m_graphicsQueue( VK_NULL_HANDLE ),
 	m_presentQueue( VK_NULL_HANDLE ),
+	m_graphicsQueueFamilyIndex( 0xffffffffu ),
 	m_surface( VK_NULL_HANDLE ),
 	m_swapChain( VK_NULL_HANDLE ),
 	m_commandPool( VK_NULL_HANDLE ),
@@ -801,6 +802,8 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 
 	vkGetDeviceQueue( device, graphicsQueue, 0, &m_graphicsQueue );
 	vkGetDeviceQueue( device, presentQueue, 0, &m_presentQueue );
+	// Beside the queue it describes, because that is the only place both are in scope.
+	m_graphicsQueueFamilyIndex = graphicsQueue;
 
 	m_device = device;
 	m_physicalDevice = physicalDevice.device;
@@ -1067,6 +1070,7 @@ void Tr2PrimaryRenderContextAL::Destroy()
 	}
 	m_graphicsQueue = VK_NULL_HANDLE;
 	m_presentQueue = VK_NULL_HANDLE;
+	m_graphicsQueueFamilyIndex = 0xffffffffu;
 	m_physicalDevice = VK_NULL_HANDLE;
 }
 

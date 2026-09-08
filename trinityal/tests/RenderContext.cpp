@@ -388,6 +388,142 @@ TEST_F( RenderContext, NativeCommandBufferExistsAfterEndScene )
 
 #if ( TRINITY_PLATFORM == TRINITY_VULKAN )
 #include "vulkan/UtilitiesVulkan.h"
+#include <vulkan/vulkan.h>
+
+namespace
+{
+
+// The two shaders the side-effect test below needs, in the shape Rendering.cpp uses them.
+// Duplicated rather than shared because the alternative is a test-support header for two
+// functions, and Shaders.vulkan already carries both .psh/.vsh for this target.
+ALResult CreatePositionOnlyVSForScissorTest( Tr2ShaderAL& shader, Tr2PrimaryRenderContextAL& renderContext )
+{
+	uint8_t bytecode[] = {
+#include INCLUDE_SHADER_CODE( PositionOnly.vs )
+	};
+
+	auto input = Tr2ShaderSignatureAL().Add( Tr2VertexDefinition::POSITION, 0, 0, Tr2ShaderPipelineInputAL::FLOAT, 3 );
+
+	return shader.Create( VERTEX_SHADER, bytecode, input, "", renderContext );
+}
+
+ALResult CreateConstantColorPSForScissorTest( Tr2ShaderAL& shader, Tr2PrimaryRenderContextAL& renderContext )
+{
+	uint8_t bytecode[] = {
+#include INCLUDE_SHADER_CODE( ConstantColor.ps )
+	};
+
+	return shader.Create( PIXEL_SHADER, bytecode, Tr2ShaderSignatureAL(), "", renderContext );
+}
+
+}
+
+TEST_F( RenderContext, VulkanNativeHandlesExistFromCreation )
+{
+	ENSURE_GPU_OR_SKIP
+	// Everything ImGui_ImplVulkan_InitInfo needs, and the moment it needs it: ui_init runs
+	// before the first frame, so none of these may depend on a scene being open (spec §7.3).
+	EXPECT_NE( 0u, renderContext->GetNativeInstance() );
+	EXPECT_NE( 0u, renderContext->GetNativePhysicalDevice() );
+	EXPECT_NE( 0u, renderContext->GetNativeDevice() );
+	EXPECT_NE( 0u, renderContext->GetNativeCommandQueue() );
+	// A family index, not a handle: 0 is legal, so the assertion is that it is a plausible
+	// index rather than that it is non-zero. 64 is far above any device's family count and
+	// well below the 0xffffffff the AL uses internally for "none", so this catches the
+	// mistake of passing that through (which would abort ImGui's init inside the driver).
+	EXPECT_LT( renderContext->GetNativeQueueFamily(), 64u );
+	// The DX12 names have no Vulkan meaning and stay 0 (spec D3).
+	EXPECT_EQ( 0u, renderContext->GetNativeCommandList() );
+	EXPECT_EQ( 0u, renderContext->GetNativeSrvHeap() );
+	EXPECT_EQ( 0u, renderContext->GetNativeSamplerHeap() );
+	EXPECT_EQ( 0u, renderContext->GetNativeRenderEncoder() );
+}
+
+TEST_F( RenderContext, NativeCommandBufferOpensTheScopeAndSurvivesForeignScissor )
+{
+	ENSURE_GPU_OR_SKIP
+	// Spec §7.4, both side effects, in the arrangement that makes them fail if absent.
+	//
+	// A 16x16 target cleared black; then a "hosted UI" (this test) takes the command buffer
+	// and leaves a 1x1 scissor behind; then the AL draws a full-screen white quad. The far
+	// corner must be white. If GetNativeCommandBuffer did not open a rendering scope, the
+	// vkCmdSetScissor below is recorded outside one and the validation layer says so. If it
+	// did not mark the state dirty, the AL's draw inherits the 1x1 scissor, paints one pixel
+	// and leaves the corner black -- with no validation error at all, which is why this is a
+	// pixel assertion and not a state one.
+	Tr2ShaderAL vs;
+	ASSERT_HRESULT_SUCCEEDED( CreatePositionOnlyVSForScissorTest( vs, *renderContext ) );
+	Tr2ShaderAL ps;
+	ASSERT_HRESULT_SUCCEEDED( CreateConstantColorPSForScissorTest( ps, *renderContext ) );
+	Tr2ShaderAL shaders[] = { vs, ps };
+	Tr2ShaderProgramAL sp;
+	ASSERT_HRESULT_SUCCEEDED( sp.Create( shaders, 2, *renderContext ) );
+
+	// A strip that covers the whole target in clip space.
+	float vertices[] = {
+		-1.0f, -1.0f, 0.0f,
+		-1.0f,  1.0f, 0.0f,
+		 1.0f, -1.0f, 0.0f,
+		 1.0f,  1.0f, 0.0f,
+	};
+	const uint32_t vbStride = 3 * sizeof( float );
+	Tr2BufferAL vb;
+	ASSERT_HRESULT_SUCCEEDED( vb.Create( vbStride, sizeof( vertices ) / vbStride,
+		Tr2GpuUsage::VERTEX_BUFFER, Tr2CpuUsage::NONE, vertices, *renderContext ) );
+
+	Tr2VertexDefinition definition;
+	definition.Add( Tr2VertexDefinition::FLOAT32_3, Tr2VertexDefinition::POSITION );
+	Tr2VertexLayoutAL vertexLayout;
+	ASSERT_HRESULT_SUCCEEDED( vertexLayout.Create( definition, *renderContext ) );
+
+	Tr2TextureAL rt;
+	ASSERT_HRESULT_SUCCEEDED( rt.Create( Tr2BitmapDimensions( 16, 16, 1, PIXEL_FORMAT_B8G8R8A8_UNORM ),
+		Tr2GpuUsage::RENDER_TARGET, Tr2CpuUsage::READ, *renderContext ) );
+
+	ASSERT_HRESULT_SUCCEEDED( renderContext->BeginScene() );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->PushRenderTarget() );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetRenderTarget( rt ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->PushDepthStencil() );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetDepthStencil( Tr2TextureAL() ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetViewport( Tr2Viewport( 16, 16 ) ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->Clear( CLEARFLAGS_TARGET, 0xff000000, 1.0f ) );
+
+	const uint64_t handle = renderContext->GetNativeCommandBuffer();
+	ASSERT_NE( 0u, handle );
+	VkRect2D tiny = { { 0, 0 }, { 1, 1 } };
+	vkCmdSetScissor( reinterpret_cast<VkCommandBuffer>( static_cast<uintptr_t>( handle ) ), 0, 1, &tiny );
+
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetStreamSource( 0, vb, 0, vbStride ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetVertexLayout( vertexLayout ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetShaderProgram( sp ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetRenderState( RS_ZENABLE, 0 ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetRenderState( RS_ALPHABLENDENABLE, 0 ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetRenderState( RS_CULLMODE, CULLMODE_NONE ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetTopology( TOP_TRIANGLE_STRIP ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->DrawPrimitive( 0, 2 ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->PopDepthStencil() );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->PopRenderTarget() );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->EndScene() );
+
+	const void* data = nullptr;
+	uint32_t pitch = 0;
+	ASSERT_HRESULT_SUCCEEDED( rt.MapForReading( Tr2TextureSubresource( 0 ), data, pitch, *renderContext ) );
+	ASSERT_NE( nullptr, data );
+	// BGRA, and ConstantColor.ps writes float4( 1, 0, 0, 1 ) -- red, not white. The
+	// discriminator is the red channel: the clear is black, so a corner that stayed black
+	// means the quad never covered it, which on this arrangement can only be the foreign
+	// 1x1 scissor still in force. Asserted on all four channels because "red" is also what
+	// says the draw itself was correct rather than something happening to be non-zero.
+	const uint8_t* corner = static_cast<const uint8_t*>( data ) + 15 * pitch + 15 * 4;
+	EXPECT_EQ( 0xff, corner[2] ) << "the far corner is not red: the AL's draw inherited the foreign 1x1 scissor";
+	EXPECT_EQ( 0x00, corner[0] );
+	EXPECT_EQ( 0x00, corner[1] );
+	EXPECT_EQ( 0xff, corner[3] );
+	rt.UnmapForReading( *renderContext );
+
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetStreamSource( 0, Tr2BufferAL(), 0, 0 ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetShaderProgram( Tr2ShaderProgramAL() ) );
+}
 
 TEST_F( RenderContext, NativeBackBufferFormatIsTheSwapchainsVkFormat )
 {

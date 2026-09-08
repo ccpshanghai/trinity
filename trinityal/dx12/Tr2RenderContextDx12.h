@@ -336,6 +336,24 @@ public:
 		return 0;
 	}
 
+	// Vulkan's three, and the contract every accessor here shares (spec D3): named for what
+	// they return, 0 where the concept does not exist. None of these three exists on this
+	// backend.
+	uint64_t GetNativeInstance() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativePhysicalDevice() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeQueueFamily() const
+	{
+		return 0;
+	}
+
 	// The other four — device, command queue, SRV heap, sampler heap — live on
 	// Tr2PrimaryRenderContextAL rather than here: that is where m_device, m_commandQueue and
 	// the two GetGlobal*Heap accessors are, and at this point in the header

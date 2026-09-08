@@ -282,6 +282,20 @@ public:
 	VkPhysicalDevice m_physicalDevice;
 	VkPhysicalDeviceProperties m_physicalDeviceProperties;
 
+	// The graphics queue itself, for the same caller and the same reason -- m_graphicsQueue
+	// sits above the public: line with the swapchain internals, and widening that whole
+	// section to expose one handle would be the wrong trade.
+	VkQueue GetGraphicsQueueVulkan() const
+	{
+		return m_graphicsQueue;
+	}
+
+	// The queue family m_graphicsQueue came out of. Kept because a hosted UI needs it and
+	// nothing else does: ImGui_ImplVulkan_InitInfo wants the family index beside the queue,
+	// and Vulkan offers no way to ask a VkQueue which family it belongs to. 0xffffffff is
+	// "no device", matching FindPresentableQueues' own not-found value.
+	uint32_t m_graphicsQueueFamilyIndex;
+
 	// What vkCreateDevice was actually given, which is the intersection of what this
 	// backend wants and what the device reports -- so a caller that needs a feature asks
 	// here rather than assuming it got what it asked for.

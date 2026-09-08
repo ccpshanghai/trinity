@@ -230,14 +230,15 @@ public:
 
 	}
 
-	// Helper function to clear the current primary backbuffer, depth and/or stencil.
-	// Metal opens a render pass here; every other backend has an always-recording command
-	// list and there is nothing to do. Present on all of them so the shared TriStep that calls
-	// it compiles everywhere (spec 5: the frame graph asks, getters never drive).
-	ALResult BeginRenderPass()
-	{
-		return S_OK;
-	}
+	// Metal opens a render pass here, and so does this backend: with dynamic rendering a
+	// Vulkan command buffer is always recording but a *rendering scope* is not, and only a
+	// scope makes a vkCmdDraw legal. The comment this replaces said "every other backend has
+	// an always-recording command list and there is nothing to do", which was true of dx11
+	// and dx12 and never of Vulkan -- the step existed for Metal and quietly did nothing
+	// here. Out-of-line because it calls SetPass (spec 5: the frame graph asks, getters
+	// never drive -- GetNativeCommandBuffer also guarantees the scope, because a caller that
+	// forgets the step is exactly who needs the guarantee).
+	ALResult BeginRenderPass();
 
 	ALResult Clear(
 		uint32_t clearFlags,
@@ -341,16 +342,12 @@ public:
 		return false;
 	}
 
-	// The five native-handle accessors the Python exposure maps unconditionally, for
-	// hosting an ImGui backend inside Trinity's frame. They are DX12 handles; there is no
-	// DX12 anything here, and 0 is the documented "not available" value -- exactly as on
-	// dx11, metal and the stub.
+	// The native-handle accessors the Python exposure maps unconditionally, for hosting an
+	// ImGui backend inside Trinity's frame. Two of the five DX12-shaped ones have a Vulkan
+	// answer and now give it; the heaps and the command list do not exist here, and 0 is the
+	// documented "not available" value -- exactly as on dx11, metal and the stub (spec D3: a
+	// getter is named for what it returns).
 	uint64_t GetNativeCommandList() const
-	{
-		return 0;
-	}
-
-	uint64_t GetNativeDevice() const
 	{
 		return 0;
 	}
@@ -360,24 +357,43 @@ public:
 		return 0;
 	}
 
-	uint64_t GetNativeCommandQueue() const
-	{
-		return 0;
-	}
-
 	uint64_t GetNativeSamplerHeap() const
 	{
 		return 0;
 	}
 
-	// Metal's two, and the same contract as the five above (spec D3): named for what they
-	// return, 0 where the concept does not exist. The encoder never exists here. The command
-	// buffer does -- Task 6 of the M6 second-half plan fills it in, with the two side effects
-	// spec §7.4 requires -- so this 0 is a placeholder for exactly one plan task.
-	uint64_t GetNativeCommandBuffer() const
-	{
-		return 0;
-	}
+	// Out-of-line, for GetNativeBackBufferFormat's reason: they read the owner, which this
+	// header cannot dereference.
+	uint64_t GetNativeDevice() const;         // VkDevice
+	uint64_t GetNativeCommandQueue() const;   // the graphics VkQueue
+
+	// Vulkan-only, and 0 on every other backend. ImGui_ImplVulkan_InitInfo needs all three
+	// beside the device and the queue, and none of them has a DX12 or Metal counterpart to
+	// borrow a name from.
+	uint64_t GetNativeInstance() const;       // VkInstance
+	uint64_t GetNativePhysicalDevice() const; // VkPhysicalDevice
+	uint64_t GetNativeQueueFamily() const;    // the graphics queue's family index
+
+	// Metal's two names. The encoder never exists here.
+	//
+	// GetNativeCommandBuffer is NOT a read-only getter on this backend and is not const
+	// (spec §7.4). Handing the recording buffer to something that will draw into it has two
+	// consequences the AL has to own:
+	//
+	//   1. A rendering scope must be open. The AL opens one lazily -- SetPass does it, driven
+	//      by m_dirtyPass -- so if the hosted UI is the first thing to draw after a Clear or
+	//      a SetRenderTarget, its vkCmdDraw lands outside any scope. The validation layer
+	//      says so at once, which is the good case; the bad case is a driver that tolerates
+	//      it and a frame that differs between vendors.
+	//   2. The AL's own pipeline and dynamic state are no longer what it believes. ImGui
+	//      binds its own pipeline, viewport and scissor. Without marking both dirty the AL's
+	//      next draw skips the rebind and renders with the UI's 1x1 scissor -- wrongly, and
+	//      with ZERO validation errors, which is the failure class this codebase calls the
+	//      green test that is the defect.
+	//
+	// Both are cheap and neither is optional. Re-opening the pass costs a store and a load on
+	// a tiler; the attachments' loadOp/storeOp are LOAD/STORE, so nothing the UI drew is lost.
+	uint64_t GetNativeCommandBuffer();
 
 	uint64_t GetNativeRenderEncoder() const
 	{

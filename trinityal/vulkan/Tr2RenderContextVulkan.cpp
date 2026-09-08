@@ -13,6 +13,7 @@
 #include "Tr2TextureALVulkan.h"
 #include "Tr2ConstantBufferALVulkan.h"
 #include "Tr2ShaderBindingABIVulkan.h"
+#include "Tr2VideoAdapterInfoALVulkan.h"
 #include "UtilitiesVulkan.h"
 #include "VkResult.h"
 #include "../include/Tr2RtTopLevelAccelerationStructureAL.h"
@@ -1677,6 +1678,85 @@ ALResult Tr2RenderContextAL::UseTextures( Tr2GpuUsage::Type, size_t, Tr2TextureA
 ALResult Tr2RenderContextAL::UseAccelerationStructure( Tr2RtTopLevelAccelerationStructureAL tlas )
 {
     return S_OK;
+}
+
+uint64_t Tr2RenderContextAL::GetNativeDevice() const
+{
+	return m_owner ? static_cast<uint64_t>( reinterpret_cast<uintptr_t>( m_owner->m_device ) ) : 0;
+}
+
+uint64_t Tr2RenderContextAL::GetNativeCommandQueue() const
+{
+	// The graphics queue, not the present one. They are the same VkQueue on every device
+	// this backend has run on -- FindPresentableQueues prefers one family that does both --
+	// but where they differ, the queue a hosted UI submits its font upload on has to be the
+	// one whose family index GetNativeQueueFamily reports, or the submit is invalid.
+	return m_owner ? static_cast<uint64_t>( reinterpret_cast<uintptr_t>( m_owner->GetGraphicsQueueVulkan() ) ) : 0;
+}
+
+uint64_t Tr2RenderContextAL::GetNativeInstance() const
+{
+	// The instance is process-wide and outlives any device: Tr2VideoAdapterInfoALVulkan
+	// creates it once, lazily, and every enumeration since has gone through it. Asked for
+	// here rather than stored on the context because storing it would imply a second
+	// lifetime for something that has exactly one.
+	VkInstance instance = VK_NULL_HANDLE;
+	if( FAILED( TrinityALImpl::GetVulkanInstance( instance ) ) )
+	{
+		return 0;
+	}
+	return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( instance ) );
+}
+
+uint64_t Tr2RenderContextAL::GetNativePhysicalDevice() const
+{
+	return m_owner ? static_cast<uint64_t>( reinterpret_cast<uintptr_t>( m_owner->m_physicalDevice ) ) : 0;
+}
+
+uint64_t Tr2RenderContextAL::GetNativeQueueFamily() const
+{
+	// 0 with no device, like every other accessor here -- and 0 is also a legal family
+	// index, which is why this one is worth reading beside GetNativeDevice rather than on
+	// its own. The member's own "no device" value is 0xffffffff; it is not passed through,
+	// because a caller checking accessors for 0 (spec D3) would take 0xffffffff for a
+	// family and hand it to Vulkan.
+	if( !m_owner || m_owner->m_graphicsQueueFamilyIndex == 0xffffffffu )
+	{
+		return 0;
+	}
+	return static_cast<uint64_t>( m_owner->m_graphicsQueueFamilyIndex );
+}
+
+uint64_t Tr2RenderContextAL::GetNativeCommandBuffer()
+{
+	// Not a read-only getter: see the header, and spec §7.4.
+	if( !m_owner || m_commandBuffer == VK_NULL_HANDLE )
+	{
+		return 0;
+	}
+
+	// (1) A rendering scope, so the caller's draws are legal. SetPass returns early when
+	// the pass is already open, so the common case -- a TriStepBeginRenderPass ahead of the
+	// callback, which is what the HUD job does -- costs one branch.
+	SetPass();
+
+	// (2) Everything the AL established in this buffer is now suspect. Marking the pass
+	// dirty is what re-records the viewport and the scissor (SetPass owns both) and
+	// marking the PSO dirty is what rebinds the pipeline; the AL's next draw goes through
+	// SetPipeline, which acts on both. Ordered after SetPass on purpose: setting them
+	// first would make the call above re-open a scope that is already open, for nothing.
+	m_dirtyPass = true;
+	m_dirtyPso = true;
+
+	return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( m_commandBuffer ) );
+}
+
+ALResult Tr2RenderContextAL::BeginRenderPass()
+{
+	// The frame graph asking for a scope, ahead of a step that will record draws through
+	// GetNativeCommandBuffer. SetPass is idempotent, so a caller that asks twice pays a
+	// branch, and one that asks when nothing is bound gets SetPass's own answer.
+	return SetPass();
 }
 
 uint64_t Tr2RenderContextAL::GetNativeBackBufferFormat() const
