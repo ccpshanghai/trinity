@@ -398,6 +398,21 @@ const Be::ClassInfo* TriDevice::ExposeToBlue()
 			"RefreshDeviceResources",
 			RefreshDeviceResources,
 			"Releases all D3D resources from memory and recreates them from source." )
+
+		MAP_METHOD_AND_WRAP(
+			"DestroyRenderContext",
+			DestroyRenderContext,
+			"Releases every device resource and destroys the main-thread render context.\n"
+			"\n"
+			"The teardown half of device creation, which the engine has always done for\n"
+			"itself when a device is replaced (ChangeDevice) and never exposed. An app that\n"
+			"ends deliberately needs it, because things the backend only does on the way out\n"
+			"do not otherwise happen at all: the Vulkan backend persists its VkPipelineCache\n"
+			"in the render context's destructor, so a run that just returns from main leaves\n"
+			"no cache behind and every launch stays cold.\n"
+			"\n"
+			"Nothing survives this. Call it once, after the last frame, and touch neither the\n"
+			"device nor anything it handed out afterwards." )
 #endif
 
 		MAP_METHOD_AND_WRAP( "GetRenderContext", GetRenderContext, "TODO DEBUG" )
