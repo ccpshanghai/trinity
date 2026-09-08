@@ -10,9 +10,9 @@ set_target_properties(Microsoft::DirectXShaderCompiler PROPERTIES
    IMPORTED_LOCATION_DEBUG              "${_dxc_root}/@dll_debug_dir@/@dll_name_dxc@"
    IMPORTED_LOCATION_RELEASE            "${_dxc_root}/@dll_dir@/@dll_name_dxc@"
    IMPORTED_IMPLIB                      "${_dxc_root}/lib/@lib_name@"
-   IMPORTED_SONAME                      "@lib_name@"
+   IMPORTED_SONAME                      "@dxc_imported_soname@"
    INTERFACE_INCLUDE_DIRECTORIES        "${_dxc_root}/include/directx-dxc"
-   INTERFACE_LINK_LIBRARIES             "Microsoft::DXIL"
+   INTERFACE_LINK_LIBRARIES             "@dxc_interface_link_libraries@"
    IMPORTED_LINK_INTERFACE_LANGUAGES    "C")
 
 add_library(Microsoft::DXIL SHARED IMPORTED)

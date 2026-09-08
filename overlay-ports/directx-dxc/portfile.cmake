@@ -15,6 +15,17 @@ if (VCPKG_TARGET_IS_OSX)
     if (DXC_OSX_ROOT STREQUAL "")
         set(DXC_OSX_ROOT "$ENV{HOME}/Workspace/carbon/carbon-toolchain/dxc")
     endif()
+
+    # The headers do not live under the install prefix: `ninja dxc` installs bin/ and
+    # lib/ and nothing else, and the release archives this port unpacks on the other two
+    # platforms have no macOS counterpart. So they are copied out of the SOURCE tree the
+    # dylib was built from. DXC_SOURCE_ROOT overrides; the default is the layout
+    # docs/HANDOFF-m6-macbook.md's dxc step produces.
+    set(DXC_OSX_SRC "$ENV{DXC_SOURCE_ROOT}")
+    if (DXC_OSX_SRC STREQUAL "")
+        get_filename_component(_dxc_toolchain "${DXC_OSX_ROOT}" DIRECTORY)
+        set(DXC_OSX_SRC "${_dxc_toolchain}/src/DirectXShaderCompiler")
+    endif()
 elseif (VCPKG_TARGET_IS_LINUX)
     vcpkg_download_distfile(ARCHIVE
         URLS "https://github.com/microsoft/DirectXShaderCompiler/releases/download/${DIRECTX_DXC_TAG}/linux_dxc_${DIRECTX_DXC_VERSION}.x86_64.tar.gz"
@@ -45,15 +56,16 @@ if (NOT VCPKG_TARGET_IS_OSX)
 endif()
 
 if (VCPKG_TARGET_IS_OSX)
-  # This branch delivers the dxc DRIVER as a host tool and nothing else. It
-  # installs no headers, because a from-source build's prefix is not laid out
-  # like the release archives and nothing on a Mac or Android target links
-  # dxcompiler: trinityal/tests/CMakeLists.txt calls find_package(directx-dxc)
-  # under if(WIN32) only, and on Android it find_program()s the tool out of
-  # tools/directx-dxc. So the imported targets in the generated config are
-  # declarations that are never loaded here.
-  set(VCPKG_POLICY_EMPTY_INCLUDE_FOLDER enabled)
-
+  # This branch used to deliver the dxc DRIVER as a host tool and nothing else, on the
+  # grounds that nothing on a Mac linked dxcompiler. Since 2026-09-08 something does:
+  # ShaderCompiler's Vulkan back end is dxc's -spirv plus IDxcUtils::CreateReflection,
+  # and it is built on macOS now (shadercompiler/stdafx.h). So the headers come too --
+  # and not only dxc's own. macOS has no d3d11.h/d3d12shader.h of its own, and dxc's
+  # DirectX-Headers submodule is where a portable d3d12shader.h and the four MIDL stubs
+  # d3dcommon.h includes come from. They are installed FLAT into include/directx-dxc/,
+  # which is the one directory the generated config puts on the include path; the
+  # quoted includes inside d3dcommon.h ("rpc.h", "OAIdl.h", ...) then resolve against
+  # their own directory, the way they do inside dxc's own build.
   if (NOT EXISTS "${DXC_OSX_ROOT}/bin/dxc" OR NOT EXISTS "${DXC_OSX_ROOT}/lib/libdxcompiler.dylib")
     message(FATAL_ERROR
       "${PORT}: no macOS dxc found under '${DXC_OSX_ROOT}'.\n"
@@ -66,6 +78,47 @@ if (VCPKG_TARGET_IS_OSX)
       "${DIRECTX_DXC_TAG} from https://github.com/microsoft/DirectXShaderCompiler and "
       "install it there.")
   endif()
+
+  foreach(_header
+      "${DXC_OSX_SRC}/include/dxc/dxcapi.h"
+      "${DXC_OSX_SRC}/include/dxc/WinAdapter.h"
+      "${DXC_OSX_SRC}/external/DirectX-Headers/include/directx/d3d12shader.h"
+      "${DXC_OSX_SRC}/external/DirectX-Headers/include/wsl/stubs/rpc.h")
+    if (NOT EXISTS "${_header}")
+      message(FATAL_ERROR
+        "${PORT}: '${_header}' is missing.\n"
+        "The macOS branch of this port copies dxc's headers out of the SOURCE tree the "
+        "dylib was built from, because a `ninja dxc` install prefix carries none. Keep "
+        "the checkout (with its submodules) beside the install prefix, or point "
+        "DXC_SOURCE_ROOT at it. Looked under:\n"
+        "    ${DXC_OSX_SRC}")
+    endif()
+  endforeach()
+
+  file(INSTALL
+    "${DXC_OSX_SRC}/include/dxc/dxcapi.h"
+    "${DXC_OSX_SRC}/include/dxc/dxcerrors.h"
+    "${DXC_OSX_SRC}/include/dxc/dxcisense.h"
+    "${DXC_OSX_SRC}/include/dxc/WinAdapter.h"
+    DESTINATION "${CURRENT_PACKAGES_DIR}/include/${PORT}")
+
+  # d3dcommon.h is not optional: d3d12shader.h's first line includes it, and it is what
+  # carries ID3DBlob, ID3DInclude, D3D_SHADER_MACRO and every D3D_SIT_/D3D_SVT_ enum the
+  # reflection code switches on.
+  file(INSTALL
+    "${DXC_OSX_SRC}/external/DirectX-Headers/include/directx/d3d12shader.h"
+    "${DXC_OSX_SRC}/external/DirectX-Headers/include/directx/d3dcommon.h"
+    DESTINATION "${CURRENT_PACKAGES_DIR}/include/${PORT}")
+
+  # The four MIDL stubs d3dcommon.h includes unconditionally, plus winapifamily.h.
+  # Each is a handful of lines; dxc puts the same directory on its own include path.
+  file(INSTALL
+    "${DXC_OSX_SRC}/external/DirectX-Headers/include/wsl/stubs/rpc.h"
+    "${DXC_OSX_SRC}/external/DirectX-Headers/include/wsl/stubs/rpcndr.h"
+    "${DXC_OSX_SRC}/external/DirectX-Headers/include/wsl/stubs/OAIdl.h"
+    "${DXC_OSX_SRC}/external/DirectX-Headers/include/wsl/stubs/OCIdl.h"
+    "${DXC_OSX_SRC}/external/DirectX-Headers/include/wsl/stubs/winapifamily.h"
+    DESTINATION "${CURRENT_PACKAGES_DIR}/include/${PORT}")
 
   # The driver's rpath is @executable_path/../lib, so installed as
   # tools/directx-dxc/dxc it resolves its dylib at tools/lib/ -- which is why the
@@ -110,6 +163,20 @@ if (VCPKG_TARGET_IS_OSX)
   endif()
   set(lib_name "libdxcompiler.dylib")
   set(tool_path "tools/${PORT}/dxc")
+  # libdxil is the closed-source signer and a source build produces none, so
+  # Microsoft::DXIL names a file that does not exist. It was harmless while nothing
+  # linked the package; ShaderCompiler links it now, and an INTERFACE_LINK_LIBRARIES
+  # entry pointing at a missing dylib is a link error. The target is still declared --
+  # anything that names it explicitly gets the same diagnostic as before -- it just is
+  # not dragged in by linking the compiler.
+  set(dxc_interface_link_libraries "")
+  # The dylib's install name is @rpath/libdxcompiler.dylib, so a consumer needs an
+  # LC_RPATH. Told a bare soname, CMake concludes the loader will find the library on
+  # its own and emits no -Wl,-rpath at all: measured 2026-09-08, ShaderCompiler linked
+  # against the full path, came out with zero LC_RPATHs and died in dyld with
+  # "Library not loaded: @rpath/libdxcompiler.dylib". Naming the real install name here
+  # is what makes CMake add the build-tree rpath.
+  set(dxc_imported_soname "@rpath/libdxcompiler.dylib")
 elseif (VCPKG_TARGET_IS_LINUX)
   file(INSTALL
     "${PACKAGE_PATH}/include/dxc/dxcapi.h"
@@ -196,6 +263,13 @@ else()
   set(dll_debug_dir "bin")
   set(lib_name "dxcompiler.lib")
   set(tool_path "tools/${PORT}/dxc.exe")
+endif()
+
+if (NOT DEFINED dxc_interface_link_libraries)
+  set(dxc_interface_link_libraries "Microsoft::DXIL")
+endif()
+if (NOT DEFINED dxc_imported_soname)
+  set(dxc_imported_soname "${lib_name}")
 endif()
 
 vcpkg_copy_tool_dependencies("${CURRENT_PACKAGES_DIR}/tools/${PORT}")

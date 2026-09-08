@@ -96,6 +96,12 @@
           "name": "directx-dxc",
           "version>=": "2023-03-01#2",
           "platform": "windows & x64"
+        },
+        {
+          "$comment": "Not a host dependency: the shader compiler IS a host tool, so it is built for the target triplet and needs dxc's headers and dylib in that same triplet. On osx it links dxcompiler for the Vulkan back end (dxc -spirv + IDxcUtils::CreateReflection) -- see shadercompiler/stdafx.h and EffectCompilerDX11.cpp. macOS has no d3d11.h or d3d12shader.h of its own either, so the overlay port's headers are what the whole compiler's Windows types come from, whatever back end is selected; WITH_DXC=OFF is not a macOS configuration. This row cannot reach an Android or iOS tree: those never set BUILD_SHADER_COMPILER, which is what asks for this feature.",
+          "name": "directx-dxc",
+          "version>=": "2023-03-01#2",
+          "platform": "osx"
         }
       ]
     },

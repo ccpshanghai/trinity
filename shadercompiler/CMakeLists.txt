@@ -80,17 +80,41 @@ set(_TEST_SOURCES
 )
 
 
-if (APPLE)
-    set(TELEMETRY_DEFAULT OFF)
+set(TELEMETRY_DEFAULT OFF)
+
+# WITH_DXC defaulted OFF on Apple while the compiler's only macOS back end was Metal.
+# It is ON there since 2026-09-08, and on macOS it is not really optional: stdafx.h's
+# non-Windows branch gets its Windows types, its COM support (CComPtr, IUnknown,
+# IID_PPV_ARGS) and ID3D12ShaderReflection from dxc's WinAdapter.h and the
+# d3d12shader.h in its DirectX-Headers submodule, whatever back end is selected. The
+# alternative was keeping a second, hand-rolled set of those types for a
+# WITH_DXC=OFF macOS build; two type systems for one platform is worse than a
+# dependency on a port this tree already carries. The FATAL_ERROR below says so
+# rather than letting <WinAdapter.h> come back "file not found".
+if (APPLE AND BUILD_FOR_PYTHON_2)
+    # The EVE monolith resolves dxc as the older `dxc` package, which has no macOS
+    # build; that configuration keeps the pre-2026-09-08 answer, and with it Metal only.
     set(DXC_DEFAULT OFF)
 else()
-    set(TELEMETRY_DEFAULT OFF)
     set(DXC_DEFAULT ON)
 endif()
 
 option(WITH_TELEMETRY "Enable integration with Tracy profiler" ${TELEMETRY_DEFAULT})
 
 option(WITH_DXC "Enable DXC Compiler" ${DXC_DEFAULT})
+
+if (APPLE AND NOT WITH_DXC AND NOT BUILD_FOR_PYTHON_2)
+    # Most likely a build tree configured before 2026-09-08: WITH_DXC defaulted OFF on
+    # Apple then, and option() cannot move a cache entry that already exists.
+    message(FATAL_ERROR
+        "WITH_DXC=OFF is not a macOS configuration. shadercompiler/stdafx.h includes "
+        "dxc's WinAdapter.h and d3d12shader.h on every non-Windows target for the "
+        "Windows types the whole compiler is written against -- not only for the "
+        "Vulkan back end.\n"
+        "If this is a build tree configured before the macOS Vulkan back end landed, its "
+        "cached WITH_DXC=OFF is what you are reading. Reconfigure once with "
+        "-DWITH_DXC=ON (the cache then keeps it), or delete the build tree.")
+endif()
 
 
 
@@ -106,14 +130,16 @@ else()
     get_filename_component(LEMPAR_ROOT "${LEMON}" DIRECTORY)
 endif()
 
-if (WIN32)
-    if(WITH_DXC)
-        if(BUILD_FOR_PYTHON_2)
-            find_package(dxc REQUIRED)
-            add_library(Microsoft::DirectXShaderCompiler ALIAS dxc)
-        else()
-            find_package(directx-dxc CONFIG REQUIRED)
-        endif()
+# Out of `if (WIN32)` since 2026-09-08: the macOS build links dxcompiler too.
+# The if(NOT TARGET) guard is trinityal/tests/CMakeLists.txt's, for its reason --
+# directx-dxc-config.cmake declares its imported targets with a bare add_library and
+# no guard of its own, so a second find_package in one directory scope is a hard error.
+if(WITH_DXC)
+    if(BUILD_FOR_PYTHON_2)
+        find_package(dxc REQUIRED)
+        add_library(Microsoft::DirectXShaderCompiler ALIAS dxc)
+    elseif(NOT TARGET Microsoft::DirectXShaderCompiler)
+        find_package(directx-dxc CONFIG REQUIRED)
     endif()
 endif()
 
@@ -221,6 +247,18 @@ function(configure_shader_compiler target)
             COMMAND_EXPAND_LISTS
         )
     else()
+        if(WITH_DXC)
+            # libdxcompiler.dylib's install name is @rpath/libdxcompiler.dylib (M6 Plan 2
+            # Task 5b set it so deliberately: rewriting an arm64 Mach-O's load commands
+            # after the fact invalidates its signature and the kernel then SIGKILLs it).
+            # CMake puts the imported library's directory on the build-tree RPATH by
+            # itself, which is what the stager runs against; INSTALL_RPATH is for the
+            # installed copy, where vcpkg's layout puts the dylib in ../lib.
+            target_link_libraries(${target} PRIVATE Microsoft::DirectXShaderCompiler)
+            if(APPLE)
+                set_target_properties(${target} PROPERTIES INSTALL_RPATH "@executable_path/../lib")
+            endif()
+        endif()
         target_compile_options(${target} PRIVATE -Wall -Wextra -pedantic -Wno-gnu-zero-variadic-macro-arguments -Wno-unused-command-line-argument)
         set_source_files_properties(${GENERATED_SOURCES_DIR}/HLSLParser.c PROPERTIES COMPILE_FLAGS "-x c++ -Wno-unused-parameter -Wno-sign-compare -Wno-unused-variable")
         set_source_files_properties(${GENERATED_SOURCES_DIR}/Preprocessor.c PROPERTIES COMPILE_FLAGS "-x c++ -Wno-unused-parameter -Wno-sign-compare -Wno-unused-variable")

@@ -135,9 +135,10 @@
       "displayName": "M3 Metal verification (Release, AL tests)",
       "inherits": "arm64-osx-release",
       "generator": "Ninja",
+      "description": "The Metal AL suite, and since 2026-09-08 the macOS ShaderCompiler with it. BUILD_SHADER_COMPILER was OFF here while the only Mac ShaderCompiler in the tree was a leftover of some older configuration -- the binary at .cmake-build-arm64-osx-metal/shadercompiler/ShaderCompiler that tools/m1-stage-render-closure.py has been pointed at all along. Turning it on makes the preset produce the file every record already names, and it is what gives the Mac a Vulkan effect compiler (dxc -spirv). It costs this tree three ports it mostly already had: re2c and lemon as host tools, directx-dxc for the target. The iOS and Windows-Vulkan presets keep it OFF: those are cross builds, and a host tool has no business in them.",
       "cacheVariables": {
         "BUILD_METAL": "ON",
-        "BUILD_SHADER_COMPILER": "OFF",
+        "BUILD_SHADER_COMPILER": "ON",
         "BUILD_TESTING": "ON",
         "CMAKE_COMPILE_WARNING_AS_ERROR": "OFF"
       }
