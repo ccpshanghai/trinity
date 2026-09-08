@@ -7,10 +7,14 @@
 #include "ParserState.h"
 #include "SymbolTable.h"
 #include "CompileMessageQueue.h"
-#include "FxAnalyzer.h"
+#include "FXAnalyzer.h"
 #include "HLSLParser.h"
 #include "ParserUtils.h"
 #include "ASTNode.h"
+// BindlessTextureType, used by ProcessReflection below. This header used to lean on the
+// including .cpp having it already: clang looks non-dependent names up when it parses the
+// template, not when it instantiates it, so DxReflection.cpp did not compile without it.
+#include "TextureFunctionConversionDX11.h"
 
 
 extern StringTable g_stringTable;
@@ -67,6 +71,8 @@ static bool GetTextureType( const T& desc, TextureType& type )
 		case D3D10_SRV_DIMENSION_BUFFER:
 			type = TEX_TYPE_BUFFER;
 			break;
+		default:
+			break; // anything else stays TEX_TYPE_TYPELESS
 		}
 		break;
 	case D3D_SIT_TBUFFER:
@@ -179,16 +185,22 @@ RegisterInputType GetRegisterType( const T& desc )
 	}
 }
 
+#if _WIN32
 inline uint8_t GetSpaceFromDesc( const D3D11_SHADER_INPUT_BIND_DESC& )
 {
 	return 0;
 }
+#endif
 
 inline uint8_t GetSpaceFromDesc( const D3D12_SHADER_INPUT_BIND_DESC& desc )
 {
 	return uint8_t( desc.Space );
 }
 
+// The DX11 traits name types from the Windows SDK's d3d11shader.h, which has no macOS
+// counterpart. ReflectionDx12 below comes from dxc's own d3d12shader.h and so compiles
+// everywhere -- it is the traits set the SPIR-V path reflects through.
+#if _WIN32
 struct ReflectionDx11
 {
 	using Reflection = ID3D11ShaderReflection;
@@ -199,6 +211,7 @@ struct ReflectionDx11
 	using TypeDesc = D3D11_SHADER_TYPE_DESC;
 	using SignatureParamDesc = D3D11_SIGNATURE_PARAMETER_DESC;
 };
+#endif
 
 struct ReflectionDx12
 {

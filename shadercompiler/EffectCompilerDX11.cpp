@@ -1,7 +1,6 @@
 // Copyright © 2023 CCP ehf.
 
 #include "stdafx.h"
-#if _WIN32
 #include "EffectCompilerDX11.h"
 #include "CompileMessageQueue.h"
 #include "StringTable.h"
@@ -94,9 +93,10 @@ bool TryGetVulkanBindingShiftArguments( VulkanBindingShiftArguments& shifts, Inp
 
 	if( stage != VERTEX_STAGE && stage != PIXEL_STAGE && stage != COMPUTE_STAGE )
 	{
-		char error[160];
-		sprintf_s( error, "\\memory(0): error X0000: SPIR-V binding ABI does not support the %s shader stage", VulkanBindingStageName( stage ) );
-		g_messages.AddMessage( error );
+		// AddMessage sizes its own buffer, so the 160-byte stack array can go -- and it
+		// was the only sprintf_s on this path, which matters because WinAdapter.h maps
+		// sprintf_s onto snprintf, whose second parameter is a size, not the format.
+		g_messages.AddMessage( "\\memory(0): error X0000: SPIR-V binding ABI does not support the %s shader stage", VulkanBindingStageName( stage ) );
 		return false;
 	}
 
@@ -237,6 +237,8 @@ static void PatchSemantics( InputStageType shaderStage, ASTNode* callNode )
 	std::vector<Symbol*> targetPath;
 	switch( shaderStage )
 	{
+	default:
+		break; // only the vertex and pixel stages have semantics to patch
 	case VERTEX_STAGE: {
 		const char* semantics[] = { "position", nullptr };
 		if( FindOutputBySemantics( functionHeader, semantics, &targetPath ) )
@@ -583,10 +585,16 @@ bool MatchShaderInputOutputImpl( Reflection* output, Reflection* input )
 	return true;
 }
 
+#if _WIN32
+// d3d11shader.h is the Windows SDK's; dxc's DirectX-Headers carry d3d12shader.h and no
+// sibling for DX11. So everything ID3D11* in this file is Windows-only, which costs the
+// macOS build nothing: the DX11 and DX12 back ends are Windows-only anyway, and the
+// SPIR-V path reflects through ID3D12ShaderReflection.
 bool MatchShaderInputOutput( ID3D11ShaderReflection* output, ID3D11ShaderReflection* input )
 {
 	return MatchShaderInputOutputImpl<ID3D11ShaderReflection, D3D11_SHADER_DESC, D3D11_SIGNATURE_PARAMETER_DESC>( output, input );
 }
+#endif
 
 bool MatchShaderInputOutput( ID3D12ShaderReflection* output, ID3D12ShaderReflection* input )
 {
@@ -628,6 +636,7 @@ void PrintShaderOutListingImpl( YamlOutput& listing, ID3DBlob* effectData, Refle
 		return;
 	}
 
+#if _WIN32
 	if( effectData )
 	{
 		CComPtr<ID3DBlob> disassembly;
@@ -636,6 +645,11 @@ void PrintShaderOutListingImpl( YamlOutput& listing, ID3DBlob* effectData, Refle
 			listing.literal( "asm" ).literal( reinterpret_cast<const char*>( disassembly->GetBufferPointer() ) );
 		}
 	}
+#else
+	// D3DDisassemble is d3dcompiler's. The SPIR-V path passes effectData == nullptr
+	// anyway -- there is no DXBC to disassemble -- so the listing loses nothing.
+	(void)effectData;
+#endif
 
 	ShaderDesc desc;
 	if( reflection && SUCCEEDED( reflection->GetDesc( &desc ) ) )
@@ -644,10 +658,12 @@ void PrintShaderOutListingImpl( YamlOutput& listing, ID3DBlob* effectData, Refle
 	}
 }
 
+#if _WIN32
 void PrintShaderOutListing( YamlOutput& listing, ID3DBlob* effectData, ID3D11ShaderReflection* reflection )
 {
 	PrintShaderOutListingImpl<ID3D11ShaderReflection, D3D11_SHADER_DESC>( listing, effectData, reflection );
 }
+#endif
 
 void PrintShaderOutListing( YamlOutput& listing, ID3DBlob* effectData, ID3D12ShaderReflection* reflection )
 {
@@ -1016,9 +1032,11 @@ bool ParseShaderName( const InlineString& name, InputStageType& type )
 
 bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength, const std::vector<Macro>& defines, EffectData& result, IWorkQueue* workQueue )
 {
-	return CompileEffect( source, sourceLength, defines, result, { nullptr, false }, workQueue );
+	return CompileEffect( source, sourceLength, defines, result, { nullptr, false, false }, workQueue );
 }
 
+#if _WIN32
+// The D3DCOMPILE_* flags are d3dcompiler's, and only D3DCompile consumes them.
 DWORD GetOptimizationLevel()
 {
 	switch( g_optimizationLevel )
@@ -1033,6 +1051,7 @@ DWORD GetOptimizationLevel()
 		return D3DCOMPILE_OPTIMIZATION_LEVEL3;
 	}
 }
+#endif
 
 RegisterInputDescription GetRegisterInputDescription( const Type& type, const RegisterSpecifier& reg )
 {
@@ -1309,6 +1328,18 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 		return false;
 	}
 
+#if !_WIN32
+	// This file is compiled on macOS for its SPIR-V branch alone (EffectCompilerVulkan).
+	// D3DCompile, D3DStripShader, D3DReflect and D3DDisassemble are d3dcompiler.dll's and
+	// have no macOS equivalent, so a DX11 or DX12 request here has to say so rather than
+	// walk into a half-guarded body and produce an empty effect.
+	if( !compileOptions.spirv )
+	{
+		g_messages.AddMessage( "\\memory(0): error X0000: DX11/DX12 compilation needs Windows" );
+		return false;
+	}
+#endif
+
 	YamlListing listing;
 	listing.dict();
 	listing.literal( "permutation" ).dict().literal( "platform" ).literal( "DX11" ).literal( "id" ).literal( "000" ).literal( "defines" ).dict();
@@ -1340,7 +1371,9 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 			}
 			listing.list();
 			Pass outPass;
+#if _WIN32
 			CComPtr<ID3D11ShaderReflection> reflections[6];
+#endif
 			CComPtr<ID3D12ShaderReflection> reflectionsDx12[6];
 			for( size_t stateIx = 0; stateIx < passNode->GetChildrenCount(); ++stateIx )
 			{
@@ -1360,12 +1393,16 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 						}
 						switch( stateCode )
 						{
-						case -1:
-						case -2:
-						case -3:
-						case -4:
-						case -5:
-						case -6:
+						// g_renderStateNames stores these as `unsigned`, so the labels are
+						// 0xFFFFFFFF down to 0xFFFFFFFA. Spelled as a conversion because a
+						// negative label on an unsigned switch is a narrowing error for
+						// clang, where MSVC converts it silently -- same values either way.
+						case DWORD( -1 ):
+						case DWORD( -2 ):
+						case DWORD( -3 ):
+						case DWORD( -4 ):
+						case DWORD( -5 ):
+						case DWORD( -6 ):
 							if( value != 0 )
 							{
 								state.ShowMessage( passNode->GetChild( stateIx )->GetLocation(), EC_INVALID_STATE_VALUE, name.c_str() );
@@ -1414,7 +1451,9 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 				ID3D10Blob* effectData = nullptr;
 				IDxcBlob* spirvEffectData = nullptr;
 				IDxcBlob* spirvReflectionData = nullptr;
+#if _WIN32
 				CComPtr<ID3D10Blob> errors = nullptr;
+#endif
 
 
 				if( shaderNode->GetChild( 1 )->GetSymbol() == nullptr )
@@ -1458,6 +1497,8 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 				{
 				case PATCH_ERROR:
 					return false;
+				default:
+					break; // PATCH_SKIP and PATCH_USE both continue
 				}
 				state.ResetPragmaUsage();
 				std::string code = os.str();
@@ -1628,6 +1669,7 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 							}
 						}
 					}
+#if _WIN32
 					else
 					{
 						CComPtr<ID3D10Blob> compiledEffectData;
@@ -1690,6 +1732,7 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 							syncData->passResource.Attach( compiledEffectData.Detach() );
 						}
 					}
+#endif
 
 					// Let's wake up everyone waiting for this permutation's compilation.
 					{
@@ -1716,7 +1759,9 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 					return false;
 				}
 
+#if _WIN32
 				CComPtr<ID3D11ShaderReflection> reflection;
+#endif
 				CComPtr<ID3D12ShaderReflection> reflectionDx12;
 				if( compileOptions.spirv )
 				{
@@ -1739,6 +1784,7 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 						return false;
 					}
 				}
+#if _WIN32
 				else
 				{
 					auto handleStrippedData = [&]( ID3DBlob* blob ) {
@@ -1779,6 +1825,7 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 						return false;
 					}
 				}
+#endif
 				{
 					stage.annotations.annotations.clear();
 					Symbol* symbol = shaderNode->GetChild( 1 )->GetSymbol();
@@ -1820,10 +1867,12 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 					{
 						PrintShaderOutListing( listing, nullptr, reflectionDx12.p );
 					}
+#if _WIN32
 					else
 					{
 						PrintShaderOutListing( listing, effectData, reflection.p );
 					}
+#endif
 					listing.end();
 				}
 
@@ -1831,10 +1880,12 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 				{
 					reflectionsDx12[stage.type] = reflectionDx12;
 				}
+#if _WIN32
 				else
 				{
 					reflections[stage.type] = reflection;
 				}
+#endif
 
 				PrintStageInfo( listing, stage, result );
 				listing.end();
@@ -1851,19 +1902,45 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 				GEOMETRY_STAGE,
 				PIXEL_STAGE,
 			};
+			// These two were written inline as `compileOptions.spirv ? <dx12> : <dx11>`
+			// ternaries. A ternary cannot be half-compiled, and its DX11 arm names a type
+			// that does not exist on macOS -- hence the lambdas. Same predicates, same
+			// order, one call deeper: Windows behaviour is unchanged.
+			auto hasReflection = [&]( int stageIndex ) -> bool {
+				if( compileOptions.spirv )
+				{
+					return !!reflectionsDx12[stageIndex];
+				}
+#if _WIN32
+				return !!reflections[stageIndex];
+#else
+				return false; // unreachable: !spirv returned above on this platform
+#endif
+			};
+			auto signaturesMatch = [&]( int output, int input ) -> bool {
+				if( compileOptions.spirv )
+				{
+					return MatchShaderInputOutput( reflectionsDx12[output], reflectionsDx12[input] );
+				}
+#if _WIN32
+				return MatchShaderInputOutput( reflections[output], reflections[input] );
+#else
+				return true; // unreachable, as above
+#endif
+			};
 			for( int i = 0; i < 6; ++i )
 			{
-				if( compileOptions.spirv ? !!reflectionsDx12[i] : !!reflections[i] )
+				if( hasReflection( i ) )
 				{
-					for( int j = 0; j < sizeof( pipelineStages ) / sizeof( InputStageType ); ++j )
+					for( int j = 0; j < int( sizeof( pipelineStages ) / sizeof( InputStageType ) ); ++j )
 					{
 						if( i == pipelineStages[j] )
 						{
 							for( int k = j - 1; k >= 0; --k )
 							{
-								if( compileOptions.spirv ? !!reflectionsDx12[pipelineStages[k]] : !!reflections[pipelineStages[k]] )
+								if( hasReflection( pipelineStages[k] ) )
 								{
-									if( compileOptions.spirv ? !MatchShaderInputOutput( reflectionsDx12[pipelineStages[k]], reflectionsDx12[i] ) : !MatchShaderInputOutput( reflections[pipelineStages[k]], reflections[i] ) )
+									if( !signaturesMatch( pipelineStages[k], i ) )
 									{
 										return false;
 									}
@@ -2070,6 +2147,10 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 					pCompileResult->GetOutput( DXC_OUT_REFLECTION, IID_PPV_ARGS( &reflectionData ), nullptr );
 					syncData->libraryReflection.Attach( reflectionData.Detach() );
 
+#if _WIN32
+					// EffectData.h declares PDB::pdbBlob under _WIN32, and wcstombs_s is
+					// the CRT's. Ray tracing is a DX12 feature; nothing reaches here on
+					// macOS, where /pdb would need a different container anyway.
 					if( g_generatePDB )
 					{
 						// Get debug info and it's name.
@@ -2092,6 +2173,7 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 							result.pdbs.push_back( pdb );
 						}
 					}
+#endif
 
 					// Compilation succeeded! Hand over the resource to the cache entry.
 					CComPtr<IDxcBlob> compiled;
@@ -2182,4 +2264,3 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 
 	return true;
 }
-#endif

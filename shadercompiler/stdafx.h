@@ -31,21 +31,53 @@
 #include <cstdint>
 #include <unistd.h>
 
-// TODO MACOS: The definitions below are made to minimize the amount of code changes needed for ShaderCompiler
-// at this stage.
+// dxc's own portable Windows shims, plus the one D3D reflection header its
+// DirectX-Headers submodule carries. Until 2026-09-08 this branch hand-rolled the
+// handful of Windows types the Metal path needed and no more; the Vulkan path needs
+// COM as well -- CComPtr, IUnknown, IID_PPV_ARGS, ID3D12ShaderReflection -- and
+// hand-rolling those is not on offer. Everything below that WinAdapter.h or
+// d3dcommon.h already defines has therefore been deleted from this file rather than
+// guarded: two definitions of BOOL (int here, bool there) or of struct _FILETIME are
+// a hard error, not a warning.
+//
+// Order matters. WinAdapter.h must precede d3d12shader.h because it defines
+// COM_NO_WINDOWS_H, which is what stops d3dcommon.h reaching for <windows.h> and
+// <ole2.h>. The pragma and the `interface` define around the include are dxc's own
+// recipe, from its include/dxc/Support/D3DReflection.h; it is copied rather than
+// included because the vcpkg port installs these headers flat into
+// include/directx-dxc/ rather than under a dxc/ prefix.
+#include <WinAdapter.h>
 
-#define __stdcall
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnon-virtual-dtor"
+#define interface struct
+#include <d3d12shader.h>
+#undef interface
+#pragma GCC diagnostic pop
+
+// WinAdapter.h also maps four CRT "secure" names onto POSIX functions of a DIFFERENT
+// ARITY (sprintf_s -> snprintf, strcpy_s( d, n, s ) -> strncpy( d, s, n ), ...) and
+// maps _strnicmp onto strnicmp, which macOS does not have at all. This file has
+// defined the _stricmp/_strnicmp pair as strcasecmp/strncasecmp since the Metal port
+// and InlineString.h and EffectCompilerMetal.cpp call them on this path, so: take the
+// types and the COM support from WinAdapter, and keep our own string shims. Nothing
+// in dxc's headers uses the four undefined below after their definition.
+#undef _strnicmp
+#undef sprintf_s
+#undef strcpy_s
+#undef strcat_s
+#undef vsnprintf_s
 
 #define _stricmp strcasecmp
 #define _strnicmp strncasecmp
 
+#include <dxcapi.h>
+
 #define MAX_PATH 260
 
-#define S_OK 0x00000000
-#define E_FAIL 0x80004005
-
-#define SUCCEEDED( hr ) ( ( (HRESULT)( hr ) ) >= 0 )
-#define FAILED( hr ) ( ( (HRESULT)( hr ) ) < 0 )
+// Not in WinAdapter.h, and used by FXAnalyzer's render-state table.
+#define CONST const
+typedef float FLOAT;
 
 #define D3D11_FILTER_REDUCTION_TYPE_MASK ( 0x3 )
 #define D3D11_FILTER_REDUCTION_TYPE_SHIFT ( 7 )
@@ -70,54 +102,6 @@
 	  ( D3D11_FILTER_TYPE_LINEAR == D3D11_DECODE_MIN_FILTER( d3d11Filter ) ) && \
 	  ( D3D11_FILTER_TYPE_LINEAR == D3D11_DECODE_MAG_FILTER( d3d11Filter ) ) && \
 	  ( D3D11_FILTER_TYPE_LINEAR == D3D11_DECODE_MIP_FILTER( d3d11Filter ) ) )
-
-// Definitions taken from https://docs.microsoft.com/en-gb/windows/win32/winprog/windows-data-types
-// Note: On Windows platform DWORD is defined as
-// typedef unsigned long DWORD;
-// and expected to be a 32-bit integer, but "long" is 64-bit on Mac.
-// Same rationale applies for other integer types.
-#define CONST const
-typedef int BOOL;
-typedef unsigned char BYTE;
-// typedef unsigned long DWORD;
-typedef uint32_t DWORD;
-typedef float FLOAT;
-// typedef unsigned int UINT;
-typedef uint32_t UINT;
-// typedef unsigned short WORD;
-typedef uint16_t WORD;
-typedef const char* LPCSTR;
-typedef char* LPSTR;
-typedef const void* LPCVOID;
-typedef void* LPVOID;
-typedef void* PVOID;
-// typedef long LONG;
-typedef int32_t LONG;
-typedef LONG HRESULT;
-typedef PVOID HANDLE;
-
-typedef struct _FILETIME
-{
-	DWORD dwLowDateTime;
-	DWORD dwHighDateTime;
-} FILETIME, *PFILETIME, *LPFILETIME;
-
-struct ID3DInclude
-{
-};
-
-typedef struct D3D_SHADER_MACRO
-{
-	LPCSTR Name;
-	LPCSTR Definition;
-} D3D_SHADER_MACRO, *LPD3D_SHADER_MACRO;
-
-enum D3D_INCLUDE_TYPE
-{
-	D3D_INCLUDE_LOCAL = 0,
-	D3D_INCLUDE_SYSTEM = ( D3D_INCLUDE_LOCAL + 1 ),
-	D3D_INCLUDE_FORCE_DWORD = 0x7fffffff
-};
 
 enum D3D11_FILTER
 {

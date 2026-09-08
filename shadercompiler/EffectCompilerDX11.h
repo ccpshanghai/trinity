@@ -2,7 +2,10 @@
 
 #pragma once
 
-#if _WIN32
+// Built on every platform since 2026-09-08, for its SPIR-V branch: EffectCompilerVulkan
+// is a shim over this class. Its DX11/DX12 branches stay Windows-only, guarded inside
+// the .cpp -- see CompileEffect's first lines. Every member below is a dxc or
+// d3dcommon type, both of which macOS has through the directx-dxc port.
 #include "EffectCompilerBase.h"
 
 
@@ -39,4 +42,3 @@ private:
 	std::mutex m_pdbCS;
 	CComPtr<IDxcUtils> m_dxilUtils;
 };
-#endif

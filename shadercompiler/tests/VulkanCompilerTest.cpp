@@ -12,7 +12,10 @@
 
 extern StringTable g_stringTable;
 
-#if _WIN32
+// Un-gated on 2026-09-08: the SPIR-V back end is built on macOS now. What stays behind
+// _WIN32 is the DX11 half only -- CompileDx11Reference asks EffectCompilerDX11 for a
+// non-SPIR-V compile, which needs d3dcompiler.dll and which the macOS build answers with
+// "DX11/DX12 compilation needs Windows" by design.
 
 namespace
 {
@@ -106,6 +109,7 @@ bool TryCompileSpirv( const char* src )
 	return compiled;
 }
 
+#if _WIN32
 EffectData CompileDx11Reference( const char* src )
 {
 	EffectCompilerDX11 compiler;
@@ -117,6 +121,7 @@ EffectData CompileDx11Reference( const char* src )
 	[compiled] { ASSERT_TRUE( compiled ); }();
 	return data;
 }
+#endif
 
 const uint32_t* ShaderWords( const StageInput& stage, size_t& wordCount )
 {
@@ -205,6 +210,11 @@ TEST( VulkanCompiler, EmitsSpirvForEveryStage )
 	}
 }
 
+#if _WIN32
+// The only test here that needs a second back end to compare against: it asserts the
+// SPIR-V path's reflection agrees with the DX11 path's, and the DX11 path is Windows-only.
+// Its Vulkan-side numbers are absolute, not relative, so a macOS run would still be worth
+// having -- but not at the price of asserting a fact about a compiler that is not there.
 TEST( VulkanCompiler, ReflectionSurvivesTheBackendSwap )
 {
 	EffectData data = CompileSpirv( SIMPLE_EFFECT );
@@ -228,6 +238,7 @@ TEST( VulkanCompiler, ReflectionSurvivesTheBackendSwap )
 	EXPECT_EQ( vs.pipelineInputs.size(), 2u ); // POSITION + TEXCOORD
 	EXPECT_EQ( vs.pipelineInputs.size(), dx11Vs.pipelineInputs.size() );
 }
+#endif
 
 TEST( VulkanCompiler, BindingsObeyTheABIHeader )
 {
@@ -290,5 +301,3 @@ TEST( VulkanCompiler, ASecondResourceArrayIsRefusedRatherThanMisbound )
 	EXPECT_NE( output.find( "NormalMaps" ), std::string::npos ) << output;
 	EXPECT_NE( output.find( "register space 2" ), std::string::npos ) << output;
 }
-
-#endif
