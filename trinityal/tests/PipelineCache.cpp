@@ -4,6 +4,7 @@
 
 #include "WithRenderContextFixture.h"
 #include "gtest/gtest-spi.h"
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 
@@ -149,6 +150,73 @@ private:
 	const char* const m_previous;
 };
 
+// The env-var half of the same rule, and the same lifetime discipline: the string has to
+// outlive the variable that points into it. putenv-family calls differ on that between
+// platforms, so this uses setenv/unsetenv where they exist and _putenv_s on Windows, and
+// keeps its own copy either way.
+class ScopedPipelineCacheEnvironment
+{
+public:
+	explicit ScopedPipelineCacheEnvironment( const std::filesystem::path& directory )
+		: m_value( directory.string() )
+	{
+		Set( m_value.c_str() );
+	}
+
+	~ScopedPipelineCacheEnvironment()
+	{
+		Set( nullptr );
+	}
+
+	ScopedPipelineCacheEnvironment( const ScopedPipelineCacheEnvironment& ) = delete;
+	ScopedPipelineCacheEnvironment& operator=( const ScopedPipelineCacheEnvironment& ) = delete;
+
+private:
+	static void Set( const char* value )
+	{
+#if defined( _WIN32 )
+		// _putenv_s with an empty value removes the variable, which is what null means here.
+		_putenv_s( "TRINITY_PIPELINE_CACHE_DIR", value ? value : "" );
+#else
+		if( value )
+		{
+			setenv( "TRINITY_PIPELINE_CACHE_DIR", value, 1 );
+		}
+		else
+		{
+			unsetenv( "TRINITY_PIPELINE_CACHE_DIR" );
+		}
+#endif
+	}
+
+	const std::string m_value;
+};
+
+// Nulls the global for the duration, so the environment is the only thing left naming a
+// directory. Needed because the global is NOT null to begin with on the Android host -- it
+// points at the app's files directory -- so a test that only set the variable would be
+// asserting the global's behaviour there and the variable's on desktop.
+class ScopedNoPipelineCacheDirectory
+{
+public:
+	ScopedNoPipelineCacheDirectory()
+		: m_previous( g_pipelineCacheDirectory )
+	{
+		g_pipelineCacheDirectory = nullptr;
+	}
+
+	~ScopedNoPipelineCacheDirectory()
+	{
+		g_pipelineCacheDirectory = m_previous;
+	}
+
+	ScopedNoPipelineCacheDirectory( const ScopedNoPipelineCacheDirectory& ) = delete;
+	ScopedNoPipelineCacheDirectory& operator=( const ScopedNoPipelineCacheDirectory& ) = delete;
+
+private:
+	const char* const m_previous;
+};
+
 // A test body that leaves under a fatal assertion, which is the shape the guard exists
 // for and the one the round-trip test cannot check about itself. Takes no arguments
 // because EXPECT_FATAL_FAILURE's statement may not name the caller's locals.
@@ -253,6 +321,78 @@ TEST_F( PipelineCache, RoundTripsThroughDisk )
 
 	// No trailing Destroy() and no trailing remove_all: both are on the scope guards at the
 	// top of the body, which run in that order on every exit path.
+}
+
+// spec §6.1: the app shell asks for the pipeline cache through the environment, because it
+// has no C++ path into this extension module. Two claims in one body, because the second is
+// only meaningful next to the first.
+TEST_F( PipelineCache, TheEnvironmentNamesTheDirectoryAndTheGlobalStillWins )
+{
+	if( !MachineHasGfxAdapter() )
+	{
+		GTEST_SKIP() << "Test Skipped as no adapters present on machine.";
+	}
+
+	// Read before the global is nulled: on Android it is what makes this path writable.
+	const std::filesystem::path fromEnv = TestCacheDirectory() / "from-env";
+	const std::filesystem::path fromGlobal = TestCacheDirectory() / "from-global";
+	std::error_code ec;
+	std::filesystem::remove_all( fromEnv, ec );
+	std::filesystem::remove_all( fromGlobal, ec );
+	ASSERT_TRUE( std::filesystem::create_directories( fromEnv, ec ) ) << fromEnv.string();
+	ASSERT_TRUE( std::filesystem::create_directories( fromGlobal, ec ) ) << fromGlobal.string();
+
+	// Order matters on the way out, so both guards are declared before the device guard:
+	// the device's cache write happens in ITS destructor, which runs first, while the
+	// environment and the global still say where the blob goes. Then the directories go.
+	ON_BLOCK_EXIT( [&] { std::filesystem::remove_all( fromEnv, ec ); std::filesystem::remove_all( fromGlobal, ec ); } );
+
+	Tr2PresentParametersAL presentParameters;
+	SetUpPresentParameters( presentParameters );
+
+	auto blobsIn = []( const std::filesystem::path& dir ) {
+		int count = 0;
+		for( const auto& entry : std::filesystem::directory_iterator( dir ) )
+		{
+			if( entry.path().filename().string().rfind( "TrinityALVkPipelineCache-", 0 ) == 0 )
+			{
+				++count;
+			}
+		}
+		return count;
+	};
+
+	// (1) With no host choice, the variable is what the backend reads.
+	{
+		const ScopedNoPipelineCacheDirectory noGlobal;
+		const ScopedPipelineCacheEnvironment env( fromEnv );
+		ON_BLOCK_EXIT( [&] { renderContext->Destroy(); } );
+
+		ASSERT_HRESULT_SUCCEEDED( renderContext->CreateDevice( 0, WithWindow::GetWindowHandle(), presentParameters ) );
+		DrawOneTriangle( *renderContext );
+		renderContext->Destroy();
+
+		EXPECT_EQ( blobsIn( fromEnv ), 1 ) << "the environment named " << fromEnv.string()
+			<< " and nothing was written there";
+	}
+
+	// (2) With both set, the global wins -- which is what keeps
+	// ScopedPipelineCacheDirectory meaning what it says while a machine's environment
+	// happens to name somewhere else.
+	{
+		const ScopedPipelineCacheEnvironment env( fromEnv );
+		const ScopedPipelineCacheDirectory scopedDirectory( fromGlobal );
+		ON_BLOCK_EXIT( [&] { renderContext->Destroy(); } );
+
+		const int before = blobsIn( fromEnv );
+		ASSERT_HRESULT_SUCCEEDED( renderContext->CreateDevice( 0, WithWindow::GetWindowHandle(), presentParameters ) );
+		DrawOneTriangle( *renderContext );
+		renderContext->Destroy();
+
+		EXPECT_EQ( blobsIn( fromGlobal ), 1 ) << "the global named " << fromGlobal.string()
+			<< " and the blob did not land there";
+		EXPECT_EQ( blobsIn( fromEnv ), before ) << "the environment overrode the host's explicit choice";
+	}
 }
 
 // The failure path of the test above, which that test cannot exercise about itself: the

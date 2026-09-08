@@ -29,6 +29,11 @@
 #include <CcpSecureCrt.h>
 #endif
 
+// getenv, for the pipeline cache's directory below. Named here rather than relied on from
+// whatever StdAfx pulled in, because the one call site is a one-line helper and a build that
+// lost the transitive include would fail on it rather than on anything that explains it.
+#include <cstdlib>
+
 // Defined in ALResult.cpp beside g_requestDeviceDebugLayer, and declared here the same
 // way that one is: null means the pipeline cache is not persisted.
 extern const char* g_pipelineCacheDirectory;
@@ -494,6 +499,29 @@ Tr2PrimaryRenderContextAL::~Tr2PrimaryRenderContextAL()
 
 namespace
 {
+	// Where the cache lives: the host's explicit choice first (g_pipelineCacheDirectory, which
+	// the test hosts set), else TRINITY_PIPELINE_CACHE_DIR from the environment, else nowhere
+	// and no persistence at all.
+	//
+	// The environment exists because the app shell has no C++ path into this extension module
+	// -- the only export is PyInit__trinity_vulkan -- so a variable is how it asks (spec §6.1).
+	// The global winning keeps PipelineCache.cpp's ScopedPipelineCacheDirectory meaning what it
+	// says: a test that points the cache at its own temp directory must not be overridden by
+	// whatever the machine happens to have in its environment.
+	//
+	// Read on every call rather than cached: a test sets the variable after this translation
+	// unit is loaded, and one-shot initialisation would answer with what the environment held
+	// at load time. The cost is a getenv per device creation and per teardown, not per frame.
+	const char* PipelineCacheDirectory()
+	{
+		if( g_pipelineCacheDirectory )
+		{
+			return g_pipelineCacheDirectory;
+		}
+		const char* fromEnv = getenv( "TRINITY_PIPELINE_CACHE_DIR" );
+		return ( fromEnv && *fromEnv ) ? fromEnv : nullptr;
+	}
+
 	// The blob's name has to identify the device it was built for, because a cache from
 	// another GPU is worse than none: vkCreatePipelineCache is allowed to accept it and
 	// then quietly ignore every entry. The UUID check below is the authoritative one --
@@ -503,7 +531,7 @@ namespace
 		char name[128];
 		snprintf( name, sizeof( name ), "/TrinityALVkPipelineCache-%u-%u.bin",
 			properties.vendorID, properties.deviceID );
-		return std::string( g_pipelineCacheDirectory ) + name;
+		return std::string( PipelineCacheDirectory() ) + name;
 	}
 
 	// A blob whose header does not match this device must be dropped rather than handed to
@@ -840,7 +868,7 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		// Cleared here rather than in the loaded branch: every path out of this block has
 		// to leave a truthful value, including the ones that never look at the disk.
 		g_pipelineCacheBytesLoaded = 0;
-		if( g_pipelineCacheDirectory )
+		if( PipelineCacheDirectory() )
 		{
 			FILE* file = nullptr;
 			fopen_s( &file, PipelineCachePath( m_physicalDeviceProperties ).c_str(), "rb" );
@@ -1035,7 +1063,7 @@ void Tr2PrimaryRenderContextAL::Destroy()
 	}
 	if( m_pipelineCache != VK_NULL_HANDLE )
 	{
-		if( g_pipelineCacheDirectory )
+		if( PipelineCacheDirectory() )
 		{
 			size_t size = 0;
 			if( vkGetPipelineCacheData( m_device, m_pipelineCache, &size, nullptr ) == VK_SUCCESS && size > 0 )
