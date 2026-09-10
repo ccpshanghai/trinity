@@ -11,6 +11,7 @@ set(_SOURCES
     Compute.cpp
     ConstantBuffer.cpp
     DepthStencil.cpp
+    DrawOffsets.cpp
     Dxt1Image.h
     Dxt3Image.h
     Dxt5Image.h

@@ -585,6 +585,12 @@ public:
 	// Vulkan 1.0 has no host-side vkResetQueryPool, which arrived in 1.2.
 	void EndRenderPassVulkan();
 
+	// TRINITY_DRAW_LOG=1 only: one draw's worth of the per-scene tally EndScene prints. A
+	// member rather than free, so it can see whether a colour target is bound -- a draw with
+	// none is the shape of a scene rendering into nothing, and telling that apart from a scene
+	// issuing no draws at all is the whole point of the counter.
+	void CountDrawForLogVulkan( uint64_t vertices );
+
 	VkCommandBuffer m_commandBuffer;
 
 private:	

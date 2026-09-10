@@ -406,8 +406,17 @@ ALResult Tr2RenderContextAL::DrawIndexedPrimitive( uint32_t numVertices,
 
 	CheckDrawResources();
 
-	m_workQueue->DrawIndexedPrimitives(
-		m_metalPrimitiveInfo.metalPrimitiveType, vc, m_metalIndexType, m_metalIndexBuffer, startIndex, 1 );
+	// minimumIndex is the base vertex, despite the name it inherited from D3D9 -- dx11 calls the
+	// same parameter baseVertexLocation and dx12 passes it as one. Defaulting it to 0 here drew
+	// every indexed primitive against vertex 0 of the bound stream, which is only visible once a
+	// caller binds a whole shared buffer and expresses its allocation's place as a base vertex.
+	m_workQueue->DrawIndexedPrimitives( m_metalPrimitiveInfo.metalPrimitiveType,
+										vc,
+										m_metalIndexType,
+										m_metalIndexBuffer,
+										startIndex,
+										1,
+										int32_t( minimumIndex ) );
 
 	return S_OK;
 }

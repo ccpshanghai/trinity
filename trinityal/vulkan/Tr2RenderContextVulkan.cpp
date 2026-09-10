@@ -27,6 +27,131 @@ bool g_gatherPipelineStatistics = false;
 // reads a confident zero, which is worse than no counter at all.
 CCP_STATS_DECLARE( vertexCount, "Trinity/AL/vertexCount", true, CST_COUNTER_HIGH, "Vertex count in DrawPrimitive calls." );
 
+// TRINITY_DRAW_LOG=1: one line per EndScene naming what was submitted since the last one.
+//
+// The stats counter above is the engine's own and is not reachable from Python, so a device run
+// could say what was on the screen and not whether anything had been drawn -- which is the
+// difference between "the scene issued no draws" and "the scene issued draws that produced
+// nothing", and those want opposite investigations. Read once, because a getenv per frame is a
+// getenv per frame; off unless asked for, because the answer is a line of log per scene.
+namespace
+{
+bool DrawLogEnabled()
+{
+	static const bool enabled = []{
+		const char* value = getenv( "TRINITY_DRAW_LOG" );
+		return value && value[0] == '1';
+	}();
+	return enabled;
+}
+
+// TRINITY_CULL_OVERRIDE=none|front|back forces every pipeline's cull mode, ignoring what the
+// engine asks for. It exists because face culling is the one stage that discards a whole scene
+// with no error, no validation message and nothing a fragment-stage visualizer can show: the
+// draws are issued, depth passes, and no triangle survives. Vulkan's clip space differs from
+// D3D's in y and this backend answers that with a negative-height viewport, which also reverses
+// the winding the rasterizer sees -- so cullMode and frontFace have to compose correctly, and
+// every rendering test in this suite asks for CULLMODE_NONE and would pass either way.
+// -1 means "leave it alone", which is the default.
+int32_t CullOverride()
+{
+	static const int32_t mode = []{
+		const char* value = getenv( "TRINITY_CULL_OVERRIDE" );
+		if( !value )                          return int32_t( -1 );
+		if( strcmp( value, "none" ) == 0 )    return int32_t( VK_CULL_MODE_NONE );
+		if( strcmp( value, "front" ) == 0 )   return int32_t( VK_CULL_MODE_FRONT_BIT );
+		if( strcmp( value, "back" ) == 0 )    return int32_t( VK_CULL_MODE_BACK_BIT );
+		return int32_t( -1 );
+	}();
+	return mode;
+}
+
+// Not atomic: the render context these belong to is the one the frame is recorded on, and the
+// numbers are a diagnostic rather than a measurement -- a torn count would still answer the
+// question these exist to answer.
+uint32_t g_drawLogDraws = 0;
+uint64_t g_drawLogVertices = 0;
+uint32_t g_drawLogWithoutTarget = 0;
+uint32_t g_drawLogClears = 0;
+
+// Which colour targets the draws went to, by extent. A scene that issues its draws against one
+// size while the composite reads another is invisible for a reason no draw count can show, and
+// the extent is the cheapest handle on target identity that survives a pooled texture being
+// recycled. Eight is more than any frame here uses; a ninth is folded into the last.
+struct DrawLogTarget
+{
+	VkImage image;
+	uint32_t width;
+	uint32_t height;
+	uint32_t draws;
+};
+DrawLogTarget g_drawLogTargets[8] = {};
+uint32_t g_drawLogTargetCount = 0;
+
+// The depth state the colour draws ran under, and the value every depth clear asked for. EVE
+// renders reversed-Z: the buffer is cleared to 0 and the comparison is GREATER_EQUAL. Get either
+// half wrong and every scene draw fails depth while every screen-space pass, which disables the
+// test outright, still works -- a whole-scene blackout that no draw count, no target extent and
+// no fragment-stage visualizer can distinguish from a scene that draws nothing.
+struct DrawLogDepth
+{
+	uint32_t test;
+	uint32_t write;
+	uint32_t compareOp;
+	uint32_t cull;
+	uint32_t blend;
+	uint32_t mask;
+	uint32_t draws;
+};
+DrawLogDepth g_drawLogDepth[8] = {};
+uint32_t g_drawLogDepthCount = 0;
+struct DrawLogDepthClear { float depth; uint32_t width; uint32_t height; };
+DrawLogDepthClear g_drawLogDepthClears[12] = {};
+uint32_t g_drawLogDepthClearCount = 0;
+
+void NoteDrawLogDepth( uint32_t test, uint32_t write, uint32_t compareOp, uint32_t cull,
+					   uint32_t blend, uint32_t mask )
+{
+	for( uint32_t i = 0; i < g_drawLogDepthCount; ++i )
+	{
+		if( g_drawLogDepth[i].test == test && g_drawLogDepth[i].write == write
+			&& g_drawLogDepth[i].compareOp == compareOp && g_drawLogDepth[i].cull == cull
+			&& g_drawLogDepth[i].blend == blend && g_drawLogDepth[i].mask == mask )
+		{
+			++g_drawLogDepth[i].draws;
+			return;
+		}
+	}
+	if( g_drawLogDepthCount < 8 )
+	{
+		g_drawLogDepth[g_drawLogDepthCount++] = { test, write, compareOp, cull, blend, mask, 1 };
+	}
+}
+
+// Keyed on the VkImage, not on the extent: a frame that renders its scene into one full-screen
+// target and composites a different one of the same size is invisible, and an extent cannot tell
+// those two apart. The handle is printed truncated because only its distinctness matters.
+void NoteDrawLogTarget( VkImage image, uint32_t width, uint32_t height )
+{
+	for( uint32_t i = 0; i < g_drawLogTargetCount; ++i )
+	{
+		if( g_drawLogTargets[i].image == image )
+		{
+			++g_drawLogTargets[i].draws;
+			return;
+		}
+	}
+	if( g_drawLogTargetCount < 8 )
+	{
+		g_drawLogTargets[g_drawLogTargetCount++] = { image, width, height, 1 };
+	}
+	else
+	{
+		++g_drawLogTargets[7].draws;
+	}
+}
+}
+
 namespace
 {
 
@@ -207,7 +332,76 @@ ALResult Tr2RenderContextAL::BeginScene() throw( )
 
 ALResult Tr2RenderContextAL::EndScene()
 {
+	if( DrawLogEnabled() )
+	{
+		std::string targets;
+		for( uint32_t i = 0; i < g_drawLogTargetCount; ++i )
+		{
+			char one[64];
+			snprintf( one, sizeof( one ), "%s%ux%u#%04x:%u", targets.empty() ? "" : " ",
+					  g_drawLogTargets[i].width, g_drawLogTargets[i].height,
+					  unsigned( uintptr_t( g_drawLogTargets[i].image ) & 0xffffu ),
+					  g_drawLogTargets[i].draws );
+			targets += one;
+		}
+		std::string depths;
+		for( uint32_t i = 0; i < g_drawLogDepthCount; ++i )
+		{
+			char one[80];
+			snprintf( one, sizeof( one ), "%stest%u/write%u/op%u/cull%u/blend%u/mask%x:%u",
+					  depths.empty() ? "" : " ",
+					  g_drawLogDepth[i].test, g_drawLogDepth[i].write, g_drawLogDepth[i].compareOp,
+					  g_drawLogDepth[i].cull, g_drawLogDepth[i].blend, g_drawLogDepth[i].mask,
+					  g_drawLogDepth[i].draws );
+			depths += one;
+		}
+		std::string depthClears;
+		for( uint32_t i = 0; i < g_drawLogDepthClearCount; ++i )
+		{
+			char one[64];
+			snprintf( one, sizeof( one ), "%s%.3f@%ux%u", depthClears.empty() ? "" : " ",
+					  g_drawLogDepthClears[i].depth, g_drawLogDepthClears[i].width,
+					  g_drawLogDepthClears[i].height );
+			depthClears += one;
+		}
+		CCP_LOG( "draws: %u draw(s), %llu vertices, %u clear(s), %u draw(s) with no colour target bound; "
+				 "targets %s; depth %s; depth clears %s",
+				 g_drawLogDraws, (unsigned long long)g_drawLogVertices, g_drawLogClears, g_drawLogWithoutTarget,
+				 targets.empty() ? "(none)" : targets.c_str(),
+				 depths.empty() ? "(none)" : depths.c_str(),
+				 depthClears.empty() ? "(none)" : depthClears.c_str() );
+		g_drawLogDraws = 0;
+		g_drawLogVertices = 0;
+		g_drawLogWithoutTarget = 0;
+		g_drawLogClears = 0;
+		g_drawLogTargetCount = 0;
+		g_drawLogDepthCount = 0;
+		g_drawLogDepthClearCount = 0;
+	}
 	return S_OK;
+}
+
+void Tr2RenderContextAL::CountDrawForLogVulkan( uint64_t vertices )
+{
+	if( !DrawLogEnabled() )
+	{
+		return;
+	}
+	++g_drawLogDraws;
+	g_drawLogVertices += vertices;
+	if( !m_boundRenderTargets[0].IsValid() )
+	{
+		++g_drawLogWithoutTarget;
+		return;
+	}
+	NoteDrawLogTarget( m_boundRenderTargets[0].m_texture->GetImageVulkan(),
+					   m_boundRenderTargets[0].GetWidth(), m_boundRenderTargets[0].GetHeight() );
+	NoteDrawLogDepth( m_pipelineSource.m_depthStencilState.depthTestEnable,
+					  m_pipelineSource.m_depthStencilState.depthWriteEnable,
+					  uint32_t( m_pipelineSource.m_depthStencilState.depthCompareOp ),
+					  uint32_t( m_pipelineSource.m_rasterizationState.cullMode ),
+					  uint32_t( m_pipelineSource.m_attachmentBlend[0].blendEnable ),
+					  uint32_t( m_pipelineSource.m_attachmentBlend[0].colorWriteMask ) );
 }
 
 ALResult Tr2RenderContextAL::Clear(
@@ -217,6 +411,18 @@ ALResult Tr2RenderContextAL::Clear(
 	uint32_t stencil,
 	uint32_t slot ) throw( )
 {
+	if( DrawLogEnabled() )
+	{
+		++g_drawLogClears;
+		if( ( clearFlags & Tr2RenderContextEnum::CLEARFLAGS_ZBUFFER )
+			&& g_drawLogDepthClearCount < 12 )
+		{
+			g_drawLogDepthClears[g_drawLogDepthClearCount++] = {
+				depth,
+				m_boundDepthStencil.IsValid() ? m_boundDepthStencil.GetWidth() : 0,
+				m_boundDepthStencil.IsValid() ? m_boundDepthStencil.GetHeight() : 0 };
+		}
+	}
 	if( clearFlags & Tr2RenderContextEnum::CLEARFLAGS_TARGET )
 	{
 		if( m_boundRenderTargets[slot].IsValid() )
@@ -498,7 +704,8 @@ ALResult Tr2RenderContextAL::SetRenderState( Tr2RenderContextEnum::RenderState s
 		m_dirtyPso = true;
 		return S_OK;
 	case Tr2RenderContextEnum::RS_CULLMODE:
-		m_pipelineSource.m_rasterizationState.cullMode = value - 1;
+		m_pipelineSource.m_rasterizationState.cullMode =
+			CullOverride() >= 0 ? VkCullModeFlags( CullOverride() ) : VkCullModeFlags( value - 1 );
 		m_dirtyPso = true;
 		return S_OK;
 	case Tr2RenderContextEnum::RS_ALPHABLENDENABLE:
@@ -851,8 +1058,23 @@ ALResult Tr2RenderContextAL::DrawIndexedPrimitive(
 
 	auto vc = m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second;
 	CCP_STATS_ADD( vertexCount, vc );
+	CountDrawForLogVulkan( vc );
 
-	vkCmdDrawIndexed( m_commandBuffer, vc, 1, 0, 0, 0 );
+	// startIndex is firstIndex and minimumIndex is vertexOffset. Both were passed as zero here,
+	// which drew the first primitiveCount triangles of whatever the index buffer begins with.
+	// dx12 spells the mapping out -- DrawIndexedInstanced( vc, 1, startIndex, minimumIndex, 0 )
+	// -- and dx11 names its fourth parameter baseVertexLocation outright, which is what
+	// minimumIndex is for despite the name it inherited from D3D9.
+	//
+	// This is only reachable through a suballocated buffer: TriGeometryRes::Draw binds the whole
+	// shared buffer through ApplyStreamSource and expresses the allocation's place in it as
+	// startIndex (indices.GetStartIndex() + area.m_firstIndex). Until READ | WRITE stopped being
+	// rejected there was no shared buffer, so nothing ever arrived here with a startIndex to
+	// drop -- the zeros were harmless for exactly as long as the buffer was impossible.
+	//
+	// numVertices is deliberately unused, as it is on dx11 and dx12: it is D3D9's NumVertices
+	// hint and Vulkan has nowhere to put it.
+	vkCmdDrawIndexed( m_commandBuffer, vc, 1, startIndex, int32_t( minimumIndex ), 0 );
 	return S_OK;
 }
 
@@ -862,8 +1084,10 @@ ALResult Tr2RenderContextAL::DrawPrimitive( uint32_t startVertex, uint32_t primi
 
 	auto vc = m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second;
 	CCP_STATS_ADD( vertexCount, vc );
+	CountDrawForLogVulkan( vc );
 
-	vkCmdDraw( m_commandBuffer, vc, 1, 0, 0 );
+	// firstVertex, for the same reason as startIndex above; dx12 passes it to DrawInstanced.
+	vkCmdDraw( m_commandBuffer, vc, 1, startVertex, 0 );
 	return S_OK;
 }
 
@@ -877,9 +1101,8 @@ ALResult Tr2RenderContextAL::DrawIndexedInstanced(
 
 	auto vc = m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second;
 	CCP_STATS_ADD( vertexCount, vc * numInstances );
+	CountDrawForLogVulkan( vc * numInstances );
 
-	// startIndex is honoured here even though DrawIndexedPrimitive above still ignores it.
-	// Passing it is free and leaving it out would be a second copy of that defect.
 	vkCmdDrawIndexed(
 		m_commandBuffer,
 		vc,
@@ -900,6 +1123,7 @@ ALResult Tr2RenderContextAL::DrawIndexedInstanced(
 	SetPipeline();
 
 	CCP_STATS_ADD( vertexCount, indexCountPerInstance * instanceCount );
+	CountDrawForLogVulkan( uint64_t( indexCountPerInstance ) * instanceCount );
 
 	vkCmdDrawIndexed(
 		m_commandBuffer,
@@ -920,6 +1144,7 @@ ALResult Tr2RenderContextAL::DrawInstanced(
 	SetPipeline();
 
 	CCP_STATS_ADD( vertexCount, vertexCountPerInstance * instanceCount );
+	CountDrawForLogVulkan( uint64_t( vertexCountPerInstance ) * instanceCount );
 
 	vkCmdDraw(
 		m_commandBuffer,
