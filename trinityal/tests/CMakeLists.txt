@@ -25,6 +25,8 @@ set(_SOURCES
     RenderContext.cpp
     RenderContextCreation.cpp
     RenderTarget.cpp
+    # Vulkan-only body (item 12): the same _SOURCES list, an #if around the whole file.
+    ResourceArray.cpp
     RenderWindow.h
     RenderWindow_Stub.cpp
     RenderWindow_Win32.cpp
@@ -141,6 +143,7 @@ set(_SHADERS_VULKAN
     Shaders.vulkan/PositionOnly.vsh
     Shaders.vulkan/PositionOnlyWithPerObjectData.vsh
     Shaders.vulkan/SampleTexture.csh
+    Shaders.vulkan/SampleTextureArrayFromTexCoord.psh
     Shaders.vulkan/SampleTextureFromTexCoord.psh
     Shaders.vulkan/SampleTextureMipFromTexCoord.psh
     Shaders.vulkan/SampleVolumeTexture.psh

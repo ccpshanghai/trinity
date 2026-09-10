@@ -172,10 +172,15 @@ namespace TrinityALImpl
 			auto& inputs = shaders[i].m_shader->m_signature.registers;
 			for( auto it = begin( inputs ); it != end( inputs ); ++it )
 			{
+				// descriptorCount is the array size: `Texture2D maps[4] : register( t0 )` is ONE
+				// binding with four descriptors, in the SPIR-V dxc emits and therefore here. A
+				// layout that said 1 made vkUpdateDescriptorSets write element 0 alone and left
+				// three descriptors undefined -- legal to record, wrong to sample (item 12).
+				const uint32_t arrayCount = it->arrayCount ? it->arrayCount : 1;
 				VkDescriptorSetLayoutBinding binding = {
 					Tr2VulkanBindingABI::BindingNumber( it->registerType, it->registerIndex, shaders[i].GetType() ),
 					GetDescriptorType( it->registerType ),
-					1,
+					arrayCount,
 					static_cast<VkShaderStageFlags>( info.stage ),
 					nullptr
 				};
@@ -186,11 +191,12 @@ namespace TrinityALImpl
 				}
 				else
 				{
-					++poolCounts[binding.descriptorType];
+					// The pool has to hold every descriptor the layout declares, not every binding.
+					poolCounts[binding.descriptorType] += arrayCount;
 					resourceSetBindings.push_back( binding );
 				}
 
-				RegisterInput ri = { binding.binding, static_cast<uint32_t>( shaders[i].GetType() ), it->registerIndex, it->registerType };
+				RegisterInput ri = { binding.binding, static_cast<uint32_t>( shaders[i].GetType() ), it->registerIndex, arrayCount, it->registerType };
 				m_registerInput.push_back( ri );
 			}
 		}
