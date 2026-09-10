@@ -1494,11 +1494,29 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 	// VkDescriptorImageInfo-imageLayout-00344 x20 and vkCmdDraw-None-09600 x10 in every
 	// shippreview frame on the S23 (2026-09-10). A barrier cannot be recorded inside a render
 	// pass, so an open pass ends first, exactly as SetPass does it.
+	EndRenderPassVulkan();
 	if( m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->NeedsTransitionVulkan() )
 	{
-		EndRenderPassVulkan();
 		m_resourceSet.m_resourceSet->TransitionImagesVulkan( m_commandBuffer );
 	}
+
+	// Memory ordering around the dispatch, for everything the layout transitions above do
+	// not cover: a buffer written by this shader through a UAV and read by the next draw's
+	// pixel shader (a histogram, an exposure), or written by a draw and read here. Layout
+	// transitions carry that for images; buffers have no layout and no barrier was ever
+	// recorded for them, so the reader was free to see the buffer as it was before the
+	// dispatch -- a hazard a tiler serves consistently rather than occasionally. One global
+	// barrier on each side of the dispatch, every stage to every stage: compute is a handful
+	// of dispatches per frame in this engine, and correctness first.
+	VkMemoryBarrier2 memoryBarrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+	memoryBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	memoryBarrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+	memoryBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	memoryBarrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+	VkDependencyInfo dependencyInfo = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+	dependencyInfo.memoryBarrierCount = 1;
+	dependencyInfo.pMemoryBarriers = &memoryBarrier;
+	m_owner->m_vkCmdPipelineBarrier2( m_commandBuffer, &dependencyInfo );
 
 	vkCmdBindPipeline( m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_computePipeline );
 
@@ -1516,6 +1534,9 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 	FORWARD_HR( BindConstantBuffers( VK_PIPELINE_BIND_POINT_COMPUTE ) );
 
 	vkCmdDispatch( m_commandBuffer, groupDimX, groupDimY, groupDimZ );
+
+	// And the other side: what this dispatch wrote is visible to whatever comes next.
+	m_owner->m_vkCmdPipelineBarrier2( m_commandBuffer, &dependencyInfo );
 
 	return S_OK;
 }

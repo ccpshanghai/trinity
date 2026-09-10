@@ -1,0 +1,51 @@
+diff --git a/src/BlueResFileSystemLocal.cpp b/src/BlueResFileSystemLocal.cpp
+index 1368c7c..a4ec499 100644
+--- a/src/BlueResFileSystemLocal.cpp
++++ b/src/BlueResFileSystemLocal.cpp
+@@ -8,6 +8,8 @@
+ 
+ #include <sstream>
+ #include <optional>
++#include <algorithm>
++#include <cwctype>
+ 
+ static CcpLogChannel_t s_ch = CCP_LOG_DEFINE_CHANNEL( "BlueResFileSystemLocal" );
+ 
+@@ -261,6 +263,37 @@ bool BlueResFileSystemLocal::ResolvePathW( const std::wstring& path, std::wstrin
+ 					resolvedPath = CcpGetAbsolutePath( candidate );
+ 					return true;
+ 				}
++#if !defined( _WIN32 )
++				// Res paths were written for a case-insensitive filesystem: the engine itself asks
++				// for "res:/Graphics/Effect/Managed/..." and data for "res:/Texture/Global/...",
++				// while the tree they resolve against is lowercased by the tools that stage it
++				// (carbon-trinity-mobile's m1-stage-render-closure.py and the payload stager).
++				// On Android's ext4 the first spelling does not find the second: 92 such paths in
++				// trinity alone, and the first casualty on the S23 was
++				// res:/Texture/Global/noise32cube_volume.dds (2026-09-10). The lowercased
++				// spelling is tried after the literal one, so a tree with the original case
++				// still resolves first and nothing changes where the filesystem folds case.
++				{
++					std::wstring lowered = *keyCompIt;
++					if( !rest.empty() )
++					{
++						std::wstring restLowered = rest;
++						std::transform( restLowered.begin(), restLowered.end(), restLowered.begin(),
++							[]( wchar_t c ) { return static_cast<wchar_t>( std::towlower( c ) ); } );
++						lowered += restLowered;
++					}
++					std::replace( lowered.begin(), lowered.end(), L'\\', L'/' );
++					if( lowered != candidate && CcpIsPathExistingFile( lowered, lowered ) )
++					{
++						if( CcpIsPathDirectory( lowered.c_str() ) && lowered[lowered.length() - 1] != L'/' )
++						{
++							lowered.push_back( L'/' );
++						}
++						resolvedPath = CcpGetAbsolutePath( lowered );
++						return true;
++					}
++				}
++#endif
+ 			}
+ 		}
+ 	}
