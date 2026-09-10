@@ -152,7 +152,10 @@ namespace TrinityALImpl
 							return E_FAIL;
 						}
 						VkDescriptorImageInfo imageInfo = {  };
-						imageInfo.imageView = resource.texture.m_texture->m_imageViews[0];
+						// The storage view, not the shader-resource one: for a cube texture they
+						// differ in dim (2D_ARRAY against CUBE), and the descriptor has to match
+						// what the shader declared.
+						imageInfo.imageView = resource.texture.m_texture->GetStorageViewVulkan();
 						imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 						imageInfos.push_back( imageInfo );
 						BoundImageVulkan bound = { resource.texture, VK_IMAGE_LAYOUT_GENERAL };

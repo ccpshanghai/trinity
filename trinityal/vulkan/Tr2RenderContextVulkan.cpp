@@ -1486,6 +1486,20 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 		CR_RETURN_HR( Vk2Al( vkCreateComputePipelines( m_owner->m_device, m_owner->m_pipelineCache, 1, &pipelineInfo, nullptr, &m_computePipeline ) ) );
 	}
 
+	// The draw path moves the resource set's images into the layouts its descriptors
+	// declare in SetPass; a dispatch has no pass, and so it bound the set with its images
+	// wherever the last command had left them -- a texture just uploaded still in
+	// TRANSFER_DST_OPTIMAL read as SHADER_READ_ONLY_OPTIMAL, a storage image never taken out
+	// of UNDEFINED where GENERAL was promised: VUID-vkCmdDispatch-None-08114 x20,
+	// VkDescriptorImageInfo-imageLayout-00344 x20 and vkCmdDraw-None-09600 x10 in every
+	// shippreview frame on the S23 (2026-09-10). A barrier cannot be recorded inside a render
+	// pass, so an open pass ends first, exactly as SetPass does it.
+	if( m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->NeedsTransitionVulkan() )
+	{
+		EndRenderPassVulkan();
+		m_resourceSet.m_resourceSet->TransitionImagesVulkan( m_commandBuffer );
+	}
+
 	vkCmdBindPipeline( m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_computePipeline );
 
 	if( m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet && program->m_resourceLayout )

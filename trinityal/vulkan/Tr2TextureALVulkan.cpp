@@ -89,6 +89,7 @@ namespace TrinityALImpl
 	Tr2TextureAL::Tr2TextureAL()
 		:m_owner( nullptr ),
 		m_memory( VK_NULL_HANDLE ),
+		m_storageView( VK_NULL_HANDLE ),
 		m_currentIndex( 0 ),
 		m_cpuUsage( Tr2CpuUsage::NONE ),
 		m_gpuUsage( Tr2GpuUsage::NONE ),
@@ -476,6 +477,11 @@ namespace TrinityALImpl
 			for( auto it = begin( m_attachmentViews ); it != end( m_attachmentViews ); ++it )
 			{
 				m_owner->DestroyLaterVulkan( it->second, vkDestroyImageView );
+			}
+			if( m_storageView != VK_NULL_HANDLE )
+			{
+				m_owner->DestroyLaterVulkan( m_storageView, vkDestroyImageView );
+				m_storageView = VK_NULL_HANDLE;
 			}
 			if( m_images.size() == 1 )
 			{
@@ -1238,6 +1244,47 @@ namespace TrinityALImpl
 		}
 		m_attachmentViews[key] = view;
 		return view;
+	}
+
+	VkImageView Tr2TextureAL::GetStorageViewVulkan()
+	{
+		if( m_desc.GetType() != Tr2RenderContextEnum::TEX_TYPE_CUBE )
+		{
+			return m_imageViews[m_currentIndex];
+		}
+		if( m_storageView != VK_NULL_HANDLE )
+		{
+			return m_storageView;
+		}
+		// The shader-resource view's extent -- every level, every layer -- with the one
+		// difference a storage descriptor of a cube needs: 2D_ARRAY, six layers, not CUBE.
+		VkImageViewCreateInfo createInfo = {
+			VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			nullptr,
+			0,
+			m_images[m_currentIndex],
+			VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+			m_format,
+			{
+				VK_COMPONENT_SWIZZLE_IDENTITY,
+				VK_COMPONENT_SWIZZLE_IDENTITY,
+				VK_COMPONENT_SWIZZLE_IDENTITY,
+				VK_COMPONENT_SWIZZLE_IDENTITY
+			},
+			{
+				GetAspectMaskVulkan( m_format ),
+				0,
+				VK_REMAINING_MIP_LEVELS,
+				0,
+				VK_REMAINING_ARRAY_LAYERS
+			}
+		};
+		if( FAILED( Vk2Al( vkCreateImageView( m_owner->m_device, &createInfo, nullptr, &m_storageView ) ) ) )
+		{
+			m_storageView = VK_NULL_HANDLE;
+			return m_imageViews[m_currentIndex];
+		}
+		return m_storageView;
 	}
 
 	uint32_t Tr2TextureAL::GetSrvIndexInHeap( Tr2RenderContextEnum::ColorSpace ) const

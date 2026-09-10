@@ -640,7 +640,14 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	// synchronization2 rides the same policy: every barrier and submit in the backend is
 	// the 2 form, so it is required, not preferred. Same version bracket, same clean
 	// failure.
-	VkPhysicalDeviceSynchronization2Features supportedSynchronization2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES };
+	// shaderDemoteToHelperInvocation: what dxc emits for `discard` when the target is
+	// vulkan1.3 (OpDemoteToHelperInvocation, capability DemoteToHelperInvocation), so every
+	// effect with a discard declares it and vkCreateShaderModule refuses the module unless the
+	// feature is enabled -- VUID-VkShaderModuleCreateInfo-pCode-08740, twelve modules per
+	// shippreview frame on the S23 (2026-09-10). Core in 1.3 and required there, so on the
+	// devices this backend runs on it is always reported; queried anyway, and enabled only if so.
+	VkPhysicalDeviceShaderDemoteToHelperInvocationFeatures supportedDemote = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES };
+	VkPhysicalDeviceSynchronization2Features supportedSynchronization2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES, &supportedDemote };
 	VkPhysicalDeviceDynamicRenderingFeatures supportedDynamicRendering = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES, &supportedSynchronization2 };
 	VkPhysicalDeviceFeatures2 supportedFeatures2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &supportedDynamicRendering };
 	vkGetPhysicalDeviceFeatures2( physicalDevice.device, &supportedFeatures2 );
@@ -687,7 +694,13 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		extensions.push_back( VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME );
 	}
 
-	VkPhysicalDeviceSynchronization2Features enabledSynchronization2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES };
+	VkPhysicalDeviceShaderDemoteToHelperInvocationFeatures enabledDemote = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES };
+	enabledDemote.shaderDemoteToHelperInvocation = supportedDemote.shaderDemoteToHelperInvocation;
+	if( !supportedDemote.shaderDemoteToHelperInvocation )
+	{
+		CCP_AL_LOGWARN( "Vulkan device does not report shaderDemoteToHelperInvocation; every effect with a discard will fail vkCreateShaderModule (pCode-08740)" );
+	}
+	VkPhysicalDeviceSynchronization2Features enabledSynchronization2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES, &enabledDemote };
 	enabledSynchronization2.synchronization2 = VK_TRUE;
 	VkPhysicalDeviceDynamicRenderingFeatures enabledDynamicRendering = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES, &enabledSynchronization2 };
 	enabledDynamicRendering.dynamicRendering = VK_TRUE;

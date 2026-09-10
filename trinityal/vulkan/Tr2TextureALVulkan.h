@@ -136,6 +136,14 @@ namespace TrinityALImpl
 		// the ones that do usually need only level 0 of layer 0 -- for which the
 		// shader-resource view is already the right shape and is returned unchanged.
 		VkImageView GetAttachmentViewVulkan( uint32_t mip, uint32_t layer, bool srgb = false );
+
+		// The storage-image (UAV) view. For every texture but a cube it is the shader-resource
+		// view; a cube's shader-resource view is a CUBE view, and the RWTexture2DArray a compute
+		// shader writes it through needs a 2D_ARRAY view over the same six layers -- the two
+		// dims are not interchangeable in a descriptor (VUID-vkCmdDispatch-viewType-07752, the
+		// reflection probe's `tex_lo_res` on the S23, 2026-09-10). Created on demand, destroyed
+		// with the rest.
+		VkImageView GetStorageViewVulkan();
 		void Describe( Tr2DeviceResourceDescriptionAL& description ) const;
 		ALResult SetName( const char* name );
 		const char* GetName() const;
@@ -156,6 +164,9 @@ namespace TrinityALImpl
 		// Keyed by image index, mip and layer packed together; see
 		// GetAttachmentViewVulkan.
 		std::map<uint32_t, VkImageView> m_attachmentViews;
+
+		// GetStorageViewVulkan's, for a cube texture only; VK_NULL_HANDLE otherwise.
+		VkImageView m_storageView;
 
 		// The staging buffer behind whichever map is currently open. One at a time: the AL
 		// has no handle to distinguish two simultaneous maps of the same texture, so a
