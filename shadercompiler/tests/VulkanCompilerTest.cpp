@@ -84,6 +84,25 @@ float4 MainPS( float2 uv : TEXCOORD0 ) : SV_Target
 technique T0 { pass P0 { PixelShader = compile ps_5_0 MainPS(); } }
 )";
 
+// A `static const` array beside ordinary globals -- the shape of 30 EVE effects (tonemapping,
+// shadowdepth, downsample, ...). CreateGlobalsCB used to sweep the static into the generated
+// `cbuffer Globals` with the rest; DXIL shrugged, DXC's SPIR-V back end warned "cbuffer member
+// initializer ignored" and then emitted invalid SPIR-V (OpAccessChain out of bounds, or
+// "reached non-composite type"). Item 9's whole failure class, in eleven lines.
+const char* STATIC_CONST_ARRAY_EFFECT = R"(
+static const float4 Colors[4] = { float4( 1, 0, 0, 1 ), float4( 0, 1, 0, 1 ), float4( 0, 0, 1, 1 ), float4( 1, 1, 1, 1 ) };
+float Brightness;
+float3 Tint;
+float Which;
+
+float4 MainPS( float2 uv : TEXCOORD0 ) : SV_Target
+{
+	return Colors[int( Which )] * Brightness + float4( Tint, 0 );
+}
+
+technique T0 { pass P0 { PixelShader = compile ps_5_0 MainPS(); } }
+)";
+
 EffectData CompileSpirv( const char* src )
 {
 	EffectCompilerDX11 compiler;
@@ -191,6 +210,20 @@ void ExpectStageObeysTheAbi( const StageInput& stage )
 			<< " expected set " << expectedSet << " binding " << expectedBinding;
 	}
 }
+}
+
+TEST( VulkanCompiler, AStaticConstArrayStaysOutOfTheGlobalsCbuffer )
+{
+	// Compiling at all is the assertion: before the fix this effect was refused with DXC's
+	// "generated SPIR-V is invalid". The module is then checked for its magic like the others.
+	EffectData data = CompileSpirv( STATIC_CONST_ARRAY_EFFECT );
+	ASSERT_EQ( data.techniques.size(), 1u );
+	auto& stages = data.techniques[0].passes[0].stages;
+	ASSERT_EQ( stages.size(), 1u );
+	size_t wordCount = 0;
+	const uint32_t* words = ShaderWords( stages[0], wordCount );
+	ASSERT_GE( wordCount, 5u );
+	EXPECT_EQ( words[0], 0x07230203u );
 }
 
 TEST( VulkanCompiler, EmitsSpirvForEveryStage )

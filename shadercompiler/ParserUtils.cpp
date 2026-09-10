@@ -983,6 +983,19 @@ int GetNodeOrder( ASTNode* t )
 		{
 			return 2;
 		}
+		else if( t->GetType().storageClass == OP_STATIC )
+		{
+			// After the globals and the resources, before the functions: a `static const`
+			// global is a compile-time constant, not a constant-buffer member, and
+			// CreateGlobalsCB below sweeps a contiguous run of order-1 declarations into the
+			// generated `cbuffer Globals`. Sorted in with them, `static const float4 c[16] =
+			// {...}` became a cbuffer member with an initializer -- which DXIL tolerates and
+			// which DXC's SPIR-V back end answers with "cbuffer member initializer ignored"
+			// and then invalid SPIR-V (OpAccessChain out of bounds / non-composite type):
+			// M6 item 9's "static-const-misclassified" class, 27 of 30 EVE effects that
+			// declare one, tonemapping and shadowdepth among them (2026-09-10).
+			return 3;
+		}
 		else
 		{
 			return 1;
@@ -1049,7 +1062,10 @@ void CreateGlobalsCB( ParserState& state )
 					continue;
 				}
 			}
-			if( !GetRegisterType( child->GetType() ) )
+			// Not a resource, and not `static`: statics sort after this range (GetNodeOrder),
+			// so they cannot fall inside it, but the rule is stated here too so that a
+			// reordering elsewhere cannot silently put them back into the cbuffer.
+			if( !GetRegisterType( child->GetType() ) && child->GetType().storageClass != OP_STATIC )
 			{
 				varStart = std::min( varStart, i );
 				varEnd = std::max( varEnd, i );
