@@ -198,7 +198,21 @@ namespace
 		// We can define other usage flags but we always need to check if they are supported
 		if( surface_capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT ) 
 		{
-			return VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+			VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+			// TRANSFER_SRC as well, when the surface offers it: reading the presented image back
+			// is a vkCmdCopyImage with the back buffer as the *source*, and the back buffer is
+			// a swap-chain image, whose usage comes from here rather than from
+			// Tr2TextureAL::Create (which sets both transfer bits unconditionally). Without
+			// this bit the read-back was VUID-vkCmdCopyImage-aspect-06662 for the copy and
+			// VUID-VkImageMemoryBarrier2-oldLayout-01212 twice for the transition into and out
+			// of TRANSFER_SRC_OPTIMAL -- three errors per capture, on a path that only
+			// Tr2HostBitmap and the screenshot probes take, which is why it stayed hidden until
+			// something was worth capturing.
+			if( surface_capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT )
+			{
+				usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+			}
+			return usage;
 		}
 		return static_cast<VkImageUsageFlags>( -1 );
 	}
