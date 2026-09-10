@@ -1568,6 +1568,16 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 								L"-spirv",
 								L"-fspv-target-env=vulkan1.3",
 								L"-Zpc",
+								// The language the effects were written in. DXC defaults to HLSL 2021,
+								// where `||` and `&&` on vectors are errors ("operands for short-circuiting
+								// logical binary operator must be scalar"); FXC-era EVE effects use them --
+								// VolumetricBooster.fxh's `any( ( coord < 0 ) || ( coord > 1 ) )` kept
+								// boostervolumetric out of the S23's Vulkan closure on 2026-09-10. 2018 is
+								// the last version that reads them as the element-wise operators they were.
+								// The DXIL arguments below are left at the default until Windows can measure
+								// the change; the two back ends read the same source under two grammars
+								// for now, and the ledger says so.
+								L"-HV", L"2018",
 							};
 							VulkanBindingShiftArguments shiftValues;
 							if( !TryGetVulkanBindingShiftArguments( shiftValues, stage.type ) )
@@ -1591,10 +1601,14 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 								spirvArguments.push_back( DXC_ARG_SKIP_OPTIMIZATIONS );
 							}
 
+							// The reflection compile of the same source, on the same path: it has to
+							// parse under the same grammar as the module above, or an effect the
+							// SPIR-V compile accepted fails its reflection pass one line later.
 							std::vector<LPCWSTR> dxilArguments = {
 								L"-T", wideProfile.c_str(),
 								L"-E", wideEntry.c_str(),
 								L"-Zpc",
+								L"-HV", L"2018",
 							};
 							if( g_skipOptimization )
 							{
