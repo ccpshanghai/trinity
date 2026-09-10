@@ -1,6 +1,7 @@
 // Copyright © 2023 CCP ehf.
 
 #include "stdafx.h"
+#include "FXAnalyzer.h"
 #include "ParserUtils.h"
 #include "SymbolTable.h"
 #include "ASTNode.h"
@@ -1025,6 +1026,76 @@ void SortProgramNodes( ASTNode* root )
 			auto pB = GetNodeOrder( b );
 			return pA < pB;
 		} );
+}
+
+namespace
+{
+// One scalar-or-vector value of `type` into `out`, as floats or 32-bit ints; `capacity` bytes.
+bool WriteInitializerValue( ParserState& state, ASTNode* initializer, const Type& type, void* out, size_t capacity )
+{
+	if( type.IsMatrix() )
+	{
+		return false;
+	}
+	Type expectedType = type;
+	ExpressionValue value;
+	if( !EvaluateInitializer( state, initializer, expectedType, value, nullptr ) )
+	{
+		return false;
+	}
+	const size_t count = std::min( value.size(), size_t( type.width * type.height ) );
+	if( count * sizeof( float ) > capacity )
+	{
+		return false;
+	}
+	if( type.builtInType == OP_FLOAT )
+	{
+		float* floats = static_cast<float*>( out );
+		for( size_t i = 0; i < count; ++i )
+		{
+			floats[i] = float( value[i].floatValue );
+		}
+		return true;
+	}
+	if( type.builtInType == OP_INT || type.builtInType == OP_UINT || type.builtInType == OP_BOOL )
+	{
+		int32_t* ints = static_cast<int32_t*>( out );
+		for( size_t i = 0; i < count; ++i )
+		{
+			ints[i] = int32_t( value[i].intValue );
+		}
+		return true;
+	}
+	return false;
+}
+}
+
+bool FillDefaultValueFromInitializer( ParserState& state, ASTNode* initializer, const Type& type, void* out, size_t outSize, uint32_t elements )
+{
+	if( !initializer || !out || outSize == 0 )
+	{
+		return false;
+	}
+	if( type.arrayDimensions == 0 )
+	{
+		return WriteInitializerValue( state, initializer, type, out, outSize );
+	}
+	if( type.arrayDimensions != 1 )
+	{
+		return false;
+	}
+	// `T name[N] = { a, b, ... }`: one child per element, each at D3D's 16-byte array stride.
+	Type elementType = type;
+	elementType.arrayDimensions = 0;
+	const size_t stride = 16;
+	bool wrote = false;
+	const size_t available = std::min( size_t( initializer->GetChildrenCount() ), size_t( elements ) );
+	for( size_t i = 0; i < available && i * stride < outSize; ++i )
+	{
+		wrote |= WriteInitializerValue( state, initializer->GetChild( i ), elementType,
+			static_cast<uint8_t*>( out ) + i * stride, outSize - i * stride );
+	}
+	return wrote;
 }
 
 void CreateGlobalsCB( ParserState& state )

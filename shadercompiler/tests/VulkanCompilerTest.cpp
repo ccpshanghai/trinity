@@ -103,6 +103,23 @@ float4 MainPS( float2 uv : TEXCOORD0 ) : SV_Target
 technique T0 { pass P0 { PixelShader = compile ps_5_0 MainPS(); } }
 )";
 
+// Globals with HLSL initialisers, the way every EVE effect declares its tunables. Whether the
+// compiled stage carries them is the whole difference between a tonemapper with a curve and
+// one that divides zero by zero.
+const char* DEFAULTED_GLOBALS_EFFECT = R"(
+float Brightness < string Group = "Test"; > = 0.75;
+float3 Tint = { 0.25, 0.5, 1.0 };
+float Weights[3] = { 2, 4, 8 };
+int Mode = 3;
+
+float4 MainPS( float2 uv : TEXCOORD0 ) : SV_Target
+{
+	return float4( Tint * Brightness, Weights[int( uv.x * 2 )] + Mode );
+}
+
+technique T0 { pass P0 { PixelShader = compile ps_5_0 MainPS(); } }
+)";
+
 EffectData CompileSpirv( const char* src )
 {
 	EffectCompilerDX11 compiler;
@@ -210,6 +227,62 @@ void ExpectStageObeysTheAbi( const StageInput& stage )
 			<< " expected set " << expectedSet << " binding " << expectedBinding;
 	}
 }
+}
+
+// The reflected constant of that name, or null.
+const Constant* FindConstant( const StageData& stage, const char* name )
+{
+	for( auto& constant : stage.constants )
+	{
+		if( strcmp( g_stringTable.GetString( constant.name ), name ) == 0 )
+		{
+			return &constant;
+		}
+	}
+	return nullptr;
+}
+
+float DefaultAt( const StageData& stage, const Constant& constant, size_t index = 0 )
+{
+	float value = 0.0f;
+	if( constant.offset + ( index + 1 ) * sizeof( float ) > stage.defaultValues.size() )
+	{
+		ADD_FAILURE() << g_stringTable.GetString( constant.name ) << ": the defaults block ends before this element";
+		return value;
+	}
+	memcpy( &value, &stage.defaultValues[constant.offset + index * sizeof( float )], sizeof( float ) );
+	return value;
+}
+
+TEST( VulkanCompiler, TheInitialisersOfGlobalsBecomeTheStagesDefaultValues )
+{
+	EffectData data = CompileSpirv( DEFAULTED_GLOBALS_EFFECT );
+	ASSERT_EQ( data.techniques.size(), 1u );
+	auto& stage = data.techniques[0].passes[0].stages[0];
+	ASSERT_FALSE( stage.defaultValues.empty() ) << "dxc's reflection has no DefaultValue; the AST initialisers must be evaluated instead";
+
+	const Constant* brightness = FindConstant( stage, "Brightness" );
+	ASSERT_NE( brightness, nullptr );
+	EXPECT_FLOAT_EQ( 0.75f, DefaultAt( stage, *brightness ) );
+
+	const Constant* tint = FindConstant( stage, "Tint" );
+	ASSERT_NE( tint, nullptr );
+	EXPECT_FLOAT_EQ( 0.25f, DefaultAt( stage, *tint, 0 ) );
+	EXPECT_FLOAT_EQ( 0.5f, DefaultAt( stage, *tint, 1 ) );
+	EXPECT_FLOAT_EQ( 1.0f, DefaultAt( stage, *tint, 2 ) );
+
+	// An array: D3D lays each element on its own 16-byte row.
+	const Constant* weights = FindConstant( stage, "Weights" );
+	ASSERT_NE( weights, nullptr );
+	EXPECT_FLOAT_EQ( 2.0f, DefaultAt( stage, *weights, 0 ) );
+	EXPECT_FLOAT_EQ( 4.0f, DefaultAt( stage, *weights, 4 ) );
+	EXPECT_FLOAT_EQ( 8.0f, DefaultAt( stage, *weights, 8 ) );
+
+	const Constant* mode = FindConstant( stage, "Mode" );
+	ASSERT_NE( mode, nullptr );
+	int32_t modeValue = 0;
+	memcpy( &modeValue, &stage.defaultValues[mode->offset], sizeof( modeValue ) );
+	EXPECT_EQ( 3, modeValue );
 }
 
 TEST( VulkanCompiler, AStaticConstArrayStaysOutOfTheGlobalsCbuffer )

@@ -357,6 +357,22 @@ static bool ProcessReflection( ParserState& parserState, typename Traits::Reflec
 
 			if( Symbol* symbol = parserState.GetSymbolTable().LookupGlobal( varDesc.Name ) )
 			{
+				// FXC's reflection carried each global's HLSL initialiser as DefaultValue; dxc's
+				// never does. The Windows DX11/DX12 compiles reflect through FXC and got their
+				// defaults that way; the SPIR-V path reflects through dxc and shipped none, so
+				// on the device every unset global was zero -- and a tonemapper whose curve
+				// parameters are all zero divides 0 by 0 and paints the frame white (the S23,
+				// 2026-09-10, m6-shippreview-s23-bisect-*). The initialiser is still in the
+				// AST; evaluate it, as the Metal compiler always has (its FillDefaults).
+				if( !varDesc.DefaultValue && symbol->definition )
+				{
+					if( ASTNode* initializer = symbol->definition->GetChildOrNull( 1 ) )
+					{
+						stage.defaultValues.resize( std::max( stage.defaultValues.size(), size_t( constant.offset + constant.size ) ) );
+						FillDefaultValueFromInitializer( parserState, initializer, symbol->type, &stage.defaultValues[constant.offset], constant.size, typeDesc.Elements );
+					}
+				}
+
 				if( annotations.find( constant.name ) == annotations.end() )
 				{
 					ParameterAnnotation paramAnnotations;
