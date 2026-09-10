@@ -49,7 +49,20 @@ namespace TrinityALImpl
 			return E_INVALIDARG;
 		}
 
-		if( HasFlag( desc.cpuUsage, Tr2CpuUsage::READ ) && HasFlag( desc.cpuUsage, Tr2CpuUsage::WRITE ) )
+		// WRITE_OFTEN, not WRITE. Both the dx12 and the metal backend reject exactly
+		// READ | WRITE_OFTEN here -- a buffer that is read back *and* rewritten every
+		// frame has no single memory home on those APIs -- and this port dropped the
+		// _OFTEN. READ | WRITE on its own is ordinary host-visible memory, which is what
+		// the branch below gives it, and what MapForReading, MapForWriting and
+		// UpdateBuffer all already handle.
+		//
+		// The cost of the missing four letters: Tr2SuballocatedBuffer asks for exactly
+		// READ | WRITE, so g_sharedBuffer -- the one buffer every TriGeometryRes vertex
+		// and index allocation comes out of -- could never be created on Vulkan.
+		// CreateLodFromCMFMesh then returned false without a word, so an EVE hull loaded
+		// its .cmf, its .red and its eight .dds and drew nothing at all. The only trace
+		// in a 20-second log was one line about six quads.
+		if( HasFlag( desc.cpuUsage, Tr2CpuUsage::READ ) && HasFlag( desc.cpuUsage, Tr2CpuUsage::WRITE_OFTEN ) )
 		{
 			return E_INVALIDARG;
 		}
