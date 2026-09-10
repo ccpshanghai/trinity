@@ -455,6 +455,12 @@ namespace TrinityALImpl
 			if( m_memory )
 			{
 				m_owner->DestroyLaterVulkan( m_memory, vkFreeMemory );
+				// Nulled, as Tr2BufferAL::Destroy and Tr2ConstantBufferAL::Destroy do: the
+				// destructor calls Destroy again, and everything else this clears below made
+				// a second pass a no-op -- except the memory, which was queued a second time.
+				// One VkDeviceMemory freed twice at the end of every validated app run on
+				// 2026-09-09 (VUID-vkFreeMemory-memory-parameter, m6-fps-validation-20260909).
+				m_memory = VK_NULL_HANDLE;
 			}
 			for( auto it = begin( m_imageViews ); it != end( m_imageViews ); ++it )
 			{
