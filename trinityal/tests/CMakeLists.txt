@@ -10,6 +10,7 @@ set(_SOURCES
     Buffer.cpp
     Compute.cpp
     ConstantBuffer.cpp
+    ConstantBufferRename.cpp
     DepthStencil.cpp
     DrawOffsets.cpp
     Dxt1Image.h
@@ -26,6 +27,7 @@ set(_SOURCES
     RenderContext.cpp
     RenderContextCreation.cpp
     RenderTarget.cpp
+    RenderTargetSwitch.cpp
     # Vulkan-only body (item 12): the same _SOURCES list, an #if around the whole file.
     ResourceArray.cpp
     RenderWindow.h

@@ -921,6 +921,17 @@ namespace TrinityALImpl
 			srcExtent
 		};
 
+		if( DrawLogEnabledVulkan() )
+		{
+			// Before the transitions, so the layouts are the ones the images were LEFT in by
+			// whatever touched them last -- an UNDEFINED source here is a copy of nothing.
+			CCP_LOG( "copy: %s[%s] %ux%u -> %s[%s] %ux%u",
+					 source.m_name.c_str(), LayoutNameVulkan( source.GetLayoutVulkan() ),
+					 srcExtent.width, srcExtent.height,
+					 m_name.c_str(), LayoutNameVulkan( GetLayoutVulkan() ),
+					 dstExtent.width, dstExtent.height );
+		}
+
 		renderContext.EndRenderPassVulkan();
 		source.TransitionVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
 		TransitionForTransferWriteVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
@@ -1088,6 +1099,22 @@ namespace TrinityALImpl
 		if( oldLayout == newLayout )
 		{
 			return;
+		}
+		// A transition FROM UNDEFINED is the one layout change that is allowed to throw the
+		// image's contents away, and it does so without a validation message. Legal and right
+		// for an image nothing has written yet; a whole frame's worth of draws lost if the
+		// tracker forgot where a written image was. Named images only: the unnamed ones are
+		// uploads and staging, which are exactly the ones that start UNDEFINED on purpose.
+		if( oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && DrawLogEnabledVulkan() && !m_name.empty() )
+		{
+			CCP_LOG( "discard: %s UNDEFINED -> %s (contents dropped)", m_name.c_str(), LayoutNameVulkan( newLayout ) );
+		}
+		// The back buffer's every transition, because its sequence within a frame is the order
+		// in which the screen's clear, the composite, the HUD, the read-back and the present
+		// touched it -- and which of those came first decides what a discard threw away.
+		else if( DrawLogEnabledVulkan() && m_name == "backbuffer" )
+		{
+			CCP_LOG( "backbuffer: %s -> %s", LayoutNameVulkan( oldLayout ), LayoutNameVulkan( newLayout ) );
 		}
 
 		// synchronization2: the stages ride in the barrier itself rather than as
@@ -1302,14 +1329,19 @@ namespace TrinityALImpl
 		description["type"] = "Tr2TextureAL";
 	}
 
-	ALResult Tr2TextureAL::SetName( const char* )
+	ALResult Tr2TextureAL::SetName( const char* name )
 	{
-		return E_NOTIMPL;
+		// Stored, not pushed to the driver: vkSetDebugUtilsObjectNameEXT is not wired on this
+		// backend, and the name's one consumer here is the draw log. Returning E_NOTIMPL made
+		// GetName() null for every texture the pool had named, which is why a whole day of
+		// device runs referred to the scene's colour target by a handle.
+		m_name = name ? name : "";
+		return S_OK;
 	}
 
 	const char* Tr2TextureAL::GetName() const
 	{
-		return nullptr;
+		return m_name.c_str();
 	}
 }
 

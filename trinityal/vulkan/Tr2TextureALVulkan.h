@@ -168,6 +168,11 @@ namespace TrinityALImpl
 		// GetStorageViewVulkan's, for a cube texture only; VK_NULL_HANDLE otherwise.
 		VkImageView m_storageView;
 
+		// What SetName was given, kept the way metal keeps it. Tr2GpuResourcePool names every
+		// texture it hands out ("cascadedShadowDepth", "shadowMapResult", ...), so with this
+		// the draw log can say which target a draw went to instead of printing a handle.
+		std::string m_name;
+
 		// The staging buffer behind whichever map is currently open. One at a time: the AL
 		// has no handle to distinguish two simultaneous maps of the same texture, so a
 		// second Map before the matching Unmap is a caller error rather than something to

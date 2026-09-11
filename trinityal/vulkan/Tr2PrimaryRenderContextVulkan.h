@@ -118,6 +118,10 @@ public:
 	uint64_t GetRecordingFrameNumber() const;
 	uint64_t GetRenderedFrameNumber() const;
 
+	// The device's minUniformBufferOffsetAlignment, for a constant buffer that hands out
+	// slots of itself at offsets (Tr2ConstantBufferALVulkan). Never below 16.
+	VkDeviceSize GetUniformBufferOffsetAlignmentVulkan() const;
+
 private:
 	Tr2PrimaryRenderContextAL( const Tr2PrimaryRenderContextAL& ) /* = delete */;
 	Tr2PrimaryRenderContextAL& operator=( const Tr2PrimaryRenderContextAL& ) /* = delete */;

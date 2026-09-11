@@ -849,6 +849,29 @@ void Tr2Effect::RebuildCachedData()
 	RebuildCachedDataInternal();
 }
 
+const char* Tr2Effect::DescribeShaderResolution() const
+{
+	if( !m_effectResource )
+	{
+		return "no resource";
+	}
+	if( m_effectResource->IsLoading() )
+	{
+		return "loading";
+	}
+	if( !m_effectResource->IsGood() )
+	{
+		return "resource failed";
+	}
+	if( !m_shader )
+	{
+		return Tr2Renderer::IsResourceCreationAllowed()
+			? "resource good, shader null"
+			: "resource good, shader null, resource creation not allowed here";
+	}
+	return "ok";
+}
+
 void Tr2Effect::ReleaseCachedData( BlueAsyncRes* p )
 {
 	CCP_STATS_ZONE( __FUNCTION__ );

@@ -114,6 +114,12 @@ namespace TrinityALImpl
 	// These are the conservative pairings, not the tightest ones. A tighter srcStage for
 	// a known producer would be faster; getting it wrong is a data race that validation
 	// cannot always see, so the wide mask is the right default until something measures.
+	// TRINITY_DRAW_LOG=1, read once. The render context prints its per-scene tally under it;
+	// the texture prints its layout discards and copies under the same switch, so one variable
+	// turns on everything that answers "what did this frame actually do".
+	bool DrawLogEnabledVulkan();
+	const char* LayoutNameVulkan( VkImageLayout layout );
+
 	void GetLayoutStageAccessVulkan( VkImageLayout layout, VkPipelineStageFlags2& stage, VkAccessFlags2& access );
 
 	// Colour formats get the colour aspect, depth formats get depth (plus stencil where

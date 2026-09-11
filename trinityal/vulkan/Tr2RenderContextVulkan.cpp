@@ -16,6 +16,7 @@
 #include "Tr2VideoAdapterInfoALVulkan.h"
 #include "UtilitiesVulkan.h"
 #include "VkResult.h"
+#include "ALLog.h"
 #include "../include/Tr2RtTopLevelAccelerationStructureAL.h"
 
 bool g_gatherPipelineStatistics = false;
@@ -38,11 +39,7 @@ namespace
 {
 bool DrawLogEnabled()
 {
-	static const bool enabled = []{
-		const char* value = getenv( "TRINITY_DRAW_LOG" );
-		return value && value[0] == '1';
-	}();
-	return enabled;
+	return TrinityALImpl::DrawLogEnabledVulkan();
 }
 
 // TRINITY_CULL_OVERRIDE=none|front|back forces every pipeline's cull mode, ignoring what the
@@ -81,12 +78,21 @@ uint32_t g_drawLogClears = 0;
 struct DrawLogTarget
 {
 	VkImage image;
+	VkCommandBuffer commandBuffer;
+	const char* name;
 	uint32_t width;
 	uint32_t height;
 	uint32_t draws;
 };
-DrawLogTarget g_drawLogTargets[8] = {};
+DrawLogTarget g_drawLogTargets[16] = {};
 uint32_t g_drawLogTargetCount = 0;
+
+// Every SetRenderTarget( slot 0 ) the AL receives, by name, in order, deduplicated on repeats.
+// Distinct from the targets list above, which only knows targets a draw reached: a target
+// that is bound and never drawn into shows up here and not there, and that difference is
+// the whole question when a composite goes missing.
+std::string g_drawLogBinds;
+uint32_t g_drawLogBindCount = 0;
 
 // The depth state the colour draws ran under, and the value every depth clear asked for. EVE
 // renders reversed-Z: the buffer is cleared to 0 and the comparison is GREATER_EQUAL. Get either
@@ -105,7 +111,7 @@ struct DrawLogDepth
 };
 DrawLogDepth g_drawLogDepth[8] = {};
 uint32_t g_drawLogDepthCount = 0;
-struct DrawLogDepthClear { float depth; uint32_t width; uint32_t height; };
+struct DrawLogDepthClear { float depth; const char* name; uint32_t width; uint32_t height; };
 DrawLogDepthClear g_drawLogDepthClears[12] = {};
 uint32_t g_drawLogDepthClearCount = 0;
 
@@ -131,23 +137,26 @@ void NoteDrawLogDepth( uint32_t test, uint32_t write, uint32_t compareOp, uint32
 // Keyed on the VkImage, not on the extent: a frame that renders its scene into one full-screen
 // target and composites a different one of the same size is invisible, and an extent cannot tell
 // those two apart. The handle is printed truncated because only its distinctness matters.
-void NoteDrawLogTarget( VkImage image, uint32_t width, uint32_t height )
+// Keyed on the image AND the command buffer the draw was recorded into. A draw that lands in
+// the right image on a command buffer nobody submits -- or one submitted after the copy that
+// reads the image -- counts like any other and paints nothing; the handle is how to tell.
+void NoteDrawLogTarget( VkImage image, VkCommandBuffer commandBuffer, const char* name, uint32_t width, uint32_t height )
 {
 	for( uint32_t i = 0; i < g_drawLogTargetCount; ++i )
 	{
-		if( g_drawLogTargets[i].image == image )
+		if( g_drawLogTargets[i].image == image && g_drawLogTargets[i].commandBuffer == commandBuffer )
 		{
 			++g_drawLogTargets[i].draws;
 			return;
 		}
 	}
-	if( g_drawLogTargetCount < 8 )
+	if( g_drawLogTargetCount < 16 )
 	{
-		g_drawLogTargets[g_drawLogTargetCount++] = { image, width, height, 1 };
+		g_drawLogTargets[g_drawLogTargetCount++] = { image, commandBuffer, name, width, height, 1 };
 	}
 	else
 	{
-		++g_drawLogTargets[7].draws;
+		++g_drawLogTargets[15].draws;
 	}
 }
 }
@@ -337,11 +346,25 @@ ALResult Tr2RenderContextAL::EndScene()
 		std::string targets;
 		for( uint32_t i = 0; i < g_drawLogTargetCount; ++i )
 		{
-			char one[64];
-			snprintf( one, sizeof( one ), "%s%ux%u#%04x:%u", targets.empty() ? "" : " ",
-					  g_drawLogTargets[i].width, g_drawLogTargets[i].height,
-					  unsigned( uintptr_t( g_drawLogTargets[i].image ) & 0xffffu ),
-					  g_drawLogTargets[i].draws );
+			char one[128];
+			// The pool's name where there is one, the handle's low bits where there is not (the
+			// back buffer and anything created outside the pool). Both stay distinct per image.
+			const char* name = g_drawLogTargets[i].name;
+			if( name && name[0] )
+			{
+				snprintf( one, sizeof( one ), "%s%s@%ux%u/cb%04x:%u", targets.empty() ? "" : " ",
+						  name, g_drawLogTargets[i].width, g_drawLogTargets[i].height,
+						  unsigned( uintptr_t( g_drawLogTargets[i].commandBuffer ) & 0xffffu ),
+						  g_drawLogTargets[i].draws );
+			}
+			else
+			{
+				snprintf( one, sizeof( one ), "%s%ux%u#%04x/cb%04x:%u", targets.empty() ? "" : " ",
+						  g_drawLogTargets[i].width, g_drawLogTargets[i].height,
+						  unsigned( uintptr_t( g_drawLogTargets[i].image ) & 0xffffu ),
+						  unsigned( uintptr_t( g_drawLogTargets[i].commandBuffer ) & 0xffffu ),
+						  g_drawLogTargets[i].draws );
+			}
 			targets += one;
 		}
 		std::string depths;
@@ -358,10 +381,11 @@ ALResult Tr2RenderContextAL::EndScene()
 		std::string depthClears;
 		for( uint32_t i = 0; i < g_drawLogDepthClearCount; ++i )
 		{
-			char one[64];
-			snprintf( one, sizeof( one ), "%s%.3f@%ux%u", depthClears.empty() ? "" : " ",
-					  g_drawLogDepthClears[i].depth, g_drawLogDepthClears[i].width,
-					  g_drawLogDepthClears[i].height );
+			char one[128];
+			const char* name = g_drawLogDepthClears[i].name;
+			snprintf( one, sizeof( one ), "%s%.3f@%s%s%ux%u", depthClears.empty() ? "" : " ",
+					  g_drawLogDepthClears[i].depth, name ? name : "", ( name && name[0] ) ? "/" : "",
+					  g_drawLogDepthClears[i].width, g_drawLogDepthClears[i].height );
 			depthClears += one;
 		}
 		CCP_LOG( "draws: %u draw(s), %llu vertices, %u clear(s), %u draw(s) with no colour target bound; "
@@ -370,6 +394,12 @@ ALResult Tr2RenderContextAL::EndScene()
 				 targets.empty() ? "(none)" : targets.c_str(),
 				 depths.empty() ? "(none)" : depths.c_str(),
 				 depthClears.empty() ? "(none)" : depthClears.c_str() );
+		// Its own line: logcat truncates long lines, and the END of this sequence -- where a
+		// composite binds the back buffer, or fails to -- is the part worth reading.
+		CCP_LOG( "binds(%u) on cb%04x: %s", g_drawLogBindCount, unsigned( uintptr_t( m_commandBuffer ) & 0xffffu ),
+				 g_drawLogBinds.empty() ? "(none)" : g_drawLogBinds.c_str() );
+		g_drawLogBinds.clear();
+		g_drawLogBindCount = 0;
 		g_drawLogDraws = 0;
 		g_drawLogVertices = 0;
 		g_drawLogWithoutTarget = 0;
@@ -394,7 +424,8 @@ void Tr2RenderContextAL::CountDrawForLogVulkan( uint64_t vertices )
 		++g_drawLogWithoutTarget;
 		return;
 	}
-	NoteDrawLogTarget( m_boundRenderTargets[0].m_texture->GetImageVulkan(),
+	NoteDrawLogTarget( m_boundRenderTargets[0].m_texture->GetImageVulkan(), m_commandBuffer,
+					   m_boundRenderTargets[0].m_texture->GetName(),
 					   m_boundRenderTargets[0].GetWidth(), m_boundRenderTargets[0].GetHeight() );
 	NoteDrawLogDepth( m_pipelineSource.m_depthStencilState.depthTestEnable,
 					  m_pipelineSource.m_depthStencilState.depthWriteEnable,
@@ -419,6 +450,7 @@ ALResult Tr2RenderContextAL::Clear(
 		{
 			g_drawLogDepthClears[g_drawLogDepthClearCount++] = {
 				depth,
+				m_boundDepthStencil.IsValid() ? m_boundDepthStencil.m_texture->GetName() : "",
 				m_boundDepthStencil.IsValid() ? m_boundDepthStencil.GetWidth() : 0,
 				m_boundDepthStencil.IsValid() ? m_boundDepthStencil.GetHeight() : 0 };
 		}
@@ -618,7 +650,9 @@ ALResult Tr2RenderContextAL::SetConstants( const Tr2ConstantBufferAL& buffer, Tr
 	}
 	else
 	{
-		m_constantBuffers[binding] = buffer.m_buffer->GetBufferVulkan();
+		ConstantBinding& bound = m_constantBuffers[binding];
+		bound.buffer = buffer.m_buffer;
+		bound.writtenBuffer = VK_NULL_HANDLE;
 	}
 	m_constantsDirty = true;
 	return S_OK;
@@ -867,8 +901,45 @@ ALResult Tr2RenderContextAL::SetRenderStates( const uint32_t* stateValuePairs, u
 	return S_OK;
 }
 
+// Whether two bindings name the same image. The Tr2TextureAL wrapper's own equality is not
+// enough for the back buffer: it is one wrapper over several swap-chain images, and
+// GetImageVulkan() follows the acquired index, so a new frame's image reads as new here. A
+// member because m_texture is private to the wrapper and this class is its friend.
+bool Tr2RenderContextAL::SameImageVulkan( const Tr2TextureAL& a, const Tr2TextureAL& b ) const
+{
+	if( a.IsValid() != b.IsValid() )
+	{
+		return false;
+	}
+	return !a.IsValid() || a.m_texture->GetImageVulkan() == b.m_texture->GetImageVulkan();
+}
+
 ALResult Tr2RenderContextAL::SetRenderTarget( const Tr2TextureAL& renderTarget, uint32_t slot, uint32_t slice ) throw()
 {
+	// The pass has to reopen when the IMAGE changes, not only when its description does.
+	// The description below carries format, sample count, load/store ops and layouts, and two
+	// render targets of one format are byte-identical in it -- so a rebind from one to the
+	// other used to leave the pass open on the first, and every draw meant for the second
+	// landed on the first. Tr2PostProcessRenderer builds "Final Result" in the back buffer's
+	// own format, tonemaps into it, then binds the back buffer and draws it across: that draw
+	// went into Final Result, and an EVE scene of 43 draws a frame put nothing on the swap
+	// chain. dx12 compares the texture itself here (Tr2RenderContextDx12.cpp:985); this is
+	// that comparison, on the image rather than the wrapper for the back buffer's sake.
+	if( !SameImageVulkan( renderTarget, m_boundRenderTargets[slot] ) )
+	{
+		m_dirtyPass = true;
+	}
+	if( DrawLogEnabled() && slot == 0 )
+	{
+		const char* name = renderTarget.IsValid() ? renderTarget.m_texture->GetName() : "(null)";
+		if( !name || !name[0] ) name = "(unnamed)";
+		if( g_drawLogBinds.size() < 2500 )
+		{
+			g_drawLogBinds += g_drawLogBinds.empty() ? "" : " > ";
+			g_drawLogBinds += name;
+		}
+		++g_drawLogBindCount;
+	}
 	m_boundRenderTargets[slot] = renderTarget;
 
 	if( renderTarget.IsValid() )
@@ -922,6 +993,13 @@ ALResult Tr2RenderContextAL::SetRenderTarget( const Tr2TextureAL& renderTarget, 
 
 ALResult Tr2RenderContextAL::SetDepthStencil( const Tr2TextureAL& depthStencil ) throw()
 {
+	// Same rule as SetRenderTarget, for the same reason: two depth buffers of one format
+	// have the same description, and a pass left open on the old one tests and writes depth
+	// against a buffer the caller has moved away from.
+	if( !SameImageVulkan( depthStencil, m_boundDepthStencil ) )
+	{
+		m_dirtyPass = true;
+	}
 	m_boundDepthStencil = depthStencil;
 
 	// Slot 0 of the render pass source is the depth attachment; CreateRenderPass has
@@ -1606,6 +1684,27 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 		m_constantsDirty = true;
 	}
 
+	// A buffer that was locked since the set was written has moved to another slot, and the
+	// set still names the old one. That is the per-object case exactly: Lock, write,
+	// SetConstants, draw -- SetConstants marks dirty too, but a caller that locks without
+	// rebinding is caught here as well.
+	if( !m_constantsDirty )
+	{
+		for( auto it = begin( m_constantBuffers ); it != end( m_constantBuffers ); ++it )
+		{
+			if( program->m_constantBindings.find( it->first ) == program->m_constantBindings.end() )
+			{
+				continue;
+			}
+			if( it->second.writtenBuffer != it->second.buffer->GetBufferVulkan()
+				|| it->second.writtenOffset != it->second.buffer->GetOffsetVulkan() )
+			{
+				m_constantsDirty = true;
+				break;
+			}
+		}
+	}
+
 	if( m_constantsDirty )
 	{
 		// A fresh set rather than a rewrite of the bound one. vkUpdateDescriptorSets on a
@@ -1626,8 +1725,18 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 			m_constantSet = fresh;
 			m_constantPoolLastUse = m_owner->GetRecordingFrameNumber();
 		}
-		// If the pool is exhausted the old set is rewritten, which is what used to happen
-		// always. Better a validation error than a dropped draw.
+		else
+		{
+			// If the pool is exhausted the old set is rewritten, which is what used to happen
+			// always. Better a validation error than a dropped draw -- and better still a
+			// line that says the budget above is too small, once.
+			static bool logged = false;
+			if( !logged )
+			{
+				logged = true;
+				CCP_AL_LOGERR( "constant descriptor pool exhausted (%u sets a frame); rewriting a bound set, and draws after it may read the wrong constants", CONSTANT_SETS_PER_FRAME );
+			}
+		}
 
 		std::vector<VkWriteDescriptorSet> writes;
 		std::vector<VkDescriptorBufferInfo> bufferInfos;
@@ -1643,7 +1752,13 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 			{
 				continue;
 			}
-			VkDescriptorBufferInfo bufferInfo = { it->second, 0, VK_WHOLE_SIZE };
+			// The slot the buffer's contents are in NOW, and only as far as they reach: a
+			// range of VK_WHOLE_SIZE from a slot's offset would run into the next slot.
+			ConstantBinding& bound = it->second;
+			bound.writtenBuffer = bound.buffer->GetBufferVulkan();
+			bound.writtenOffset = bound.buffer->GetOffsetVulkan();
+			bound.writtenRange = bound.buffer->GetSize();
+			VkDescriptorBufferInfo bufferInfo = { bound.writtenBuffer, bound.writtenOffset, bound.writtenRange };
 			bufferInfos.push_back( bufferInfo );
 			VkWriteDescriptorSet write = {
 				VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,

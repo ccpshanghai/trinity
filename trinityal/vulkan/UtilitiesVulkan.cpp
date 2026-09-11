@@ -207,6 +207,33 @@ namespace TrinityALImpl
 		return Vk2Al( vkBindBufferMemory( renderContext.m_device, buffer, memory, 0 ) );
 	}
 
+	bool DrawLogEnabledVulkan()
+	{
+		static const bool enabled = []{
+			const char* value = getenv( "TRINITY_DRAW_LOG" );
+			return value && value[0] == '1';
+		}();
+		return enabled;
+	}
+
+	const char* LayoutNameVulkan( VkImageLayout layout )
+	{
+		switch( layout )
+		{
+		case VK_IMAGE_LAYOUT_UNDEFINED:                        return "UNDEFINED";
+		case VK_IMAGE_LAYOUT_GENERAL:                          return "GENERAL";
+		case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:         return "COLOR_ATTACHMENT";
+		case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL: return "DEPTH_ATTACHMENT";
+		case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL:  return "DEPTH_READ_ONLY";
+		case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:         return "SHADER_READ_ONLY";
+		case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:             return "TRANSFER_SRC";
+		case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:             return "TRANSFER_DST";
+		case VK_IMAGE_LAYOUT_PREINITIALIZED:                   return "PREINITIALIZED";
+		case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:                  return "PRESENT_SRC";
+		default:                                               return "other";
+		}
+	}
+
 	void GetLayoutStageAccessVulkan( VkImageLayout layout, VkPipelineStageFlags2& stage, VkAccessFlags2& access )
 	{
 		switch( layout )

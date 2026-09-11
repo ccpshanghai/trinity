@@ -955,6 +955,8 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 
 	// actualMode, not presentationParameters.mode: the back buffer reports what exists.
 	m_defaultBackBuffer.m_texture->AssignFromSwapChainVulkan( backBuffers, actualMode, *this );
+	// So the draw log can say "backbuffer" for the one target the pool never named.
+	m_defaultBackBuffer.m_texture->SetName( "backbuffer" );
 
 	m_commandPool = commandPool;
 	m_frameIndex = 0;
@@ -1536,6 +1538,12 @@ ALResult Tr2PrimaryRenderContextAL::FlushAndSyncVulkan()
 uint64_t Tr2PrimaryRenderContextAL::GetRecordingFrameNumber() const
 {
 	return m_recordingFrame;
+}
+
+VkDeviceSize Tr2PrimaryRenderContextAL::GetUniformBufferOffsetAlignmentVulkan() const
+{
+	const VkDeviceSize alignment = m_physicalDeviceProperties.limits.minUniformBufferOffsetAlignment;
+	return alignment < 16 ? 16 : alignment;
 }
 
 uint64_t Tr2PrimaryRenderContextAL::GetRenderedFrameNumber() const

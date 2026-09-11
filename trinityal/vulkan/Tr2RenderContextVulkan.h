@@ -6,6 +6,7 @@
 #if TRINITY_PLATFORM == TRINITY_VULKAN
 
 #include <map>
+#include <memory>
 
 #include "../Tr2HalHelperStructures.h"
 #include "../Tr2RenderContextEnum.h"
@@ -519,11 +520,26 @@ private:
 
 	// Constant-buffer bindings (descriptor set 0), keyed by binding number. Set
 	// by SetConstants, written to a descriptor set and bound at SetPipeline time.
-	std::map<uint32_t, VkBuffer> m_constantBuffers;
+	// What SetConstants bound, per binding number, and what the current descriptor set was
+	// last written with. The buffer is held live rather than as a VkBuffer handle because
+	// its contents MOVE: every Lock takes a fresh slot (Tr2ConstantBufferALVulkan), so the
+	// offset a descriptor has to carry is only known at bind time, and a slot that differs
+	// from the one last written is what marks the set dirty.
+	struct ConstantBinding
+	{
+		std::shared_ptr<TrinityALImpl::Tr2ConstantBufferAL> buffer;
+		VkBuffer writtenBuffer = VK_NULL_HANDLE;
+		VkDeviceSize writtenOffset = 0;
+		VkDeviceSize writtenRange = 0;
+	};
+	std::map<uint32_t, ConstantBinding> m_constantBuffers;
 	bool m_constantsDirty;
 	// How many distinct constant descriptor sets one frame may use before the pool is
 	// exhausted. Reset every BeginFrame.
-	static const uint32_t CONSTANT_SETS_PER_FRAME = 64;
+	// A frame's budget of constant descriptor sets: one per SetConstants (or per Lock of a
+	// bound buffer) that changes something. 64 was enough while every object read the same
+	// constants; with each object bound at its own slot the EVE scene needs a few hundred.
+	static const uint32_t CONSTANT_SETS_PER_FRAME = 1024;
 	VkDescriptorPool m_constantPool;
 
 	// The newest frame that allocated a set from m_constantPool. The pool cannot be reset
@@ -590,6 +606,10 @@ public:
 	// none is the shape of a scene rendering into nothing, and telling that apart from a scene
 	// issuing no draws at all is the whole point of the counter.
 	void CountDrawForLogVulkan( uint64_t vertices );
+
+	// SetRenderTarget and SetDepthStencil reopen the pass when the bound IMAGE changes, not
+	// only when its attachment description does; this is the comparison they use.
+	bool SameImageVulkan( const Tr2TextureAL& a, const Tr2TextureAL& b ) const;
 
 	VkCommandBuffer m_commandBuffer;
 
