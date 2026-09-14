@@ -14,6 +14,8 @@
 #include "Tr2TextureALVulkan.h"
 
 #include <cstdio>
+#include <algorithm>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -225,6 +227,16 @@ namespace
 		// during presentation operation; this operation may hit performance on some platforms
 		// Here we don't want any transformations to occur so if the identity transform is supported use it
 		// otherwise just use the same transform as current transform
+		//
+		// 2026-09-11: TRINITY_SWAPCHAIN_TRANSFORM=current forces currentTransform, i.e. asks the
+		// presentation engine to do nothing. On a portrait-natural device running a landscape
+		// app this renders the content rotated, but it measures what the mismatched transform
+		// costs -- docs/spikes/artifacts/m6-android-fps-rotation-20260911.txt.
+		const char* forced = getenv( "TRINITY_SWAPCHAIN_TRANSFORM" );
+		if( forced && strcmp( forced, "current" ) == 0 )
+		{
+			return surface_capabilities.currentTransform;
+		}
 		if( surface_capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR ) 
 		{
 			return VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
@@ -288,9 +300,45 @@ namespace
 		// What was actually created, which is not necessarily what was asked for -- see the
 		// extent note in BuildSwapChain.
 		Tr2DisplayModeInfo mode;
+		VkExtent2D extent;
+		VkSurfaceTransformFlagBitsKHR transform;
 
-		SwapChainObjects() : swapChain( VK_NULL_HANDLE ) {}
+		SwapChainObjects() : swapChain( VK_NULL_HANDLE ), extent{ 0, 0 }, transform( VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR ) {}
 	};
+
+	// The extent comes from the surface, not from the parameters.
+	//
+	// When currentExtent is not the "application chooses" sentinel it is the *only*
+	// legal imageExtent, and on Win32 and Android it is always the real client area.
+	// This used to pass parameters.mode straight through, which asked for 1920x1080
+	// against a 640x480 window: eighteen VUID-VkSwapchainCreateInfoKHR-imageExtent
+	// violations across eight tests, two of which were green because the back buffer
+	// reported the *request* rather than what exists.
+	//
+	// So the AL's mode is a request, not a guarantee. DXGI can honour it because a DXGI
+	// swapchain's buffers are independent of the window and scale at present time;
+	// Vulkan has no equivalent without VK_KHR_swapchain_maintenance1, and emulating it
+	// means rendering offscreen and blitting. That is a separate decision, and until it
+	// is taken the back buffer reports what was actually created.
+	//
+	// Shared by BuildSwapChain and SwapChainMatchesSurfaceVulkan so "what would we build"
+	// and "what did we build" are answered by the same arithmetic.
+	VkExtent2D ChooseSwapChainExtent( const VkSurfaceCapabilitiesKHR& surfaceCapabilities, const Tr2PresentParametersAL& parameters )
+	{
+		VkExtent2D desiredExtent = { parameters.mode.width, parameters.mode.height };
+		if( surfaceCapabilities.currentExtent.width != 0xFFFFFFFF )
+		{
+			desiredExtent = surfaceCapabilities.currentExtent;
+		}
+		else
+		{
+			if( desiredExtent.width < surfaceCapabilities.minImageExtent.width )   desiredExtent.width = surfaceCapabilities.minImageExtent.width;
+			if( desiredExtent.height < surfaceCapabilities.minImageExtent.height ) desiredExtent.height = surfaceCapabilities.minImageExtent.height;
+			if( desiredExtent.width > surfaceCapabilities.maxImageExtent.width )   desiredExtent.width = surfaceCapabilities.maxImageExtent.width;
+			if( desiredExtent.height > surfaceCapabilities.maxImageExtent.height ) desiredExtent.height = surfaceCapabilities.maxImageExtent.height;
+		}
+		return desiredExtent;
+	}
 
 	// The single place that decides swapchain parameters. CreateDevice and every rebuild go
 	// through it, so the two cannot drift on format, image count or present mode.
@@ -312,32 +360,8 @@ namespace
 		std::vector<VkPresentModeKHR> presentModes;
 		FORWARD_HR( TrinityALImpl::QueryArrayNotEmpty( &vkGetPhysicalDeviceSurfacePresentModesKHR, physicalDevice, surface, presentModes ) );
 
-		// The extent comes from the surface, not from the parameters.
-		//
-		// When currentExtent is not the "application chooses" sentinel it is the *only*
-		// legal imageExtent, and on Win32 and Android it is always the real client area.
-		// This used to pass parameters.mode straight through, which asked for 1920x1080
-		// against a 640x480 window: eighteen VUID-VkSwapchainCreateInfoKHR-imageExtent
-		// violations across eight tests, two of which were green because the back buffer
-		// reported the *request* rather than what exists.
-		//
-		// So the AL's mode is a request, not a guarantee. DXGI can honour it because a DXGI
-		// swapchain's buffers are independent of the window and scale at present time;
-		// Vulkan has no equivalent without VK_KHR_swapchain_maintenance1, and emulating it
-		// means rendering offscreen and blitting. That is a separate decision, and until it
-		// is taken the back buffer reports what was actually created.
-		VkExtent2D desiredExtent = { parameters.mode.width, parameters.mode.height };
-		if( surfaceCapabilities.currentExtent.width != 0xFFFFFFFF )
-		{
-			desiredExtent = surfaceCapabilities.currentExtent;
-		}
-		else
-		{
-			if( desiredExtent.width < surfaceCapabilities.minImageExtent.width )   desiredExtent.width = surfaceCapabilities.minImageExtent.width;
-			if( desiredExtent.height < surfaceCapabilities.minImageExtent.height ) desiredExtent.height = surfaceCapabilities.minImageExtent.height;
-			if( desiredExtent.width > surfaceCapabilities.maxImageExtent.width )   desiredExtent.width = surfaceCapabilities.maxImageExtent.width;
-			if( desiredExtent.height > surfaceCapabilities.maxImageExtent.height ) desiredExtent.height = surfaceCapabilities.maxImageExtent.height;
-		}
+		// See ChooseSwapChainExtent for why the surface, not the parameters, decides this.
+		const VkExtent2D desiredExtent = ChooseSwapChainExtent( surfaceCapabilities, parameters );
 
 		// A zero extent means the window is minimised. There is nothing legal to create, and
 		// the caller has to try again later rather than treat it as a hard failure.
@@ -420,6 +444,8 @@ namespace
 		out.mode = parameters.mode;
 		out.mode.width = desiredExtent.width;
 		out.mode.height = desiredExtent.height;
+		out.extent = desiredExtent;
+		out.transform = desiredTransform;
 
 		// The back buffer image views, and every render pass attachment description that
 		// references them, are built from out.mode.format -- so it has to name the format
@@ -792,6 +818,8 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	}
 
 	Tr2DisplayModeInfo actualMode = presentationParameters.mode;
+	VkExtent2D swapChainExtent = { 0, 0 };
+	VkSurfaceTransformFlagBitsKHR swapChainTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 
 	if( !isWindowless )
 	{
@@ -801,6 +829,8 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		backBuffers = created.backBuffers;
 		finishedRenderingSemaphores = created.finishedRenderingSemaphores;
 		actualMode = created.mode;
+		swapChainExtent = created.extent;
+		swapChainTransform = created.transform;
 	}
 
 
@@ -946,6 +976,8 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	}
 	m_surface = surface;
 	m_swapChain = swapChain;
+	m_swapChainExtent = swapChainExtent;
+	m_swapChainTransform = swapChainTransform;
 	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
 	{
 		m_frameData[i] = frameData[i];
@@ -1196,6 +1228,8 @@ ALResult Tr2PrimaryRenderContextAL::RebuildSwapChainVulkan( bool alreadyQuiesced
 
 	VkSwapchainKHR oldSwapChain = m_swapChain;
 	m_swapChain = created.swapChain;
+	m_swapChainExtent = created.extent;
+	m_swapChainTransform = created.transform;
 
 	// ORDER MATTERS HERE, and getting it wrong cost a device loss in one full-suite run out
 	// of twelve while the control lost none.
@@ -1246,6 +1280,23 @@ ALResult Tr2PrimaryRenderContextAL::RebuildSwapChainVulkan( bool alreadyQuiesced
 	m_currentImage = 0;
 	m_needsSwapChainRebuild = false;
 	return S_OK;
+}
+
+bool Tr2PrimaryRenderContextAL::SwapChainMatchesSurfaceVulkan() const
+{
+	if( m_surface == VK_NULL_HANDLE || m_swapChain == VK_NULL_HANDLE )
+	{
+		return false;
+	}
+	VkSurfaceCapabilitiesKHR surfaceCapabilities;
+	if( vkGetPhysicalDeviceSurfaceCapabilitiesKHR( m_physicalDevice, m_surface, &surfaceCapabilities ) != VK_SUCCESS )
+	{
+		return false;
+	}
+	const VkExtent2D extent = ChooseSwapChainExtent( surfaceCapabilities, m_presentParameters );
+	return extent.width == m_swapChainExtent.width &&
+		extent.height == m_swapChainExtent.height &&
+		GetSwapChainTransform( surfaceCapabilities ) == m_swapChainTransform;
 }
 
 ALResult Tr2PrimaryRenderContextAL::RecreateSurfaceVulkan()
@@ -1453,15 +1504,41 @@ ALResult Tr2PrimaryRenderContextAL::Present()
 	}
 
 	// VK_SUBOPTIMAL_KHR is a *success*: the frame was presented, and the swapchain no longer
-	// matches the surface. VK_ERROR_OUT_OF_DATE_KHR is a failure that says the same thing
-	// more firmly. Both mean rebuild, and so does a submit that failed for any other reason
-	// -- one recovery action for every cause, because they leave the same mess.
+	// matches the surface exactly. VK_ERROR_OUT_OF_DATE_KHR is a failure that says the same
+	// thing more firmly, and a submit that failed for any other reason leaves the same mess
+	// (see m_needsSwapChainRebuild). Those two always rebuild. SUBOPTIMAL rebuilds only when
+	// the rebuild would produce a different swapchain.
+	//
+	// It used to rebuild on SUBOPTIMAL unconditionally, and on Android that is a livelock.
+	// A portrait-natural device running a landscape app reports currentTransform=ROTATE_90;
+	// GetSwapChainTransform deliberately asks for IDENTITY; so Android answers every present
+	// with SUBOPTIMAL -- and the rebuild chose IDENTITY again. One vkDeviceWaitIdle and one
+	// swapchain (six gralloc allocations, every back-buffer view, every attachment) per
+	// frame, for the life of the process: shippreview at 14 fps where 68 was available on
+	// the S23 Ultra, and nothing to show for it, since the display hardware does the
+	// rotation as an overlay either way
+	// (docs/spikes/artifacts/m6-android-fps-suboptimal-20260911.txt).
+	const bool presentNeedsRebuild =
+		presentResult == VK_SUBOPTIMAL_KHR ? !SwapChainMatchesSurfaceVulkan()
+		                                    : presentResult != VK_SUCCESS;
 	const bool needsRebuild =
 		submitResult != VK_SUCCESS ||
-		presentResult != VK_SUCCESS;
+		presentNeedsRebuild;
 	if( needsRebuild )
 	{
 		m_needsSwapChainRebuild = true;
+	}
+
+	// TRINITY_SERIALIZE=1: drain the queue before beginning the next frame, so at most one
+	// frame is ever in flight. The A/B that separates a cross-frame resource race from a
+	// within-frame one.
+	static const bool serialize = []{
+		const char* value = getenv( "TRINITY_SERIALIZE" );
+		return value && value[0] == '1';
+	}();
+	if( serialize )
+	{
+		vkQueueWaitIdle( m_presentQueue );
 	}
 
 	FORWARD_HR( BeginFrame() );

@@ -232,6 +232,12 @@ private:
 	// window change. Every other caller leaves it false and gets the quiesce here.
 	ALResult RebuildSwapChainVulkan( bool alreadyQuiesced = false );
 
+	// True when BuildSwapChain, run now, would choose the extent and transform the live
+	// swapchain already has -- i.e. a rebuild would recreate the same swapchain. Present
+	// asks this before honouring VK_SUBOPTIMAL_KHR; false on a failed capabilities query,
+	// so the caller errs towards rebuilding.
+	bool SwapChainMatchesSurfaceVulkan() const;
+
 	// Drops the current swapchain + VkSurfaceKHR and, if outputWindow is non-null,
 	// creates a new surface from it. SetPresentParameters calls this when the
 	// window handle changes (Android surface loss); a null outputWindow is the
@@ -250,8 +256,14 @@ private:
 	// again -- a rebuild triggered by VK_ERROR_OUT_OF_DATE_KHR has no caller to ask.
 	Tr2PresentParametersAL m_presentParameters;
 
+	// What the live swapchain was actually created with, kept so a SUBOPTIMAL present can
+	// be checked against what a rebuild would choose now -- see SwapChainMatchesSurfaceVulkan.
+	VkExtent2D m_swapChainExtent = { 0, 0 };
+	VkSurfaceTransformFlagBitsKHR m_swapChainTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+
 	// Set when the swapchain has to be thrown away and built again: a present that reported
-	// SUBOPTIMAL or OUT_OF_DATE, a submit that failed, or SetPresentParameters. Acted on in
+	// OUT_OF_DATE (or SUBOPTIMAL when a rebuild would change the swapchain -- Present says
+	// why that qualifier exists), a submit that failed, or SetPresentParameters. Acted on in
 	// BeginFrame, which is the one place that is between frames by construction.
 	//
 	// Recovery is deliberately one action for all of those causes. A failed submit leaves
