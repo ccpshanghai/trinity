@@ -1144,7 +1144,27 @@ namespace TrinityALImpl
 		const VkImageLayout oldLayout = m_layouts[m_currentIndex];
 		if( oldLayout == newLayout )
 		{
-			return;
+			// Same layout is not "nothing to do" when that layout is an attachment layout.
+			// Dynamic rendering has no implicit dependencies between passes: two consecutive
+			// vkCmdBeginRendering on the same image -- the screen's composite and then the HUD
+			// on the back buffer, every frame -- are unordered unless a barrier says otherwise,
+			// and this early return used to be the only thing between them. A same-layout
+			// barrier is legal and is exactly the dependency that pair needs; read-only
+			// layouts stay a no-op, since a read after a read is not a hazard.
+			//
+			// Added on 2026-09-11 as the fix for the shippreview flicker, which it was not:
+			// measured on 09-14 the flicker survived it unchanged, and a frame with a single
+			// pass on the back buffer flickered too. The cause was a vertex buffer mapped in
+			// place (Tr2BufferALVulkan.cpp, MapForWriting;
+			// docs/spikes/artifacts/m6-android-flicker-20260914.txt). The barrier stays on
+			// its own merits.
+			const bool attachmentLayout =
+				newLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ||
+				newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+			if( !attachmentLayout )
+			{
+				return;
+			}
 		}
 		// A transition FROM UNDEFINED is the one layout change that is allowed to throw the
 		// image's contents away, and it does so without a validation message. Legal and right
@@ -1160,7 +1180,14 @@ namespace TrinityALImpl
 		// touched it -- and which of those came first decides what a discard threw away.
 		else if( DrawLogEnabledVulkan() && m_name == "backbuffer" )
 		{
-			CCP_LOG( "backbuffer: %s -> %s", LayoutNameVulkan( oldLayout ), LayoutNameVulkan( newLayout ) );
+			if( oldLayout == newLayout )
+			{
+				CCP_LOG( "backbuffer: barrier within %s (pass to pass)", LayoutNameVulkan( newLayout ) );
+			}
+			else
+			{
+				CCP_LOG( "backbuffer: %s -> %s", LayoutNameVulkan( oldLayout ), LayoutNameVulkan( newLayout ) );
+			}
 		}
 
 		// synchronization2: the stages ride in the barrier itself rather than as
