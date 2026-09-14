@@ -4,6 +4,9 @@
 #if TRINITY_PLATFORM == TRINITY_VULKAN
 
 #include "Tr2ResourceSetALVulkan.h"
+#include <cstring>
+#include <map>
+#include <string>
 #include "Tr2PrimaryRenderContextVulkan.h"
 #include "Tr2SamplerStateALVulkan.h"
 #include "Tr2TextureALVulkan.h"
@@ -290,10 +293,31 @@ namespace TrinityALImpl
 	{
 		for( auto it = begin( m_boundImages ); it != end( m_boundImages ); ++it )
 		{
-			if( it->texture.IsValid() )
+			if( !it->texture.IsValid() )
 			{
-				it->texture.m_texture->TransitionVulkan( commandBuffer, it->layout );
+				continue;
 			}
+			// TRINITY_DRAW_LOG=1: the post-process chain's intermediates, sampled here for the
+			// first time each, are where a black frame gets decided. Every 60th time one of the
+			// watched names is about to be read, its centre is copied out for a deferred readback.
+			if( DrawLogEnabledVulkan() && it->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL )
+			{
+				const char* name = it->texture.m_texture->GetName();
+				if( name && ( strcmp( name, "Pre-upscaling Composite" ) == 0 || strcmp( name, "Sharpening Output" ) == 0
+					|| strcmp( name, "Final Result" ) == 0 || strcmp( name, "Tonemapping Result" ) == 0 ) )
+				{
+					// One counter per name, so that two watched textures sampled in the same
+					// frame do not lock the ration onto whichever one is odd.
+					static std::map<std::string, uint32_t> seen;
+					if( ( ++seen[name] % 40 ) == 25 )
+					{
+						it->texture.m_texture->TransitionVulkan( commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
+						RecordProbeVulkan( *it->texture.m_texture->m_owner, commandBuffer, it->texture.m_texture->GetImageVulkan(),
+							GetAspectMaskVulkan( it->texture.m_texture->m_format ), it->texture.GetWidth(), it->texture.GetHeight(), name );
+					}
+				}
+			}
+			it->texture.m_texture->TransitionVulkan( commandBuffer, it->layout );
 		}
 	}
 

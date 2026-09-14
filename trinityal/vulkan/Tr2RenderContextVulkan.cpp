@@ -343,6 +343,10 @@ ALResult Tr2RenderContextAL::EndScene()
 {
 	if( DrawLogEnabled() )
 	{
+		if( m_owner )
+		{
+			TrinityALImpl::ReadPendingProbeVulkan( *m_owner );
+		}
 		std::string targets;
 		for( uint32_t i = 0; i < g_drawLogTargetCount; ++i )
 		{
@@ -388,12 +392,16 @@ ALResult Tr2RenderContextAL::EndScene()
 					  g_drawLogDepthClears[i].width, g_drawLogDepthClears[i].height );
 			depthClears += one;
 		}
-		CCP_LOG( "draws: %u draw(s), %llu vertices, %u clear(s), %u draw(s) with no colour target bound; "
-				 "targets %s; depth %s; depth clears %s",
-				 g_drawLogDraws, (unsigned long long)g_drawLogVertices, g_drawLogClears, g_drawLogWithoutTarget,
+		uint32_t syncMaps = 0, syncMapPassBreaks = 0;
+		uint64_t syncMapBytes = 0;
+		TrinityALImpl::TakeSyncMapStatsVulkan( syncMaps, syncMapBytes, syncMapPassBreaks );
+		CCP_LOG( "draws: %u draw(s), %u dispatch(es), %llu vertices, %u clear(s), %u draw(s) with no colour target bound; "
+				 "targets %s; depth %s; depth clears %s; sync maps %u (%llu bytes, %u closed an open pass)",
+				 g_drawLogDraws, TrinityALImpl::TakeDispatchCountVulkan(), (unsigned long long)g_drawLogVertices, g_drawLogClears, g_drawLogWithoutTarget,
 				 targets.empty() ? "(none)" : targets.c_str(),
 				 depths.empty() ? "(none)" : depths.c_str(),
-				 depthClears.empty() ? "(none)" : depthClears.c_str() );
+				 depthClears.empty() ? "(none)" : depthClears.c_str(),
+				 syncMaps, (unsigned long long)syncMapBytes, syncMapPassBreaks );
 		// Its own line: logcat truncates long lines, and the END of this sequence -- where a
 		// composite binds the back buffer, or fails to -- is the part worth reading.
 		CCP_LOG( "binds(%u) on cb%04x: %s", g_drawLogBindCount, unsigned( uintptr_t( m_commandBuffer ) & 0xffffu ),
@@ -1873,6 +1881,7 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 
 	FORWARD_HR( BindConstantBuffers( VK_PIPELINE_BIND_POINT_COMPUTE ) );
 
+	if( DrawLogEnabled() ) { TrinityALImpl::CountDispatchVulkan(); }
 	vkCmdDispatch( m_commandBuffer, groupDimX, groupDimY, groupDimZ );
 
 	// And the other side: what this dispatch wrote is visible to whatever comes next.

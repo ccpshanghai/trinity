@@ -1,6 +1,7 @@
 // Copyright © 2026 CCP ehf.
 
 #include "StdAfx.h"
+#include <cstdlib>
 
 #if TRINITY_PLATFORM == TRINITY_VULKAN
 
@@ -182,15 +183,35 @@ namespace
 			std::vector<const char*> validationLayers;
 			GetValidationLayers( validationLayers );
 
+			// TRINITY_VULKAN_SYNCVAL=1 turns on the Khronos layer's synchronization validation
+			// when the layer is on at all. Core validation says nothing about a missing barrier
+			// between two render passes on one attachment -- that is a hazard, not an invalid
+			// call -- and the Android debug.vulkan.khronos_validation.* properties did not
+			// reach the layer this APK bundles, so the feature is asked for in the instance.
+			// Costs an order of magnitude in frame time; never for a frame-rate number.
+			std::vector<const char*> instanceExtensions( s_requiredInstanceExtensions, s_requiredInstanceExtensions + _countof( s_requiredInstanceExtensions ) );
+			VkValidationFeatureEnableEXT syncValidation[] = { VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT };
+			VkValidationFeaturesEXT validationFeatures = { VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT };
+			validationFeatures.enabledValidationFeatureCount = 1;
+			validationFeatures.pEnabledValidationFeatures = syncValidation;
+			const char* syncval = getenv( "TRINITY_VULKAN_SYNCVAL" );
+			const bool wantSyncValidation = syncval && syncval[0] == '1' && !validationLayers.empty();
+			if( wantSyncValidation )
+			{
+				instanceExtensions.push_back( VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME );
+			}
+			CCP_AL_LOGERR( "syncval diag: want=%d layers=%zu exts=%zu", int( wantSyncValidation ),
+				validationLayers.size(), instanceExtensions.size() );
+
 			VkInstanceCreateInfo instanceCreateInfo = {
 				VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-				nullptr,
+				wantSyncValidation ? &validationFeatures : nullptr,
 				0,
 				&applicationInfo,
 				uint32_t( validationLayers.size() ),
 				validationLayers.empty() ? nullptr : validationLayers.data(),
-				_countof( s_requiredInstanceExtensions ),
-				s_requiredInstanceExtensions
+				uint32_t( instanceExtensions.size() ),
+				instanceExtensions.data()
 			};
 
 

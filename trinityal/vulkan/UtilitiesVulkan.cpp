@@ -5,6 +5,8 @@
 #if TRINITY_PLATFORM == TRINITY_VULKAN
 
 #include "UtilitiesVulkan.h"
+#include <string>
+#include <algorithm>
 #include "ALResult.h"
 #include "Tr2PrimaryRenderContextVulkan.h"
 
@@ -214,6 +216,91 @@ namespace TrinityALImpl
 			return value && value[0] == '1';
 		}();
 		return enabled;
+	}
+
+	namespace
+	{
+		struct PendingProbe
+		{
+			VkBuffer buffer = VK_NULL_HANDLE;
+			VkDeviceMemory memory = VK_NULL_HANDLE;
+			uint64_t frame = 0;
+			std::string name;
+		};
+		PendingProbe g_probe;
+		uint32_t g_dispatches = 0;
+	}
+
+	void RecordProbeVulkan( Tr2PrimaryRenderContextAL& owner, VkCommandBuffer commandBuffer, VkImage image, VkImageAspectFlags aspect, uint32_t width, uint32_t height, const char* name )
+	{
+		if( g_probe.buffer != VK_NULL_HANDLE || width < 32 || height < 32 )
+		{
+			return;
+		}
+		const VkDeviceSize probeBytes = 32 * 32 * 4;
+		VkBuffer buffer = VK_NULL_HANDLE;
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		if( FAILED( CreateBuffer( buffer, memory, probeBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+				VkMemoryPropertyFlagBits( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ), owner ) ) )
+		{
+			return;
+		}
+		VkBufferImageCopy region = {};
+		region.imageSubresource = { aspect, 0, 0, 1 };
+		region.imageOffset = { int32_t( width / 2 - 16 ), int32_t( height / 2 - 16 ), 0 };
+		region.imageExtent = { 32, 32, 1 };
+		vkCmdCopyImageToBuffer( commandBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region );
+		g_probe.buffer = buffer;
+		g_probe.memory = memory;
+		g_probe.frame = owner.GetRecordingFrameNumber();
+		g_probe.name = name ? name : "";
+	}
+
+	void ReadPendingProbeVulkan( Tr2PrimaryRenderContextAL& owner )
+	{
+		if( g_probe.buffer == VK_NULL_HANDLE || owner.GetRenderedFrameNumber() < g_probe.frame )
+		{
+			return;
+		}
+		void* mapped = nullptr;
+		if( vkMapMemory( owner.m_device, g_probe.memory, 0, VK_WHOLE_SIZE, 0, &mapped ) == VK_SUCCESS )
+		{
+			const uint32_t* words = static_cast<const uint32_t*>( mapped );
+			// Opaque black in an 8-bit target is 0xff000000, which is not zero; count it apart,
+			// or a black 8-bit image reads as "1024/1024 non-zero" and proves nothing.
+			uint32_t nonzero = 0, opaqueBlack = 0, minWord = 0xffffffffu, maxWord = 0;
+			for( uint32_t i = 0; i < 1024; ++i )
+			{
+				if( words[i] ) ++nonzero;
+				if( words[i] == 0xff000000u ) ++opaqueBlack;
+				minWord = std::min( minWord, words[i] );
+				maxWord = std::max( maxWord, words[i] );
+			}
+			CCP_LOG( "probe: %s centre 32x32 (frame %llu) -> %u/1024 words non-zero, %u opaque-black (min %08x max %08x, first %08x)",
+					 g_probe.name.c_str(), (unsigned long long)g_probe.frame, nonzero, opaqueBlack, minWord, maxWord, words[0] );
+			vkUnmapMemory( owner.m_device, g_probe.memory );
+		}
+		owner.DestroyLaterVulkan( g_probe.buffer, &vkDestroyBuffer );
+		owner.DestroyLaterVulkan( g_probe.memory, &vkFreeMemory );
+		g_probe = PendingProbe();
+	}
+
+	void CountDispatchVulkan() { ++g_dispatches; }
+	uint32_t TakeDispatchCountVulkan() { const uint32_t n = g_dispatches; g_dispatches = 0; return n; }
+
+	static uint32_t g_syncMaps = 0;
+	static uint64_t g_syncMapBytes = 0;
+	static uint32_t g_syncMapPassBreaks = 0;
+	void NoteSyncMapVulkan( uint64_t bytes, bool brokePass )
+	{
+		++g_syncMaps;
+		g_syncMapBytes += bytes;
+		if( brokePass ) ++g_syncMapPassBreaks;
+	}
+	void TakeSyncMapStatsVulkan( uint32_t& maps, uint64_t& bytes, uint32_t& passBreaks )
+	{
+		maps = g_syncMaps; bytes = g_syncMapBytes; passBreaks = g_syncMapPassBreaks;
+		g_syncMaps = 0; g_syncMapBytes = 0; g_syncMapPassBreaks = 0;
 	}
 
 	const char* LayoutNameVulkan( VkImageLayout layout )

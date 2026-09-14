@@ -10,6 +10,7 @@
 #include "Tr2PrimaryRenderContextVulkan.h"
 #include "VkResult.h"
 #include "UtilitiesVulkan.h"
+#include <algorithm>
 
 
 namespace
@@ -935,6 +936,51 @@ namespace TrinityALImpl
 		renderContext.EndRenderPassVulkan();
 		source.TransitionVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
 		TransitionForTransferWriteVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
+
+		// TRINITY_DRAW_LOG=1: every 60th copy out of a named source, read a 32x32 box at its
+		// centre back to the host and say how many of its words are non-zero. It is the one
+		// question no draw count, target list or layout trace can answer -- whether anything
+		// LANDED -- and it costs a full GPU sync, which is why it is rationed and off by default.
+		if( DrawLogEnabledVulkan() && !source.m_name.empty() && source.m_desc.GetWidth() >= 32 && source.m_desc.GetHeight() >= 32 )
+		{
+			static uint32_t copies = 0;
+			if( ( ++copies % 60 ) == 30 )
+			{
+				const VkDeviceSize probeBytes = 32 * 32 * 4;
+				VkBuffer probe = VK_NULL_HANDLE;
+				VkDeviceMemory probeMemory = VK_NULL_HANDLE;
+				if( SUCCEEDED( CreateBuffer( probe, probeMemory, probeBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+						VkMemoryPropertyFlagBits( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ), *m_owner ) ) )
+				{
+					VkBufferImageCopy region = {};
+					region.imageSubresource = { GetAspectMaskVulkan( source.m_format ), 0, 0, 1 };
+					region.imageOffset = { int32_t( source.m_desc.GetWidth() / 2 - 16 ), int32_t( source.m_desc.GetHeight() / 2 - 16 ), 0 };
+					region.imageExtent = { 32, 32, 1 };
+					vkCmdCopyImageToBuffer( renderContext.m_commandBuffer, source.m_images[source.m_currentIndex],
+						VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, probe, 1, &region );
+					if( SUCCEEDED( m_owner->FlushAndSyncVulkan() ) )
+					{
+						void* mapped = nullptr;
+						if( vkMapMemory( m_owner->m_device, probeMemory, 0, VK_WHOLE_SIZE, 0, &mapped ) == VK_SUCCESS )
+						{
+							const uint32_t* words = static_cast<const uint32_t*>( mapped );
+							uint32_t nonzero = 0, minWord = 0xffffffffu, maxWord = 0;
+							for( uint32_t i = 0; i < 1024; ++i )
+							{
+								if( words[i] ) ++nonzero;
+								minWord = std::min( minWord, words[i] );
+								maxWord = std::max( maxWord, words[i] );
+							}
+							CCP_LOG( "probe: %s centre 32x32 -> %u/1024 words non-zero (min %08x max %08x, first %08x)",
+									 source.m_name.c_str(), nonzero, minWord, maxWord, words[0] );
+							vkUnmapMemory( m_owner->m_device, probeMemory );
+						}
+					}
+					m_owner->DestroyLaterVulkan( probe, &vkDestroyBuffer );
+					m_owner->DestroyLaterVulkan( probeMemory, &vkFreeMemory );
+				}
+			}
+		}
 
 		vkCmdCopyImage(
 			renderContext.m_commandBuffer,

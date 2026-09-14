@@ -120,6 +120,20 @@ namespace TrinityALImpl
 	bool DrawLogEnabledVulkan();
 	const char* LayoutNameVulkan( VkImageLayout layout );
 
+	// TRINITY_DRAW_LOG=1 only. A 32x32 box at the centre of `image` is copied into a probe
+	// buffer NOW (the image must be in TRANSFER_SRC_OPTIMAL), and its contents are read back
+	// and logged from a later frame, once the GPU has rendered this one -- so it costs no
+	// stall. One probe in flight at a time; a request while one is pending is dropped.
+	// `name` is only for the log line.
+	void RecordProbeVulkan( Tr2PrimaryRenderContextAL& owner, VkCommandBuffer commandBuffer, VkImage image, VkImageAspectFlags aspect, uint32_t width, uint32_t height, const char* name );
+	void ReadPendingProbeVulkan( Tr2PrimaryRenderContextAL& owner );
+	void CountDispatchVulkan();
+	uint32_t TakeDispatchCountVulkan();
+	// A synchronized MapForWriting / UpdateBuffer landed its copy: how many bytes, and whether
+	// recording it had to close a render pass that was open (a store and a reload on a tiler).
+	void NoteSyncMapVulkan( uint64_t bytes, bool brokePass );
+	void TakeSyncMapStatsVulkan( uint32_t& maps, uint64_t& bytes, uint32_t& passBreaks );
+
 	void GetLayoutStageAccessVulkan( VkImageLayout layout, VkPipelineStageFlags2& stage, VkAccessFlags2& access );
 
 	// Colour formats get the colour aspect, depth formats get depth (plus stencil where
