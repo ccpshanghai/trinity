@@ -78,6 +78,14 @@ public:
 	}
 
 	VkBuffer GetZeroBufferVulkan() const;
+
+	// `size` bytes of host-visible, persistently mapped upload memory that stays valid until
+	// this frame's fence has passed -- the source side of every synchronized MapForWriting
+	// and UpdateBuffer (Tr2BufferALVulkan.cpp). One bump allocator per frame slot, reset when
+	// BeginFrame has waited on the slot's fence; a chunk that runs out is retired with the
+	// frame and replaced by a bigger one, so after the first few frames nothing here allocates.
+	// HOST_COHERENT, so the caller neither flushes nor unmaps.
+	ALResult AllocateUploadVulkan( VkDeviceSize size, VkBuffer& buffer, VkDeviceSize& offset, void*& mapped );
 public:
 	Tr2TextureAL m_defaultBackBuffer;
 		
@@ -177,6 +185,17 @@ private:
 	static const uint32_t VIRTUAL_FRAMES = 3;
 	FrameData m_frameData[VIRTUAL_FRAMES];
 	uint32_t m_frameIndex;
+
+	struct UploadChunk
+	{
+		VkBuffer buffer = VK_NULL_HANDLE;
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		uint8_t* mapped = nullptr;
+		VkDeviceSize size = 0;
+		VkDeviceSize used = 0;
+	};
+	UploadChunk m_upload[VIRTUAL_FRAMES];
+	void DestroyUploadVulkan();
 
 	// imageAvailableSemaphore is a binary semaphore signalled by vkAcquireNextImageKHR in
 	// BeginFrame, and BeginFrame immediately records a barrier against the acquired image

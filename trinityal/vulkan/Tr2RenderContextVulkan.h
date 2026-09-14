@@ -485,6 +485,30 @@ private:
 		size_t GetHash() const;
 	} m_pipelineSource;
 
+	// What vkCmdBindVertexBuffers / vkCmdBindIndexBuffer were last given, and the buffer it
+	// came from. A renaming Tr2BufferAL (Tr2BufferALVulkan.cpp) moves to a new slot -- or a
+	// new allocation -- on every MapForWriting, and the effect state manager does not
+	// re-apply a stream whose Tr2BufferAL handle has not changed, so SetPipeline compares
+	// these against the buffer's current handle and offset and re-binds when they differ.
+	// The shared_ptr keeps the implementation alive to be asked.
+	struct BoundVertexStream
+	{
+		std::shared_ptr<TrinityALImpl::Tr2BufferAL> buffer;
+		VkBuffer boundBuffer = VK_NULL_HANDLE;
+		VkDeviceSize boundOffset = 0;
+		uint32_t callerOffset = 0;
+	};
+	BoundVertexStream m_boundStreams[MAX_VERTEX_STREAMS];
+	struct BoundIndexBuffer
+	{
+		std::shared_ptr<TrinityALImpl::Tr2BufferAL> buffer;
+		VkBuffer boundBuffer = VK_NULL_HANDLE;
+		VkDeviceSize boundOffset = 0;
+		VkIndexType indexType = VK_INDEX_TYPE_UINT16;
+	};
+	BoundIndexBuffer m_boundIndices;
+	void RebindMovedBuffersVulkan();
+
 	// Still an array of VkAttachmentDescription even though no VkRenderPass is created
 	// from it any more: the struct carries exactly the fields dynamic rendering needs
 	// (format, samples, the four ops, the layouts), SetRenderTarget/SetDepthStencil
@@ -600,6 +624,10 @@ public:
 	// On a tiler this is a resolve and a reload, so it is not free; it is here because
 	// Vulkan 1.0 has no host-side vkResetQueryPool, which arrived in 1.2.
 	void EndRenderPassVulkan();
+	// Whether a dynamic rendering instance is open right now -- what EndRenderPassVulkan
+	// would close. Tr2BufferAL asks, so the draw log can count the pass restarts its
+	// synchronized copies cause.
+	bool IsRenderingActiveVulkan() const { return m_renderingActive; }
 
 	// TRINITY_DRAW_LOG=1 only: one draw's worth of the per-scene tally EndScene prints. A
 	// member rather than free, so it can see whether a colour target is bound -- a draw with

@@ -545,22 +545,23 @@ ALResult Tr2RenderContextAL::SetStreamSource( uint32_t stream, const Tr2BufferAL
 	{
 		auto buf = m_owner->GetZeroBufferVulkan();
 		vkCmdBindVertexBuffers( m_commandBuffer, stream, 1, &buf, &deviceOffset );
+		m_boundStreams[stream] = BoundVertexStream();
 		return S_OK;
 	}
 	m_pipelineSource.m_streams[stream].stride = stride;
+	// Plus the slot the buffer's contents are in now -- 0 for a buffer that does not rename.
+	deviceOffset += buffer.m_buffer->GetOffsetVulkan();
 	vkCmdBindVertexBuffers( m_commandBuffer, stream, 1, &buffer.m_buffer->m_buffer, &deviceOffset );
+	m_boundStreams[stream].buffer = buffer.m_buffer;
+	m_boundStreams[stream].boundBuffer = buffer.m_buffer->m_buffer;
+	m_boundStreams[stream].boundOffset = deviceOffset;
+	m_boundStreams[stream].callerOffset = offset;
 	return S_OK;
 }
 
 ALResult Tr2RenderContextAL::SetIndices( const Tr2BufferAL & buffer ) throw( )
 {
-	if( !buffer.IsValid() )
-	{
-		vkCmdBindIndexBuffer( m_commandBuffer, m_owner->GetZeroBufferVulkan(), 0, VK_INDEX_TYPE_UINT16 );
-		return S_OK;
-	}
-	vkCmdBindIndexBuffer( m_commandBuffer, buffer.m_buffer->m_buffer, 0, buffer.GetDesc().stride == 4 ?  VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16 );
-	return S_OK;
+	return SetIndices( buffer, buffer.IsValid() ? buffer.GetDesc().stride : 2u );
 }
 
 // The caller-supplied-stride form. The overload above reads the stride out of the buffer
@@ -571,10 +572,49 @@ ALResult Tr2RenderContextAL::SetIndices( const Tr2BufferAL & buffer, uint32_t st
 	if( !buffer.IsValid() )
 	{
 		vkCmdBindIndexBuffer( m_commandBuffer, m_owner->GetZeroBufferVulkan(), 0, VK_INDEX_TYPE_UINT16 );
+		m_boundIndices = BoundIndexBuffer();
 		return S_OK;
 	}
-	vkCmdBindIndexBuffer( m_commandBuffer, buffer.m_buffer->m_buffer, 0, stride == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32 );
+	const VkIndexType indexType = stride == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+	const VkDeviceSize deviceOffset = buffer.m_buffer->GetOffsetVulkan();
+	vkCmdBindIndexBuffer( m_commandBuffer, buffer.m_buffer->m_buffer, deviceOffset, indexType );
+	m_boundIndices.buffer = buffer.m_buffer;
+	m_boundIndices.boundBuffer = buffer.m_buffer->m_buffer;
+	m_boundIndices.boundOffset = deviceOffset;
+	m_boundIndices.indexType = indexType;
 	return S_OK;
+}
+
+void Tr2RenderContextAL::RebindMovedBuffersVulkan()
+{
+	for( uint32_t stream = 0; stream < MAX_VERTEX_STREAMS; ++stream )
+	{
+		BoundVertexStream& bound = m_boundStreams[stream];
+		if( !bound.buffer || !bound.buffer->IsValid() )
+		{
+			continue;
+		}
+		const VkBuffer now = bound.buffer->GetBufferVulkan();
+		const VkDeviceSize offset = bound.buffer->GetOffsetVulkan() + bound.callerOffset;
+		if( now != bound.boundBuffer || offset != bound.boundOffset )
+		{
+			vkCmdBindVertexBuffers( m_commandBuffer, stream, 1, &now, &offset );
+			bound.boundBuffer = now;
+			bound.boundOffset = offset;
+		}
+	}
+	BoundIndexBuffer& indices = m_boundIndices;
+	if( indices.buffer && indices.buffer->IsValid() )
+	{
+		const VkBuffer now = indices.buffer->GetBufferVulkan();
+		const VkDeviceSize offset = indices.buffer->GetOffsetVulkan();
+		if( now != indices.boundBuffer || offset != indices.boundOffset )
+		{
+			vkCmdBindIndexBuffer( m_commandBuffer, now, offset, indices.indexType );
+			indices.boundBuffer = now;
+			indices.boundOffset = offset;
+		}
+	}
 }
 
 
@@ -1532,6 +1572,9 @@ ALResult Tr2RenderContextAL::SetPipeline()
 	{
 		EndRenderPassVulkan();
 	}
+
+	// Before the dirty-PSO early return: a buffer can move without anything else changing.
+	RebindMovedBuffersVulkan();
 
 	if( m_dirtyPass )
 	{

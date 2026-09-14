@@ -53,6 +53,7 @@ set(_SOURCES
     TextureCopyExtentVulkan.cpp
     TextureSubresource.cpp
     TrinityALTest.cpp
+    VertexBufferRename.cpp
     VertexDefinition.cpp
     VertexLayout.cpp
     VideoAdapterInfo.cpp

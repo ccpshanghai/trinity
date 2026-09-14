@@ -1070,6 +1070,7 @@ void Tr2PrimaryRenderContextAL::Destroy()
 		vkFreeMemory( m_device, m_zeroBufferMemory, nullptr );
 		m_zeroBufferMemory = VK_NULL_HANDLE;
 	}
+	DestroyUploadVulkan();
 	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
 	{
 		if( m_frameData[i].commandBuffer != VK_NULL_HANDLE )
@@ -1617,6 +1618,67 @@ uint64_t Tr2PrimaryRenderContextAL::GetRecordingFrameNumber() const
 	return m_recordingFrame;
 }
 
+ALResult Tr2PrimaryRenderContextAL::AllocateUploadVulkan( VkDeviceSize size, VkBuffer& buffer, VkDeviceSize& offset, void*& mapped )
+{
+	UploadChunk& chunk = m_upload[m_frameIndex];
+	// 16-byte aligned starts: nothing a vkCmdCopyBuffer source needs, everything a caller
+	// writing vectors through the pointer is happier with.
+	VkDeviceSize start = ( chunk.used + 15 ) & ~VkDeviceSize( 15 );
+	if( chunk.buffer == VK_NULL_HANDLE || start + size > chunk.size )
+	{
+		// The chunk retires with this frame, not now: copies recorded earlier this frame
+		// still read it, and DestroyLater frees it when this slot's fence has passed.
+		if( chunk.buffer != VK_NULL_HANDLE )
+		{
+			vkUnmapMemory( m_device, chunk.memory );
+			DestroyLaterVulkan( chunk.buffer, &vkDestroyBuffer );
+			DestroyLaterVulkan( chunk.memory, &vkFreeMemory );
+			chunk = UploadChunk();
+		}
+		// Doubling, from a megabyte: a frame's synchronized writes are a few screen quads and
+		// a light buffer, and a chunk that was too small once is replaced by one that will
+		// not be for that frame's shape again.
+		VkDeviceSize wanted = std::max<VkDeviceSize>( VkDeviceSize( 1 ) << 20, size * 2 );
+		wanted = std::max( wanted, chunk.size * 2 );
+		FORWARD_HR( TrinityALImpl::CreateBuffer( chunk.buffer, chunk.memory, size_t( wanted ), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			VkMemoryPropertyFlagBits( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ), *this ) );
+		void* base = nullptr;
+		const ALResult mappedResult = Vk2Al( vkMapMemory( m_device, chunk.memory, 0, VK_WHOLE_SIZE, 0, &base ) );
+		if( FAILED( mappedResult ) )
+		{
+			DestroyLaterVulkan( chunk.buffer, &vkDestroyBuffer );
+			DestroyLaterVulkan( chunk.memory, &vkFreeMemory );
+			chunk = UploadChunk();
+			return mappedResult;
+		}
+		chunk.mapped = static_cast<uint8_t*>( base );
+		chunk.size = wanted;
+		chunk.used = 0;
+		start = 0;
+	}
+	buffer = chunk.buffer;
+	offset = start;
+	mapped = chunk.mapped + start;
+	chunk.used = start + size;
+	return S_OK;
+}
+
+void Tr2PrimaryRenderContextAL::DestroyUploadVulkan()
+{
+	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
+	{
+		UploadChunk& chunk = m_upload[i];
+		if( chunk.buffer == VK_NULL_HANDLE )
+		{
+			continue;
+		}
+		vkUnmapMemory( m_device, chunk.memory );
+		vkDestroyBuffer( m_device, chunk.buffer, nullptr );
+		vkFreeMemory( m_device, chunk.memory, nullptr );
+		chunk = UploadChunk();
+	}
+}
+
 VkDeviceSize Tr2PrimaryRenderContextAL::GetUniformBufferOffsetAlignmentVulkan() const
 {
 	const VkDeviceSize alignment = m_physicalDeviceProperties.limits.minUniformBufferOffsetAlignment;
@@ -1733,8 +1795,9 @@ ALResult Tr2PrimaryRenderContextAL::BeginFrame()
 
 	CR_RETURN_HR( Vk2Al( vkAcquireNextImageKHR( m_device, m_swapChain, UINT64_MAX, m_frameData[m_frameIndex].imageAvailableSemaphore, VK_NULL_HANDLE, &m_currentImage ) ) );
 	// The fence above has been waited on, so nothing submitted for this slot is still in
-	// flight and the sets it used can be handed out again.
+	// flight and the sets it used can be handed out again -- and so can its upload memory.
 	ResetConstantPoolVulkan();
+	m_upload[m_frameIndex].used = 0;
 
 	m_defaultBackBuffer.m_texture->SetCurrentImageVulkan( m_currentImage );
 
