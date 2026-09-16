@@ -311,6 +311,19 @@ void Tr2RenderContextAL::Destroy() throw( )
 	m_boundDepthStencil = Tr2TextureAL();
 	m_dsStack.clear();
 
+	// The remembered vertex and index bindings are the same kind of reference, and are let go
+	// here for the same reason: each holds a shared_ptr to a Tr2BufferAL implementation, and a
+	// stream still bound when the context goes down would have that buffer's Destroy() run from
+	// the base-class destructor -- after this class has drained pendingDestroys and called
+	// vkDestroyDevice. Its DestroyLaterVulkan then queues onto a list nothing will drain again,
+	// so the buffer and its memory turn up at vkDestroyDevice as VUID-vkDestroyDevice-device-05137.
+	// One bound stream is one leaked VkBuffer and one leaked VkDeviceMemory.
+	for( uint32_t stream = 0; stream < MAX_VERTEX_STREAMS; ++stream )
+	{
+		m_boundStreams[stream] = BoundVertexStream();
+	}
+	m_boundIndices = BoundIndexBuffer();
+
 	if( m_constantPool != VK_NULL_HANDLE )
 	{
 		m_owner->DestroyLaterVulkan( m_constantPool, vkDestroyDescriptorPool );
