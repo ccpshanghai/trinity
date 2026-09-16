@@ -343,6 +343,16 @@ const Be::ClassInfo* TriDevice::ExposeToBlue()
 			PyCreateWindowlessDevice,
 			"Create a simple device with no swap chain.\n"
 			":rtype: None" )
+		MAP_METHOD_AS_METHOD(
+			"SetOutputWindow",
+			PySetOutputWindow,
+			"Hand the device a new native window handle and rebuild presentation on it.\n"
+			"For Android's surface loss: the process gets a NEW ANativeWindow after\n"
+			"backgrounding, and the Vulkan AL recreates its surface when the handle changes.\n"
+			"Elsewhere the handle never changes and this is a same-handle rebuild.\n"
+			":param handle: the native window handle, as _carbonshell.native_handle() returns it\n"
+			":type handle: int\n"
+			":rtype: bool -- True on success; the device keeps its previous window on failure" )
 #if BLUE_WITH_PYTHON
 		MAP_METHOD_AND_WRAP(
 			"Render",
@@ -388,6 +398,21 @@ const Be::ClassInfo* TriDevice::ExposeToBlue()
 			"RefreshDeviceResources",
 			RefreshDeviceResources,
 			"Releases all D3D resources from memory and recreates them from source." )
+
+		MAP_METHOD_AND_WRAP(
+			"DestroyRenderContext",
+			DestroyRenderContext,
+			"Releases every device resource and destroys the main-thread render context.\n"
+			"\n"
+			"The teardown half of device creation, which the engine has always done for\n"
+			"itself when a device is replaced (ChangeDevice) and never exposed. An app that\n"
+			"ends deliberately needs it, because things the backend only does on the way out\n"
+			"do not otherwise happen at all: the Vulkan backend persists its VkPipelineCache\n"
+			"in the render context's destructor, so a run that just returns from main leaves\n"
+			"no cache behind and every launch stays cold.\n"
+			"\n"
+			"Nothing survives this. Call it once, after the last frame, and touch neither the\n"
+			"device nor anything it handed out afterwards." )
 #endif
 
 		MAP_METHOD_AND_WRAP( "GetRenderContext", GetRenderContext, "TODO DEBUG" )

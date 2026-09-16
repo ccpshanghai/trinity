@@ -147,16 +147,20 @@ bool CompileShader( const CompileShaderArguments& arguments, IWorkQueue* workQue
 			switch( platform )
 			{
 #if _WIN32
+			// DX11 and DX12 need d3dcompiler.dll (D3DCompile, D3DStripShader, D3DReflect).
+			// Vulkan does not: its back end is dxc's -spirv, and reflection comes from a
+			// DXIL sibling compile through IDxcUtils::CreateReflection -- all of which the
+			// directx-dxc port supplies on macOS too. See EffectCompilerDX11.cpp.
 			case PLATFORM_DX11:
 				newCompiler.reset( new EffectCompilerDX11() );
 				break;
 			case PLATFORM_DX12:
 				newCompiler.reset( new EffectCompilerDX12() );
 				break;
+#endif
 			case PLATFORM_VULKAN:
 				newCompiler.reset( new EffectCompilerVulkan() );
 				break;
-#endif
 			case PLATFORM_METAL:
 				newCompiler.reset( new EffectCompilerMetal() );
 				break;

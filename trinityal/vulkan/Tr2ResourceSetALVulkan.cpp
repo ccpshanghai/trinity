@@ -4,6 +4,9 @@
 #if TRINITY_PLATFORM == TRINITY_VULKAN
 
 #include "Tr2ResourceSetALVulkan.h"
+#include <cstring>
+#include <map>
+#include <string>
 #include "Tr2PrimaryRenderContextVulkan.h"
 #include "Tr2SamplerStateALVulkan.h"
 #include "Tr2TextureALVulkan.h"
@@ -67,12 +70,20 @@ namespace TrinityALImpl
 
 			std::vector<VkWriteDescriptorSet> descriptorWrites;
 			descriptorWrites.reserve( program.m_program->m_registerInput.size() );
+			// Reserved by descriptors, not registers: an array register contributes arrayCount
+			// entries, and every write below keeps a pointer into these vectors, so a reserve
+			// that undercounts is a reallocation under a live pointer.
+			size_t descriptorTotal = 0;
+			for( auto it = begin( program.m_program->m_registerInput ); it != end( program.m_program->m_registerInput ); ++it )
+			{
+				descriptorTotal += it->arrayCount ? it->arrayCount : 1;
+			}
 			std::vector<VkDescriptorImageInfo> imageInfos;
-			imageInfos.reserve( program.m_program->m_registerInput.size() );
+			imageInfos.reserve( descriptorTotal );
 			std::vector<VkDescriptorBufferInfo> bufferInfos;
-			bufferInfos.reserve( program.m_program->m_registerInput.size() );
+			bufferInfos.reserve( descriptorTotal );
 			std::vector<VkBufferView> texelBufferViews;
-			texelBufferViews.reserve( program.m_program->m_registerInput.size() );
+			texelBufferViews.reserve( descriptorTotal );
 
 			typedef Tr2ResourceSetDescriptionAL::Resource::Type ResourceType;
 
@@ -83,6 +94,19 @@ namespace TrinityALImpl
 					// Constant buffers bind at descriptor set 0 (m_constantLayout),
 					// written by SetConstants; they are not part of this resource set.
 					continue;
+				}
+
+				// Arrays are implemented for SRV textures, below. For a buffer, a UAV or a
+				// sampler the layout (Tr2ShaderProgramALVulkan) already declares arrayCount
+				// descriptors, so writing one of them here would leave the rest undefined --
+				// exactly the silent fault item 12 was about. Refuse instead, until a test wants
+				// one of those and the write is looped like the texture case.
+				const bool isTextureSrv = ( it->type & Tr2ShaderRegisterAL::SRV_REGISTER_FLAG ) &&
+										  !( it->type & Tr2ShaderRegisterAL::UAV_REGISTER_FLAG ) &&
+										  it->type >= Tr2ShaderRegisterAL::SRV_TEXTURE1D;
+				if( it->arrayCount > 1 && !isTextureSrv )
+				{
+					return E_FAIL;
 				}
 
 				VkWriteDescriptorSet d = {
@@ -131,7 +155,10 @@ namespace TrinityALImpl
 							return E_FAIL;
 						}
 						VkDescriptorImageInfo imageInfo = {  };
-						imageInfo.imageView = resource.texture.m_texture->m_imageViews[0];
+						// The storage view, not the shader-resource one: for a cube texture they
+						// differ in dim (2D_ARRAY against CUBE), and the descriptor has to match
+						// what the shader declared.
+						imageInfo.imageView = resource.texture.m_texture->GetStorageViewVulkan();
 						imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 						imageInfos.push_back( imageInfo );
 						BoundImageVulkan bound = { resource.texture, VK_IMAGE_LAYOUT_GENERAL };
@@ -161,39 +188,59 @@ namespace TrinityALImpl
 					}
 					else
 					{
-						if( !resource.texture.IsValid() )
+						// One write, arrayCount descriptors: element k of an array declared at
+						// registerIndex is whatever SetSrv( stage, registerIndex + k, ... ) put
+						// there -- Tr2RegisterMapAL maps every element (item 12). Element 0 is
+						// `resource` itself; a plain register is the loop run once.
+						const uint32_t arrayCount = it->arrayCount ? it->arrayCount : 1;
+						const size_t first = imageInfos.size();
+						for( uint32_t k = 0; k < arrayCount; ++k )
 						{
-							return E_FAIL;
+							if( it->registerIndex + k >= Tr2RegisterMapAL::MAX_RESOURCES_IN_STAGE )
+							{
+								return E_FAIL;
+							}
+							const uint8_t slot = description.m_registerMap.srvs[it->stage][it->registerIndex + k];
+							if( slot >= description.m_registerMap.srvCount )
+							{
+								return E_FAIL;
+							}
+							const auto& element = description.m_srv[slot];
+							if( element.type != ResourceType::TEXTURE || !element.texture.IsValid() )
+							{
+								return E_FAIL;
+							}
+							VkDescriptorImageInfo imageInfo = {  };
+							// element.colorSpace was being dropped on the floor here, so an SRV
+							// asked for COLOR_SPACE_SRGB sampled raw UNORM and every sampled
+							// texel came back un-decoded. Nothing failed and no test noticed:
+							// Rendering.CanSampleSrgbTexture passes either way because it never
+							// compares against a reference image.
+							//
+							// GetImageView also indexes by m_currentIndex rather than 0, which
+							// is a second, deliberate change: for a swapchain-backed texture
+							// bound as an SRV, view 0 is the wrong image on every frame but the
+							// first. Identical for every single-image texture, which is all the
+							// suite exercises.
+							imageInfo.imageView = element.texture.m_texture->GetImageView( element.colorSpace );
+							// A depth-format SRV lives in DEPTH_STENCIL_READ_ONLY_OPTIMAL, not
+							// SHADER_READ_ONLY: that is the one layout that is simultaneously
+							// legal to sample and legal as a read-only depth attachment, so a
+							// depth buffer sampled while still bound (SetReadOnlyDepth) needs
+							// no per-draw layout juggling -- the descriptor, the transition
+							// target and the attachment all agree on it.
+							const VkImageLayout srvLayout =
+								( GetAspectMaskVulkan( element.texture.m_texture->m_format ) & VK_IMAGE_ASPECT_DEPTH_BIT )
+									? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+									: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+							imageInfo.imageLayout = srvLayout;
+							imageInfos.push_back( imageInfo );
+							BoundImageVulkan bound = { element.texture, srvLayout };
+							m_boundImages.push_back( bound );
 						}
-						VkDescriptorImageInfo imageInfo = {  };
-						// resource.colorSpace was being dropped on the floor here, so an SRV
-						// asked for COLOR_SPACE_SRGB sampled raw UNORM and every sampled
-						// texel came back un-decoded. Nothing failed and no test noticed:
-						// Rendering.CanSampleSrgbTexture passes either way because it never
-						// compares against a reference image.
-						//
-						// GetImageView also indexes by m_currentIndex rather than 0, which
-						// is a second, deliberate change: for a swapchain-backed texture
-						// bound as an SRV, view 0 is the wrong image on every frame but the
-						// first. Identical for every single-image texture, which is all the
-						// suite exercises.
-						imageInfo.imageView = resource.texture.m_texture->GetImageView( resource.colorSpace );
-						// A depth-format SRV lives in DEPTH_STENCIL_READ_ONLY_OPTIMAL, not
-						// SHADER_READ_ONLY: that is the one layout that is simultaneously
-						// legal to sample and legal as a read-only depth attachment, so a
-						// depth buffer sampled while still bound (SetReadOnlyDepth) needs
-						// no per-draw layout juggling -- the descriptor, the transition
-						// target and the attachment all agree on it.
-						const VkImageLayout srvLayout =
-							( GetAspectMaskVulkan( resource.texture.m_texture->m_format ) & VK_IMAGE_ASPECT_DEPTH_BIT )
-								? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-								: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-						imageInfo.imageLayout = srvLayout;
-						imageInfos.push_back( imageInfo );
-						BoundImageVulkan bound = { resource.texture, srvLayout };
-						m_boundImages.push_back( bound );
 						d.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-						d.pImageInfo = &imageInfos.back();
+						d.descriptorCount = arrayCount;
+						d.pImageInfo = &imageInfos[first];
 					}
 				}
 
@@ -246,10 +293,31 @@ namespace TrinityALImpl
 	{
 		for( auto it = begin( m_boundImages ); it != end( m_boundImages ); ++it )
 		{
-			if( it->texture.IsValid() )
+			if( !it->texture.IsValid() )
 			{
-				it->texture.m_texture->TransitionVulkan( commandBuffer, it->layout );
+				continue;
 			}
+			// TRINITY_DRAW_LOG=1: the post-process chain's intermediates, sampled here for the
+			// first time each, are where a black frame gets decided. Every 60th time one of the
+			// watched names is about to be read, its centre is copied out for a deferred readback.
+			if( DrawLogEnabledVulkan() && it->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL )
+			{
+				const char* name = it->texture.m_texture->GetName();
+				if( name && ( strcmp( name, "Pre-upscaling Composite" ) == 0 || strcmp( name, "Sharpening Output" ) == 0
+					|| strcmp( name, "Final Result" ) == 0 || strcmp( name, "Tonemapping Result" ) == 0 ) )
+				{
+					// One counter per name, so that two watched textures sampled in the same
+					// frame do not lock the ration onto whichever one is odd.
+					static std::map<std::string, uint32_t> seen;
+					if( ( ++seen[name] % 40 ) == 25 )
+					{
+						it->texture.m_texture->TransitionVulkan( commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
+						RecordProbeVulkan( *it->texture.m_texture->m_owner, commandBuffer, it->texture.m_texture->GetImageVulkan(),
+							GetAspectMaskVulkan( it->texture.m_texture->m_format ), it->texture.GetWidth(), it->texture.GetHeight(), name );
+					}
+				}
+			}
+			it->texture.m_texture->TransitionVulkan( commandBuffer, it->layout );
 		}
 	}
 

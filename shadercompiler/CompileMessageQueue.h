@@ -15,10 +15,11 @@ public:
 	CompileMessageQueue();
 	~CompileMessageQueue();
 
-#if _WIN32
+	// Both blob types come from headers macOS has as well since the directx-dxc port
+	// started installing them: ID3DBlob from d3dcommon.h, IDxcBlobEncoding from dxcapi.h.
+	// The second overload is how the SPIR-V path reports dxc's own diagnostics.
 	void AddMessages( ID3DBlob* buffer );
-	void AddMessages( IDxcBlobEncoding* buffer ); // windows only? or is it also for mac
-#endif
+	void AddMessages( IDxcBlobEncoding* buffer );
 	void AddMessage( const char* format, ... );
 
 	void Flush();
@@ -35,6 +36,12 @@ private:
 	std::mutex m_messagesMutex;
 	std::condition_variable m_queueEvent;
 	std::thread m_thread;
+
+	// True from the moment the output thread takes a message off the queue until it has
+	// finished printing it. Without this, "the queue is empty" and "everything has been
+	// printed" are not the same statement and Flush() answers the first one -- see Flush().
+	bool m_printing = false;
+	std::condition_variable m_idleEvent;
 
 	// A set of already printed messages
 	std::set<std::string> m_printedMessages;

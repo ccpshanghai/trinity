@@ -10,7 +10,9 @@ set(_SOURCES
     Buffer.cpp
     Compute.cpp
     ConstantBuffer.cpp
+    ConstantBufferRename.cpp
     DepthStencil.cpp
+    DrawOffsets.cpp
     Dxt1Image.h
     Dxt3Image.h
     Dxt5Image.h
@@ -25,6 +27,9 @@ set(_SOURCES
     RenderContext.cpp
     RenderContextCreation.cpp
     RenderTarget.cpp
+    RenderTargetSwitch.cpp
+    # Vulkan-only body (item 12): the same _SOURCES list, an #if around the whole file.
+    ResourceArray.cpp
     RenderWindow.h
     RenderWindow_Stub.cpp
     RenderWindow_Win32.cpp
@@ -43,8 +48,12 @@ set(_SOURCES
     SwapChain.cpp
     SwapChainResizing.cpp
     Texture.cpp
+    # Vulkan-only in its entirety, the same way ShaderBindingABI.cpp is. Asserts the texel
+    # extent rule that VkBufferImageCopy imposes on block-compressed mips; no GPU involved.
+    TextureCopyExtentVulkan.cpp
     TextureSubresource.cpp
     TrinityALTest.cpp
+    VertexBufferRename.cpp
     VertexDefinition.cpp
     VertexLayout.cpp
     VideoAdapterInfo.cpp
@@ -138,6 +147,7 @@ set(_SHADERS_VULKAN
     Shaders.vulkan/PositionOnly.vsh
     Shaders.vulkan/PositionOnlyWithPerObjectData.vsh
     Shaders.vulkan/SampleTexture.csh
+    Shaders.vulkan/SampleTextureArrayFromTexCoord.psh
     Shaders.vulkan/SampleTextureFromTexCoord.psh
     Shaders.vulkan/SampleTextureMipFromTexCoord.psh
     Shaders.vulkan/SampleVolumeTexture.psh
@@ -383,7 +393,17 @@ if(WIN32)
         # want.) The dx12 block above only assigns DIRECTX_DXC_TOOL by hand on the
         # BUILD_FOR_PYTHON_2 path, where the port is the older `dxc` package that
         # does not set it.
-        find_package(directx-dxc CONFIG REQUIRED)
+        #
+        # Guarded because directx-dxc-config.cmake declares its two imported targets
+        # with a bare add_library and no if(TARGET) of its own, so a second
+        # find_package in this same directory scope is a hard error. The dx12 block
+        # above makes exactly that second call once BUILD_DX12 and BUILD_VULKAN are
+        # both ON -- which is the desktop configuration since M6. DIRECTX_DXC_TOOL is
+        # a CACHE PATH, so whichever block resolves the package first leaves it set
+        # for the other.
+        if(NOT TARGET Microsoft::DirectXShaderCompiler)
+            find_package(directx-dxc CONFIG REQUIRED)
+        endif()
         ccp_add_vulkan_test_shaders(TrinityALTest_vulkan)
 
         set_target_properties(TrinityALTest_vulkan PROPERTIES FOLDER "Tests")

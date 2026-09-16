@@ -1,0 +1,131 @@
+--- a/InterfaceDefinitions.cpp
++++ b/InterfaceDefinitions.cpp
+@@ -6,6 +6,9 @@
+ //
+ 
+ #include "include/BlueExposureMacros.h"
++#include "include/IList.h"
++#include "include/IPythonMethods.h"
++#include "include/IPythonNumeric.h"
+ 
+ BLUE_DEFINE_INTERFACE_IMPL_EXPORT( IRoot );
+ BLUE_DEFINE_INTERFACE_EXPORT( INotify );
+@@ -21,6 +24,12 @@
+ BLUE_DEFINE_INTERFACE_EXPORT( ICopier );
+ BLUE_DEFINE_INTERFACE_EXPORT( ICopierCustomAssignment );
+ BLUE_DEFINE_INTERFACE_EXPORT( ICustomPersist );
++
++// The key functions of the interfaces blue dynamic_casts to across shared objects; see
++// BLUE_INTERFACE_ANCHOR in BlueTypes.h.
++BLUE_DEFINE_INTERFACE_ANCHOR( IList );
++BLUE_DEFINE_INTERFACE_ANCHOR( IPythonMethods );
++BLUE_DEFINE_INTERFACE_ANCHOR( IPythonNumeric );
+ 
+ BLUE_DEFINE_CLSID_EXPORT( "blue", List );
+ BLUE_DEFINE_CLSID_EXPORT( "blue", Dict );
+--- a/include/BlueTypes.h
++++ b/include/BlueTypes.h
+@@ -569,6 +569,39 @@
+ 	BLUE_DECLARE_INTERFACE_EXPORT( _interface ); \
+ 	struct BLUE_NOVTABLE _interface
+ 
++// An interface that blue itself dynamic_casts to -- from code compiled into blue.so, on an
++// object created in another shared object -- has to keep its vtable and typeinfo in one
++// place. A pure interface has no key function, so every library that uses it emits its own
++// weak copy of both; the NDK's libc++abi compares std::type_info by address
++// (_LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION 1) and bionic binds a library's own copy
++// ahead of blue.so's, so dynamic_cast<IList*> inside blue.so is nullptr for every list the
++// engine creates, and the thunker that trusted it calls a method on null (M6: the app's
++// first run on Android died in IList_Thunk::Pyappend). MSVC compares type_info by name and
++// Apple's arm64 ABI flags such copies non-unique, which is why neither ever noticed.
++//
++// BLUE_INTERFACE_ANCHOR declares one non-pure virtual -- the class's key function -- so the
++// vtable and typeinfo are emitted only where BLUE_DEFINE_INTERFACE_ANCHOR defines it
++// (InterfaceDefinitions.cpp, inside blue), and BLUE_INTERFACE_VISIBILITY exports them so
++// every other library imports that one copy instead of making its own. The slot is last in
++// each interface and does nothing; the rest of every implementer's vtable is unchanged.
++#if defined(__GNUC__) || defined(__clang__)
++#define BLUE_INTERFACE_VISIBILITY __attribute__((visibility("default")))
++#else
++#define BLUE_INTERFACE_VISIBILITY
++#endif
++
++#define BLUE_INTERFACE_ANCHOR() virtual void BlueInterfaceAnchor()
++#define BLUE_DEFINE_INTERFACE_ANCHOR( _interface ) void _interface::BlueInterfaceAnchor() {}
++
++// Define a Blue interface whose vtable and typeinfo live in blue (see BLUE_INTERFACE_ANCHOR)
++#define BLUE_INTERFACE_ANCHORED( _interface ) \
++	BLUE_DECLARE_INTERFACE( _interface ); \
++	struct BLUE_INTERFACE_VISIBILITY BLUE_NOVTABLE _interface
++
++#define BLUE_INTERFACE_EXPORT_ANCHORED( _interface ) \
++	BLUE_DECLARE_INTERFACE_EXPORT( _interface ); \
++	struct BLUE_INTERFACE_VISIBILITY BLUE_NOVTABLE _interface
++
+ // Forward declare a Blue class
+ #define BLUE_DECLARE( _classname ) \
+ class _classname; \
+--- a/include/IList.h
++++ b/include/IList.h
+@@ -66,7 +66,7 @@
+ };
+ 
+ 
+-BLUE_INTERFACE_EXPORT(IList) : public IRoot
++BLUE_INTERFACE_EXPORT_ANCHORED(IList) : public IRoot
+ {
+ 
+     //--------------------------------------------------------------------
+@@ -162,6 +162,9 @@
+     // Returns a pointer to the first element and list size. Implementations
+     // that don't use continious memory for storing items may return (nullptr, size).
+     virtual std::pair<IRoot* const*, ssize_t> GetAllItems() const = 0;
++
++    // Key function; see BLUE_INTERFACE_ANCHOR in BlueTypes.h. Last on purpose.
++    BLUE_INTERFACE_ANCHOR();
+ };
+ 
+ 
+--- a/include/IPythonMethods.h
++++ b/include/IPythonMethods.h
+@@ -11,7 +11,7 @@
+ 
+ #include "BlueTypes.h"
+ 
+-BLUE_INTERFACE(IPythonMethods) : public IRoot
++BLUE_INTERFACE_ANCHORED(IPythonMethods) : public IRoot
+ {
+ 	virtual void Destroy(
+ 		) = 0;
+@@ -30,6 +30,9 @@
+ 	virtual PyObject* Repr(
+ 		bool* handled
+ 		) = 0;
++
++	// Key function; see BLUE_INTERFACE_ANCHOR in BlueTypes.h. Last on purpose.
++	BLUE_INTERFACE_ANCHOR();
+ };
+ 
+ #endif // IPythonMethods_h
+\ No newline at end of file
+--- a/include/IPythonNumeric.h
++++ b/include/IPythonNumeric.h
+@@ -52,7 +52,7 @@
+ 	PYOP_COERCE		= 41,	// supported
+ };
+ 
+-BLUE_INTERFACE(IPythonNumeric) : public IRoot
++BLUE_INTERFACE_ANCHORED(IPythonNumeric) : public IRoot
+ {
+ 	// If the functions return 'false', the op is not supported.
+ 	// '*retval' is always set to NULL prior to call, and if it's
+@@ -73,6 +73,9 @@
+ 		PyObject* from,
+ 		PyObject** to
+ 		) = 0;
++
++	// Key function; see BLUE_INTERFACE_ANCHOR in BlueTypes.h. Last on purpose.
++	BLUE_INTERFACE_ANCHOR();
+ };
+ 
+ 

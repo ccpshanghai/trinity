@@ -44,6 +44,15 @@ else()
         option(BUILD_METAL "Build Metal." OFF)
     endif()
 
+    # BUILD_TESTING has to exist as a cache variable here, before project(),
+    # because the manifest feature carrying the test suite's host tool is chosen
+    # in this block. trinityal/CMakeLists.txt declares the same option again
+    # after project(); option() is a no-op once the cache entry exists, so this
+    # is the declaration and that one reads it back. Nothing in the tree calls
+    # include(CTest), so there is no CTest-owned BUILD_TESTING to collide with --
+    # the bare enable_testing() below is the whole of CTest here.
+    option(BUILD_TESTING "Build the test suites." ON)
+
     if (BUILD_DX11)
         list(APPEND VCPKG_MANIFEST_FEATURES "dx11")
     endif()
@@ -58,6 +67,15 @@ else()
 
     if (BUILD_VULKAN)
         list(APPEND VCPKG_MANIFEST_FEATURES "vulkan")
+    endif()
+
+    # The test suite's dxc is its own feature, so the engine library's closure
+    # holds no host tool at all -- which is what lets the Android engine
+    # configure resolve on macOS, where directx-dxc has no upstream port and a
+    # platform expression cannot say "the host is not osx". See vcpkg.json's
+    # vulkan feature comment.
+    if (BUILD_VULKAN AND BUILD_TESTING)
+        list(APPEND VCPKG_MANIFEST_FEATURES "vulkan-tests")
     endif()
 
     if (BUILD_SHADER_COMPILER)

@@ -961,8 +961,12 @@ PyObject* TriDevice::PythonCreateDeviceHelper( PyObject* args, DeviceScreenType 
 #if __APPLE__
 	void* hwndAsPtr = (void*)hwnd;
 	bool OK = CreateSimpleDevice( ( __bridge Tr2WindowHandle )( hwndAsPtr ), width, height, screenType, Tr2RenderContextEnum::PresentInterval( presentInterval ), adapter );
-#else
+#elif defined( _WIN32 )
 	bool OK = CreateSimpleDevice( reinterpret_cast<Tr2WindowHandle>( hwnd ), width, height, screenType, Tr2RenderContextEnum::PresentInterval( presentInterval ), adapter );
+#else
+	// Tr2WindowHandle is uintptr_t off Windows and Apple (trinityal/StdAfx.h), so this is
+	// an integer-to-integer conversion: reinterpret_cast is not allowed between those.
+	bool OK = CreateSimpleDevice( static_cast<Tr2WindowHandle>( hwnd ), width, height, screenType, Tr2RenderContextEnum::PresentInterval( presentInterval ), adapter );
 #endif
 
 	if( !OK )
@@ -1040,6 +1044,46 @@ bool TriDevice::SetPresentParameters( unsigned adapter, const Tr2PresentParamete
 	}
 	return true;
 }
+
+bool TriDevice::SetOutputWindow( Tr2WindowHandle window )
+{
+	// The record is updated only on success: a failed rebuild leaves the device describing
+	// the surface it still has, so a later same-handle SetPresentParameters (a resize) does
+	// not silently retarget it. mHwnd is what SetPresentParameters' software early-return and
+	// the device-creation path read, so it follows the present parameters, as SetupDevice does.
+	Tr2PresentParametersAL pp = mPresentParam;
+	pp.outputWindow = window;
+	if( !SetPresentParameters( mAdapter, pp ) )
+	{
+		return false;
+	}
+	mPresentParam.outputWindow = window;
+	mHwnd = window;
+	return true;
+}
+
+#if BLUE_WITH_PYTHON
+PyObject* TriDevice::PySetOutputWindow( PyObject* args )
+{
+	// The same three-way cast PythonCreateDeviceHelper uses for hwnd, for the same reason:
+	// Tr2WindowHandle is HWND on Windows, an ObjC id on Apple, and uintptr_t everywhere else,
+	// and only one of the three casts is legal for each.
+	unsigned PY_LONG_LONG handle = 0;
+	if( !PyArg_ParseTuple( args, "K:SetOutputWindow", &handle ) )
+	{
+		return nullptr;
+	}
+#if __APPLE__
+	void* handleAsPtr = (void*)handle;
+	const bool ok = SetOutputWindow( ( __bridge Tr2WindowHandle )( handleAsPtr ) );
+#elif defined( _WIN32 )
+	const bool ok = SetOutputWindow( reinterpret_cast<Tr2WindowHandle>( handle ) );
+#else
+	const bool ok = SetOutputWindow( static_cast<Tr2WindowHandle>( handle ) );
+#endif
+	return PyBool_FromLong( ok );
+}
+#endif
 
 void TriDevice::PrepareDeviceResources()
 {

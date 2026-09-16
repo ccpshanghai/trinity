@@ -1,0 +1,27 @@
+{
+  "$comment": "Overlay of the ccpshanghai registry's carbon-blueexposure 2.1.1#2 with one more patch, android-interface-typeinfo-anchors.patch: IList, IPythonMethods and IPythonNumeric gain a key function and default visibility so their vtable/typeinfo live only in blue.so. On Android every library carried a private copy and dynamic_cast to them inside blue.so returned nullptr for engine-created objects (the app's first device run crashed in IList_Thunk::Pyappend, M6 Plan 3 Task 7). Overlay ports win regardless of version; port-version 3 is there so the package's version string and ABI hash differ from the registry's #2. Delete this overlay once the registry's carbon-blueexposure carries the patch (the same route Plan 2 took for carbon-core#7).",
+  "name": "carbon-blueexposure",
+  "version": "2.1.1",
+  "port-version": 3,
+  "description": "Carbon blue exposure static library",
+  "dependencies": [
+    {
+      "name": "carbon-core",
+      "version>=": "2.4.0"
+    },
+    {
+      "name": "python3",
+      "version>=": "3.13.15"
+    },
+    {
+      "name": "vcpkg-cmake",
+      "host": true,
+      "version>=": "2024-04-23"
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true,
+      "version>=": "2024-05-23"
+    }
+  ]
+}

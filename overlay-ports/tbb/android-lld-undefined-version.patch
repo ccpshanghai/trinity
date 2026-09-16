@@ -1,0 +1,18 @@
+--- a/cmake/compilers/Clang.cmake
++++ b/cmake/compilers/Clang.cmake
+@@ -70,6 +70,15 @@
+     set(TBB_LIB_LINK_FLAGS ${TBB_LIB_LINK_FLAGS} -Wl,-z,relro,-z,now)
+ endif()
+ 
++# The lin64 .def files keep a local: list of names that no longer exist in the
++# objects (ITT_DoOneTimeInitialization, the libirc mem-ops helpers). GNU ld
++# ignores them; lld under the NDK's default --no-undefined-version (r27+) turns
++# each one into an error and --fatal-warnings makes that final. Let the
++# version script name symbols that are not there.
++if (ANDROID)
++    set(TBB_LIB_LINK_FLAGS ${TBB_LIB_LINK_FLAGS} -Wl,--undefined-version)
++endif()
++
+ set(TBB_COMMON_LINK_LIBS ${CMAKE_DL_LIBS})
+ 
+ if (NOT CMAKE_CXX_FLAGS MATCHES "_FORTIFY_SOURCE")

@@ -392,13 +392,46 @@ const Be::ClassInfo* Tr2PrimaryRenderContext::ExposeToBlue()
 			"restoring only the SRV heap leaves later draws without samplers." )
 
 		MAP_METHOD_AND_WRAP(
+			"GetNativeInstance",
+			GetNativeInstance,
+			"Returns the VkInstance as an integer, or 0 off Vulkan.\n"
+			"\n"
+			"One of the three ImGui's Vulkan backend needs and no other API has a name\n"
+			"for; the other two are GetNativePhysicalDevice and GetNativeQueueFamily.\n"
+			"Process-wide and independent of any device." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativePhysicalDevice",
+			GetNativePhysicalDevice,
+			"Returns the VkPhysicalDevice as an integer, or 0 off Vulkan." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeQueueFamily",
+			GetNativeQueueFamily,
+			"Returns the graphics queue's family index, or 0 off Vulkan.\n"
+			"\n"
+			"0 is a legal family index as well as the no-device answer, so read it\n"
+			"beside GetNativeDevice rather than on its own. It belongs to the queue\n"
+			"GetNativeCommandQueue returns, which is the one a hosted UI must submit its\n"
+			"font upload on." )
+
+		MAP_METHOD_AND_WRAP(
 			"GetNativeCommandBuffer",
 			GetNativeCommandBuffer,
-			"Returns the MTLCommandBuffer as an integer, or 0 off Metal.\n"
+			"Returns the recording command buffer as an integer: an MTLCommandBuffer on\n"
+			"Metal, a VkCommandBuffer on Vulkan, 0 elsewhere.\n"
 			"\n"
 			"Metal's half of the pair GetNativeCommandList is on DX12: ImGui's Metal\n"
 			"backend renders with a command buffer plus the pass's open encoder, so a\n"
-			"hosted UI needs both.\n"
+			"hosted UI needs both. On Vulkan it is the whole answer -- ImGui records into\n"
+			"the buffer and there is no encoder.\n"
+			"\n"
+			"On Vulkan this is NOT a read-only getter (spec 7.4). Reading it opens a\n"
+			"rendering scope if none is open, so the caller's draws are legal, and marks\n"
+			"the AL's pipeline and dynamic state dirty, so the AL's next draw rebinds\n"
+			"rather than inheriting the UI's pipeline and scissor. Both are necessary and\n"
+			"the second one is invisible when it is missing: the frame renders wrongly\n"
+			"with no validation error at all.\n"
 			"\n"
 			"Like the command list, this is NOT a liveness check. Read it only from inside\n"
 			"a TriStepPythonCB callback, where the frame is what guarantees the buffer, and\n"

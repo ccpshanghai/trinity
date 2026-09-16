@@ -452,7 +452,7 @@ void PlatformKeyChanged( PlatformKey platformCode, bool pressed )
 
 }
 
-#else
+#elif defined( _WIN32 )
 
 
 namespace KeyboardHelpers
@@ -519,6 +519,51 @@ bool IsAppKeyPressed( AppKey appCode )
 bool IsPlatformKeyPressed( PlatformKey platformCode )
 {
 	return ( GetKeyState( platformCode ) & 0x8000 ) ? 1 : 0;
+}
+
+void PlatformKeyChanged( PlatformKey, bool )
+{
+}
+
+}
+
+#else
+
+// Android (and any other POSIX host). The half above is the Win32 keyboard API
+// (MapVirtualKeyA, GetKeyNameTextA, GetKeyState) and the half before it is Cocoa's;
+// neither exists here, and nothing does: the app shell owns the window and the
+// input events (M6 spec section 6), so no code path in the engine asks these
+// questions on Android. Neutral answers keep the contract in Scancodes.h honest --
+// keys have no names, nothing is ever pressed -- without a platform API behind them.
+namespace KeyboardHelpers
+{
+
+const AppKey INVALID_APP_KEY = 0;
+const AppKey INVALID_PLATFORM_KEY = 0;
+
+PlatformKey AppKeyToPlatformKey( AppKey appCode )
+{
+	return appCode;
+}
+
+AppKey PlatformKeyToAppKey( PlatformKey platformCode )
+{
+	return platformCode;
+}
+
+std::string GetAppKeyName( AppKey )
+{
+	return "";
+}
+
+bool IsAppKeyPressed( AppKey )
+{
+	return false;
+}
+
+bool IsPlatformKeyPressed( PlatformKey )
+{
+	return false;
 }
 
 void PlatformKeyChanged( PlatformKey, bool )

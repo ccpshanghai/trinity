@@ -12,7 +12,10 @@
 
 extern StringTable g_stringTable;
 
-#if _WIN32
+// Un-gated on 2026-09-08: the SPIR-V back end is built on macOS now. What stays behind
+// _WIN32 is the DX11 half only -- CompileDx11Reference asks EffectCompilerDX11 for a
+// non-SPIR-V compile, which needs d3dcompiler.dll and which the macOS build answers with
+// "DX11/DX12 compilation needs Windows" by design.
 
 namespace
 {
@@ -81,6 +84,42 @@ float4 MainPS( float2 uv : TEXCOORD0 ) : SV_Target
 technique T0 { pass P0 { PixelShader = compile ps_5_0 MainPS(); } }
 )";
 
+// A `static const` array beside ordinary globals -- the shape of 30 EVE effects (tonemapping,
+// shadowdepth, downsample, ...). CreateGlobalsCB used to sweep the static into the generated
+// `cbuffer Globals` with the rest; DXIL shrugged, DXC's SPIR-V back end warned "cbuffer member
+// initializer ignored" and then emitted invalid SPIR-V (OpAccessChain out of bounds, or
+// "reached non-composite type"). Item 9's whole failure class, in eleven lines.
+const char* STATIC_CONST_ARRAY_EFFECT = R"(
+static const float4 Colors[4] = { float4( 1, 0, 0, 1 ), float4( 0, 1, 0, 1 ), float4( 0, 0, 1, 1 ), float4( 1, 1, 1, 1 ) };
+float Brightness;
+float3 Tint;
+float Which;
+
+float4 MainPS( float2 uv : TEXCOORD0 ) : SV_Target
+{
+	return Colors[int( Which )] * Brightness + float4( Tint, 0 );
+}
+
+technique T0 { pass P0 { PixelShader = compile ps_5_0 MainPS(); } }
+)";
+
+// Globals with HLSL initialisers, the way every EVE effect declares its tunables. Whether the
+// compiled stage carries them is the whole difference between a tonemapper with a curve and
+// one that divides zero by zero.
+const char* DEFAULTED_GLOBALS_EFFECT = R"(
+float Brightness < string Group = "Test"; > = 0.75;
+float3 Tint = { 0.25, 0.5, 1.0 };
+float Weights[3] = { 2, 4, 8 };
+int Mode = 3;
+
+float4 MainPS( float2 uv : TEXCOORD0 ) : SV_Target
+{
+	return float4( Tint * Brightness, Weights[int( uv.x * 2 )] + Mode );
+}
+
+technique T0 { pass P0 { PixelShader = compile ps_5_0 MainPS(); } }
+)";
+
 EffectData CompileSpirv( const char* src )
 {
 	EffectCompilerDX11 compiler;
@@ -106,6 +145,7 @@ bool TryCompileSpirv( const char* src )
 	return compiled;
 }
 
+#if _WIN32
 EffectData CompileDx11Reference( const char* src )
 {
 	EffectCompilerDX11 compiler;
@@ -117,6 +157,7 @@ EffectData CompileDx11Reference( const char* src )
 	[compiled] { ASSERT_TRUE( compiled ); }();
 	return data;
 }
+#endif
 
 const uint32_t* ShaderWords( const StageInput& stage, size_t& wordCount )
 {
@@ -188,6 +229,76 @@ void ExpectStageObeysTheAbi( const StageInput& stage )
 }
 }
 
+// The reflected constant of that name, or null.
+const Constant* FindConstant( const StageData& stage, const char* name )
+{
+	for( auto& constant : stage.constants )
+	{
+		if( strcmp( g_stringTable.GetString( constant.name ), name ) == 0 )
+		{
+			return &constant;
+		}
+	}
+	return nullptr;
+}
+
+float DefaultAt( const StageData& stage, const Constant& constant, size_t index = 0 )
+{
+	float value = 0.0f;
+	if( constant.offset + ( index + 1 ) * sizeof( float ) > stage.defaultValues.size() )
+	{
+		ADD_FAILURE() << g_stringTable.GetString( constant.name ) << ": the defaults block ends before this element";
+		return value;
+	}
+	memcpy( &value, &stage.defaultValues[constant.offset + index * sizeof( float )], sizeof( float ) );
+	return value;
+}
+
+TEST( VulkanCompiler, TheInitialisersOfGlobalsBecomeTheStagesDefaultValues )
+{
+	EffectData data = CompileSpirv( DEFAULTED_GLOBALS_EFFECT );
+	ASSERT_EQ( data.techniques.size(), 1u );
+	auto& stage = data.techniques[0].passes[0].stages[0];
+	ASSERT_FALSE( stage.defaultValues.empty() ) << "dxc's reflection has no DefaultValue; the AST initialisers must be evaluated instead";
+
+	const Constant* brightness = FindConstant( stage, "Brightness" );
+	ASSERT_NE( brightness, nullptr );
+	EXPECT_FLOAT_EQ( 0.75f, DefaultAt( stage, *brightness ) );
+
+	const Constant* tint = FindConstant( stage, "Tint" );
+	ASSERT_NE( tint, nullptr );
+	EXPECT_FLOAT_EQ( 0.25f, DefaultAt( stage, *tint, 0 ) );
+	EXPECT_FLOAT_EQ( 0.5f, DefaultAt( stage, *tint, 1 ) );
+	EXPECT_FLOAT_EQ( 1.0f, DefaultAt( stage, *tint, 2 ) );
+
+	// An array: D3D lays each element on its own 16-byte row.
+	const Constant* weights = FindConstant( stage, "Weights" );
+	ASSERT_NE( weights, nullptr );
+	EXPECT_FLOAT_EQ( 2.0f, DefaultAt( stage, *weights, 0 ) );
+	EXPECT_FLOAT_EQ( 4.0f, DefaultAt( stage, *weights, 4 ) );
+	EXPECT_FLOAT_EQ( 8.0f, DefaultAt( stage, *weights, 8 ) );
+
+	const Constant* mode = FindConstant( stage, "Mode" );
+	ASSERT_NE( mode, nullptr );
+	int32_t modeValue = 0;
+	memcpy( &modeValue, &stage.defaultValues[mode->offset], sizeof( modeValue ) );
+	EXPECT_EQ( 3, modeValue );
+}
+
+TEST( VulkanCompiler, AStaticConstArrayStaysOutOfTheGlobalsCbuffer )
+{
+	// Compiling at all is the assertion: before the fix this effect was refused with DXC's
+	// "generated SPIR-V is invalid". The module is then checked for its magic like the others.
+	EffectData data = CompileSpirv( STATIC_CONST_ARRAY_EFFECT );
+	ASSERT_EQ( data.techniques.size(), 1u );
+	auto& stages = data.techniques[0].passes[0].stages;
+	ASSERT_EQ( stages.size(), 1u );
+	size_t wordCount = 0;
+	const uint32_t* words = ShaderWords( stages[0], wordCount );
+	ASSERT_GE( wordCount, 5u );
+	EXPECT_EQ( words[0], 0x07230203u );
+}
+
 TEST( VulkanCompiler, EmitsSpirvForEveryStage )
 {
 	EffectData data = CompileSpirv( SIMPLE_EFFECT );
@@ -205,6 +316,11 @@ TEST( VulkanCompiler, EmitsSpirvForEveryStage )
 	}
 }
 
+#if _WIN32
+// The only test here that needs a second back end to compare against: it asserts the
+// SPIR-V path's reflection agrees with the DX11 path's, and the DX11 path is Windows-only.
+// Its Vulkan-side numbers are absolute, not relative, so a macOS run would still be worth
+// having -- but not at the price of asserting a fact about a compiler that is not there.
 TEST( VulkanCompiler, ReflectionSurvivesTheBackendSwap )
 {
 	EffectData data = CompileSpirv( SIMPLE_EFFECT );
@@ -228,6 +344,7 @@ TEST( VulkanCompiler, ReflectionSurvivesTheBackendSwap )
 	EXPECT_EQ( vs.pipelineInputs.size(), 2u ); // POSITION + TEXCOORD
 	EXPECT_EQ( vs.pipelineInputs.size(), dx11Vs.pipelineInputs.size() );
 }
+#endif
 
 TEST( VulkanCompiler, BindingsObeyTheABIHeader )
 {
@@ -290,5 +407,3 @@ TEST( VulkanCompiler, ASecondResourceArrayIsRefusedRatherThanMisbound )
 	EXPECT_NE( output.find( "NormalMaps" ), std::string::npos ) << output;
 	EXPECT_NE( output.find( "register space 2" ), std::string::npos ) << output;
 }
-
-#endif

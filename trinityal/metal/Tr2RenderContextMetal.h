@@ -375,6 +375,24 @@ public:
 		return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( (__bridge void*)m_workQueue->GetCurrentRenderEncoder() ) );
 	}
 
+	// Vulkan's three, and the contract every accessor here shares (spec D3): named for what
+	// they return, 0 where the concept does not exist. None of these three exists on this
+	// backend.
+	uint64_t GetNativeInstance() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativePhysicalDevice() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeQueueFamily() const
+	{
+		return 0;
+	}
+
 	// Open a render pass on the currently bound targets, if one is not open already.
 	//
 	// This is the frame graph asking, not a getter driving (spec 5). Metal has no

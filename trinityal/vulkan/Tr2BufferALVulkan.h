@@ -5,6 +5,7 @@
 #if TRINITY_PLATFORM == TRINITY_VULKAN
 
 #include "../include/Tr2BufferAL.h"
+#include <vector>
 
 class Tr2RenderContextAL;
 
@@ -40,6 +41,11 @@ namespace TrinityALImpl
 
 		VkBuffer GetBufferVulkan() const { return m_buffer; }
 		VkBufferView GetBufferViewVulkan() const { return m_bufferView; }
+		// Where the buffer's current contents start inside m_buffer: 0 unless the buffer
+		// renames on MapForWriting (see the .cpp), in which case the slot the last map
+		// took. Every bind of a vertex or index buffer adds it, and the render context
+		// re-binds before a draw when it has moved.
+		VkDeviceSize GetOffsetVulkan() const { return VkDeviceSize( m_slot ) * m_slotStride; }
 
 	private:
 		VkBuffer m_buffer;
@@ -51,6 +57,27 @@ namespace TrinityALImpl
 		// off this rather than off IsValid(), because the AL's tests call Unmap after a
 		// Map that failed, and vkUnmapMemory on unmapped memory is undefined behaviour.
 		void* m_mapped;
+		// The frame's upload-ring range behind a synchronized MapForWriting, between the map
+		// and its unmap. VK_NULL_HANDLE while a non-synchronized map (or none) is outstanding.
+		VkBuffer m_stagingBuffer;
+		VkDeviceSize m_stagingOffset;
+
+		// The renaming ring for a synchronized vertex/index buffer: m_slotCount slots of
+		// m_slotStride bytes in one allocation, the current contents in m_slot, and the
+		// recording frame that last took each slot (0 = never). Non-renaming buffers have
+		// one slot and never move. m_usage/m_memoryProperty are kept to grow the ring.
+		bool m_renames;
+		uint32_t m_slotCount;
+		uint32_t m_slot;
+		VkDeviceSize m_slotStride;
+		std::vector<uint64_t> m_slotFrame;
+		VkBufferUsageFlags m_usage;
+		VkMemoryPropertyFlagBits m_memoryProperty;
+
+		static bool NonSynchronizedVulkan( const Tr2BufferDescriptionAL& desc );
+		bool IsNonSynchronizedVulkan() const;
+		ALResult AllocateSlotsVulkan( uint32_t slotCount );
+		void RecordStagingCopyVulkan( VkBuffer staging, VkDeviceSize stagingOffset, uint32_t offset, uint32_t size );
 
 		// ::-qualified: inside namespace TrinityALImpl an unqualified friend declaration
 		// names a new TrinityALImpl::Tr2RenderContextAL instead of the global class --

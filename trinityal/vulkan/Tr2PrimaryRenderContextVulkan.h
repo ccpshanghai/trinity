@@ -78,6 +78,14 @@ public:
 	}
 
 	VkBuffer GetZeroBufferVulkan() const;
+
+	// `size` bytes of host-visible, persistently mapped upload memory that stays valid until
+	// this frame's fence has passed -- the source side of every synchronized MapForWriting
+	// and UpdateBuffer (Tr2BufferALVulkan.cpp). One bump allocator per frame slot, reset when
+	// BeginFrame has waited on the slot's fence; a chunk that runs out is retired with the
+	// frame and replaced by a bigger one, so after the first few frames nothing here allocates.
+	// HOST_COHERENT, so the caller neither flushes nor unmaps.
+	ALResult AllocateUploadVulkan( VkDeviceSize size, VkBuffer& buffer, VkDeviceSize& offset, void*& mapped );
 public:
 	Tr2TextureAL m_defaultBackBuffer;
 		
@@ -117,6 +125,10 @@ public:
 	// because after that vkQueueWaitIdle everything submitted so far is done.
 	uint64_t GetRecordingFrameNumber() const;
 	uint64_t GetRenderedFrameNumber() const;
+
+	// The device's minUniformBufferOffsetAlignment, for a constant buffer that hands out
+	// slots of itself at offsets (Tr2ConstantBufferALVulkan). Never below 16.
+	VkDeviceSize GetUniformBufferOffsetAlignmentVulkan() const;
 
 private:
 	Tr2PrimaryRenderContextAL( const Tr2PrimaryRenderContextAL& ) /* = delete */;
@@ -174,6 +186,17 @@ private:
 	FrameData m_frameData[VIRTUAL_FRAMES];
 	uint32_t m_frameIndex;
 
+	struct UploadChunk
+	{
+		VkBuffer buffer = VK_NULL_HANDLE;
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		uint8_t* mapped = nullptr;
+		VkDeviceSize size = 0;
+		VkDeviceSize used = 0;
+	};
+	UploadChunk m_upload[VIRTUAL_FRAMES];
+	void DestroyUploadVulkan();
+
 	// imageAvailableSemaphore is a binary semaphore signalled by vkAcquireNextImageKHR in
 	// BeginFrame, and BeginFrame immediately records a barrier against the acquired image
 	// -- so whichever submit carries that barrier has to wait on it. Normally that is
@@ -228,6 +251,12 @@ private:
 	// window change. Every other caller leaves it false and gets the quiesce here.
 	ALResult RebuildSwapChainVulkan( bool alreadyQuiesced = false );
 
+	// True when BuildSwapChain, run now, would choose the extent and transform the live
+	// swapchain already has -- i.e. a rebuild would recreate the same swapchain. Present
+	// asks this before honouring VK_SUBOPTIMAL_KHR; false on a failed capabilities query,
+	// so the caller errs towards rebuilding.
+	bool SwapChainMatchesSurfaceVulkan() const;
+
 	// Drops the current swapchain + VkSurfaceKHR and, if outputWindow is non-null,
 	// creates a new surface from it. SetPresentParameters calls this when the
 	// window handle changes (Android surface loss); a null outputWindow is the
@@ -246,8 +275,14 @@ private:
 	// again -- a rebuild triggered by VK_ERROR_OUT_OF_DATE_KHR has no caller to ask.
 	Tr2PresentParametersAL m_presentParameters;
 
+	// What the live swapchain was actually created with, kept so a SUBOPTIMAL present can
+	// be checked against what a rebuild would choose now -- see SwapChainMatchesSurfaceVulkan.
+	VkExtent2D m_swapChainExtent = { 0, 0 };
+	VkSurfaceTransformFlagBitsKHR m_swapChainTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+
 	// Set when the swapchain has to be thrown away and built again: a present that reported
-	// SUBOPTIMAL or OUT_OF_DATE, a submit that failed, or SetPresentParameters. Acted on in
+	// OUT_OF_DATE (or SUBOPTIMAL when a rebuild would change the swapchain -- Present says
+	// why that qualifier exists), a submit that failed, or SetPresentParameters. Acted on in
 	// BeginFrame, which is the one place that is between frames by construction.
 	//
 	// Recovery is deliberately one action for all of those causes. A failed submit leaves
@@ -281,6 +316,20 @@ public:
 	VkDevice m_device;
 	VkPhysicalDevice m_physicalDevice;
 	VkPhysicalDeviceProperties m_physicalDeviceProperties;
+
+	// The graphics queue itself, for the same caller and the same reason -- m_graphicsQueue
+	// sits above the public: line with the swapchain internals, and widening that whole
+	// section to expose one handle would be the wrong trade.
+	VkQueue GetGraphicsQueueVulkan() const
+	{
+		return m_graphicsQueue;
+	}
+
+	// The queue family m_graphicsQueue came out of. Kept because a hosted UI needs it and
+	// nothing else does: ImGui_ImplVulkan_InitInfo wants the family index beside the queue,
+	// and Vulkan offers no way to ask a VkQueue which family it belongs to. 0xffffffff is
+	// "no device", matching FindPresentableQueues' own not-found value.
+	uint32_t m_graphicsQueueFamilyIndex;
 
 	// What vkCreateDevice was actually given, which is the intersection of what this
 	// backend wants and what the device reports -- so a caller that needs a feature asks
@@ -320,7 +369,11 @@ public:
 	// needs the texture impl's full type.
 	VkImageView GetDummyImageViewVulkan() const;
 
-	std::map<unsigned, VkPipeline> m_pipelines;
+	// size_t, not unsigned: the key is the size_t composite of two GetHash() results
+	// built in Tr2RenderContextVulkan.cpp's SetPipeline, so a 32-bit key truncated it
+	// on both insert and lookup -- a collision between two different pipelines, not
+	// just a warning. Only ever iterated for destruction, never serialized.
+	std::map<size_t, VkPipeline> m_pipelines;
 };
 
 #endif

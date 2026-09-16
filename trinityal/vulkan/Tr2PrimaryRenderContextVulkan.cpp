@@ -14,8 +14,27 @@
 #include "Tr2TextureALVulkan.h"
 
 #include <cstdio>
+#include <algorithm>
+#include <cstring>
 #include <string>
 #include <vector>
+
+#ifndef _WIN32
+// fopen_s is the spelling the rest of the codebase uses for file I/O, because MSVC
+// deprecates fopen (C4996) and this target now compiles under -WX. It is Annex K,
+// which MSVC has and bionic does not. carbon-core fills that gap for every non-MSVC
+// build: CcpSecureCrt.h declares `int fopen_s( FILE**, const char*, const char* )`
+// (and the other *_s spellings) and CcpCore, which this target links PUBLIC,
+// defines them. A local static shim here collided with that declaration the first
+// time this file met NDK clang (static-after-non-static, then ambiguous calls), so
+// the header is the shim. Leaves *stream null on failure like the real one.
+#include <CcpSecureCrt.h>
+#endif
+
+// getenv, for the pipeline cache's directory below. Named here rather than relied on from
+// whatever StdAfx pulled in, because the one call site is a one-line helper and a build that
+// lost the transitive include would fail on it rather than on anything that explains it.
+#include <cstdlib>
 
 // Defined in ALResult.cpp beside g_requestDeviceDebugLayer, and declared here the same
 // way that one is: null means the pipeline cache is not persisted.
@@ -181,7 +200,21 @@ namespace
 		// We can define other usage flags but we always need to check if they are supported
 		if( surface_capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT ) 
 		{
-			return VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+			VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+			// TRANSFER_SRC as well, when the surface offers it: reading the presented image back
+			// is a vkCmdCopyImage with the back buffer as the *source*, and the back buffer is
+			// a swap-chain image, whose usage comes from here rather than from
+			// Tr2TextureAL::Create (which sets both transfer bits unconditionally). Without
+			// this bit the read-back was VUID-vkCmdCopyImage-aspect-06662 for the copy and
+			// VUID-VkImageMemoryBarrier2-oldLayout-01212 twice for the transition into and out
+			// of TRANSFER_SRC_OPTIMAL -- three errors per capture, on a path that only
+			// Tr2HostBitmap and the screenshot probes take, which is why it stayed hidden until
+			// something was worth capturing.
+			if( surface_capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT )
+			{
+				usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+			}
+			return usage;
 		}
 		return static_cast<VkImageUsageFlags>( -1 );
 	}
@@ -194,6 +227,16 @@ namespace
 		// during presentation operation; this operation may hit performance on some platforms
 		// Here we don't want any transformations to occur so if the identity transform is supported use it
 		// otherwise just use the same transform as current transform
+		//
+		// 2026-09-11: TRINITY_SWAPCHAIN_TRANSFORM=current forces currentTransform, i.e. asks the
+		// presentation engine to do nothing. On a portrait-natural device running a landscape
+		// app this renders the content rotated, but it measures what the mismatched transform
+		// costs -- docs/spikes/artifacts/m6-android-fps-rotation-20260911.txt.
+		const char* forced = getenv( "TRINITY_SWAPCHAIN_TRANSFORM" );
+		if( forced && strcmp( forced, "current" ) == 0 )
+		{
+			return surface_capabilities.currentTransform;
+		}
 		if( surface_capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR ) 
 		{
 			return VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
@@ -257,9 +300,45 @@ namespace
 		// What was actually created, which is not necessarily what was asked for -- see the
 		// extent note in BuildSwapChain.
 		Tr2DisplayModeInfo mode;
+		VkExtent2D extent;
+		VkSurfaceTransformFlagBitsKHR transform;
 
-		SwapChainObjects() : swapChain( VK_NULL_HANDLE ) {}
+		SwapChainObjects() : swapChain( VK_NULL_HANDLE ), extent{ 0, 0 }, transform( VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR ) {}
 	};
+
+	// The extent comes from the surface, not from the parameters.
+	//
+	// When currentExtent is not the "application chooses" sentinel it is the *only*
+	// legal imageExtent, and on Win32 and Android it is always the real client area.
+	// This used to pass parameters.mode straight through, which asked for 1920x1080
+	// against a 640x480 window: eighteen VUID-VkSwapchainCreateInfoKHR-imageExtent
+	// violations across eight tests, two of which were green because the back buffer
+	// reported the *request* rather than what exists.
+	//
+	// So the AL's mode is a request, not a guarantee. DXGI can honour it because a DXGI
+	// swapchain's buffers are independent of the window and scale at present time;
+	// Vulkan has no equivalent without VK_KHR_swapchain_maintenance1, and emulating it
+	// means rendering offscreen and blitting. That is a separate decision, and until it
+	// is taken the back buffer reports what was actually created.
+	//
+	// Shared by BuildSwapChain and SwapChainMatchesSurfaceVulkan so "what would we build"
+	// and "what did we build" are answered by the same arithmetic.
+	VkExtent2D ChooseSwapChainExtent( const VkSurfaceCapabilitiesKHR& surfaceCapabilities, const Tr2PresentParametersAL& parameters )
+	{
+		VkExtent2D desiredExtent = { parameters.mode.width, parameters.mode.height };
+		if( surfaceCapabilities.currentExtent.width != 0xFFFFFFFF )
+		{
+			desiredExtent = surfaceCapabilities.currentExtent;
+		}
+		else
+		{
+			if( desiredExtent.width < surfaceCapabilities.minImageExtent.width )   desiredExtent.width = surfaceCapabilities.minImageExtent.width;
+			if( desiredExtent.height < surfaceCapabilities.minImageExtent.height ) desiredExtent.height = surfaceCapabilities.minImageExtent.height;
+			if( desiredExtent.width > surfaceCapabilities.maxImageExtent.width )   desiredExtent.width = surfaceCapabilities.maxImageExtent.width;
+			if( desiredExtent.height > surfaceCapabilities.maxImageExtent.height ) desiredExtent.height = surfaceCapabilities.maxImageExtent.height;
+		}
+		return desiredExtent;
+	}
 
 	// The single place that decides swapchain parameters. CreateDevice and every rebuild go
 	// through it, so the two cannot drift on format, image count or present mode.
@@ -281,32 +360,8 @@ namespace
 		std::vector<VkPresentModeKHR> presentModes;
 		FORWARD_HR( TrinityALImpl::QueryArrayNotEmpty( &vkGetPhysicalDeviceSurfacePresentModesKHR, physicalDevice, surface, presentModes ) );
 
-		// The extent comes from the surface, not from the parameters.
-		//
-		// When currentExtent is not the "application chooses" sentinel it is the *only*
-		// legal imageExtent, and on Win32 and Android it is always the real client area.
-		// This used to pass parameters.mode straight through, which asked for 1920x1080
-		// against a 640x480 window: eighteen VUID-VkSwapchainCreateInfoKHR-imageExtent
-		// violations across eight tests, two of which were green because the back buffer
-		// reported the *request* rather than what exists.
-		//
-		// So the AL's mode is a request, not a guarantee. DXGI can honour it because a DXGI
-		// swapchain's buffers are independent of the window and scale at present time;
-		// Vulkan has no equivalent without VK_KHR_swapchain_maintenance1, and emulating it
-		// means rendering offscreen and blitting. That is a separate decision, and until it
-		// is taken the back buffer reports what was actually created.
-		VkExtent2D desiredExtent = { parameters.mode.width, parameters.mode.height };
-		if( surfaceCapabilities.currentExtent.width != 0xFFFFFFFF )
-		{
-			desiredExtent = surfaceCapabilities.currentExtent;
-		}
-		else
-		{
-			if( desiredExtent.width < surfaceCapabilities.minImageExtent.width )   desiredExtent.width = surfaceCapabilities.minImageExtent.width;
-			if( desiredExtent.height < surfaceCapabilities.minImageExtent.height ) desiredExtent.height = surfaceCapabilities.minImageExtent.height;
-			if( desiredExtent.width > surfaceCapabilities.maxImageExtent.width )   desiredExtent.width = surfaceCapabilities.maxImageExtent.width;
-			if( desiredExtent.height > surfaceCapabilities.maxImageExtent.height ) desiredExtent.height = surfaceCapabilities.maxImageExtent.height;
-		}
+		// See ChooseSwapChainExtent for why the surface, not the parameters, decides this.
+		const VkExtent2D desiredExtent = ChooseSwapChainExtent( surfaceCapabilities, parameters );
 
 		// A zero extent means the window is minimised. There is nothing legal to create, and
 		// the caller has to try again later rather than treat it as a hard failure.
@@ -389,6 +444,8 @@ namespace
 		out.mode = parameters.mode;
 		out.mode.width = desiredExtent.width;
 		out.mode.height = desiredExtent.height;
+		out.extent = desiredExtent;
+		out.transform = desiredTransform;
 
 		// The back buffer image views, and every render pass attachment description that
 		// references them, are built from out.mode.format -- so it has to name the format
@@ -452,6 +509,7 @@ Tr2PrimaryRenderContextAL::Tr2PrimaryRenderContextAL()
 	m_physicalDevice( VK_NULL_HANDLE ),
 	m_graphicsQueue( VK_NULL_HANDLE ),
 	m_presentQueue( VK_NULL_HANDLE ),
+	m_graphicsQueueFamilyIndex( 0xffffffffu ),
 	m_surface( VK_NULL_HANDLE ),
 	m_swapChain( VK_NULL_HANDLE ),
 	m_commandPool( VK_NULL_HANDLE ),
@@ -481,6 +539,29 @@ Tr2PrimaryRenderContextAL::~Tr2PrimaryRenderContextAL()
 
 namespace
 {
+	// Where the cache lives: the host's explicit choice first (g_pipelineCacheDirectory, which
+	// the test hosts set), else TRINITY_PIPELINE_CACHE_DIR from the environment, else nowhere
+	// and no persistence at all.
+	//
+	// The environment exists because the app shell has no C++ path into this extension module
+	// -- the only export is PyInit__trinity_vulkan -- so a variable is how it asks (spec §6.1).
+	// The global winning keeps PipelineCache.cpp's ScopedPipelineCacheDirectory meaning what it
+	// says: a test that points the cache at its own temp directory must not be overridden by
+	// whatever the machine happens to have in its environment.
+	//
+	// Read on every call rather than cached: a test sets the variable after this translation
+	// unit is loaded, and one-shot initialisation would answer with what the environment held
+	// at load time. The cost is a getenv per device creation and per teardown, not per frame.
+	const char* PipelineCacheDirectory()
+	{
+		if( g_pipelineCacheDirectory )
+		{
+			return g_pipelineCacheDirectory;
+		}
+		const char* fromEnv = getenv( "TRINITY_PIPELINE_CACHE_DIR" );
+		return ( fromEnv && *fromEnv ) ? fromEnv : nullptr;
+	}
+
 	// The blob's name has to identify the device it was built for, because a cache from
 	// another GPU is worse than none: vkCreatePipelineCache is allowed to accept it and
 	// then quietly ignore every entry. The UUID check below is the authoritative one --
@@ -490,7 +571,7 @@ namespace
 		char name[128];
 		snprintf( name, sizeof( name ), "/TrinityALVkPipelineCache-%u-%u.bin",
 			properties.vendorID, properties.deviceID );
-		return std::string( g_pipelineCacheDirectory ) + name;
+		return std::string( PipelineCacheDirectory() ) + name;
 	}
 
 	// A blob whose header does not match this device must be dropped rather than handed to
@@ -599,7 +680,14 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	// synchronization2 rides the same policy: every barrier and submit in the backend is
 	// the 2 form, so it is required, not preferred. Same version bracket, same clean
 	// failure.
-	VkPhysicalDeviceSynchronization2Features supportedSynchronization2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES };
+	// shaderDemoteToHelperInvocation: what dxc emits for `discard` when the target is
+	// vulkan1.3 (OpDemoteToHelperInvocation, capability DemoteToHelperInvocation), so every
+	// effect with a discard declares it and vkCreateShaderModule refuses the module unless the
+	// feature is enabled -- VUID-VkShaderModuleCreateInfo-pCode-08740, twelve modules per
+	// shippreview frame on the S23 (2026-09-10). Core in 1.3 and required there, so on the
+	// devices this backend runs on it is always reported; queried anyway, and enabled only if so.
+	VkPhysicalDeviceShaderDemoteToHelperInvocationFeatures supportedDemote = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES };
+	VkPhysicalDeviceSynchronization2Features supportedSynchronization2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES, &supportedDemote };
 	VkPhysicalDeviceDynamicRenderingFeatures supportedDynamicRendering = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES, &supportedSynchronization2 };
 	VkPhysicalDeviceFeatures2 supportedFeatures2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &supportedDynamicRendering };
 	vkGetPhysicalDeviceFeatures2( physicalDevice.device, &supportedFeatures2 );
@@ -646,7 +734,13 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		extensions.push_back( VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME );
 	}
 
-	VkPhysicalDeviceSynchronization2Features enabledSynchronization2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES };
+	VkPhysicalDeviceShaderDemoteToHelperInvocationFeatures enabledDemote = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES };
+	enabledDemote.shaderDemoteToHelperInvocation = supportedDemote.shaderDemoteToHelperInvocation;
+	if( !supportedDemote.shaderDemoteToHelperInvocation )
+	{
+		CCP_AL_LOGWARN( "Vulkan device does not report shaderDemoteToHelperInvocation; every effect with a discard will fail vkCreateShaderModule (pCode-08740)" );
+	}
+	VkPhysicalDeviceSynchronization2Features enabledSynchronization2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES, &enabledDemote };
 	enabledSynchronization2.synchronization2 = VK_TRUE;
 	VkPhysicalDeviceDynamicRenderingFeatures enabledDynamicRendering = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES, &enabledSynchronization2 };
 	enabledDynamicRendering.dynamicRendering = VK_TRUE;
@@ -724,6 +818,8 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	}
 
 	Tr2DisplayModeInfo actualMode = presentationParameters.mode;
+	VkExtent2D swapChainExtent = { 0, 0 };
+	VkSurfaceTransformFlagBitsKHR swapChainTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 
 	if( !isWindowless )
 	{
@@ -733,6 +829,8 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		backBuffers = created.backBuffers;
 		finishedRenderingSemaphores = created.finishedRenderingSemaphores;
 		actualMode = created.mode;
+		swapChainExtent = created.extent;
+		swapChainTransform = created.transform;
 	}
 
 
@@ -789,6 +887,8 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 
 	vkGetDeviceQueue( device, graphicsQueue, 0, &m_graphicsQueue );
 	vkGetDeviceQueue( device, presentQueue, 0, &m_presentQueue );
+	// Beside the queue it describes, because that is the only place both are in scope.
+	m_graphicsQueueFamilyIndex = graphicsQueue;
 
 	m_device = device;
 	m_physicalDevice = physicalDevice.device;
@@ -825,9 +925,10 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		// Cleared here rather than in the loaded branch: every path out of this block has
 		// to leave a truthful value, including the ones that never look at the disk.
 		g_pipelineCacheBytesLoaded = 0;
-		if( g_pipelineCacheDirectory )
+		if( PipelineCacheDirectory() )
 		{
-			FILE* file = fopen( PipelineCachePath( m_physicalDeviceProperties ).c_str(), "rb" );
+			FILE* file = nullptr;
+			fopen_s( &file, PipelineCachePath( m_physicalDeviceProperties ).c_str(), "rb" );
 			if( file )
 			{
 				fseek( file, 0, SEEK_END );
@@ -875,6 +976,8 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	}
 	m_surface = surface;
 	m_swapChain = swapChain;
+	m_swapChainExtent = swapChainExtent;
+	m_swapChainTransform = swapChainTransform;
 	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
 	{
 		m_frameData[i] = frameData[i];
@@ -884,6 +987,8 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 
 	// actualMode, not presentationParameters.mode: the back buffer reports what exists.
 	m_defaultBackBuffer.m_texture->AssignFromSwapChainVulkan( backBuffers, actualMode, *this );
+	// So the draw log can say "backbuffer" for the one target the pool never named.
+	m_defaultBackBuffer.m_texture->SetName( "backbuffer" );
 
 	m_commandPool = commandPool;
 	m_frameIndex = 0;
@@ -965,6 +1070,7 @@ void Tr2PrimaryRenderContextAL::Destroy()
 		vkFreeMemory( m_device, m_zeroBufferMemory, nullptr );
 		m_zeroBufferMemory = VK_NULL_HANDLE;
 	}
+	DestroyUploadVulkan();
 	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
 	{
 		if( m_frameData[i].commandBuffer != VK_NULL_HANDLE )
@@ -1019,7 +1125,7 @@ void Tr2PrimaryRenderContextAL::Destroy()
 	}
 	if( m_pipelineCache != VK_NULL_HANDLE )
 	{
-		if( g_pipelineCacheDirectory )
+		if( PipelineCacheDirectory() )
 		{
 			size_t size = 0;
 			if( vkGetPipelineCacheData( m_device, m_pipelineCache, &size, nullptr ) == VK_SUCCESS && size > 0 )
@@ -1028,7 +1134,8 @@ void Tr2PrimaryRenderContextAL::Destroy()
 				if( vkGetPipelineCacheData( m_device, m_pipelineCache, &size, blob.data() ) == VK_SUCCESS )
 				{
 					const std::string path = PipelineCachePath( m_physicalDeviceProperties );
-					FILE* file = fopen( path.c_str(), "wb" );
+					FILE* file = nullptr;
+					fopen_s( &file, path.c_str(), "wb" );
 					if( file )
 					{
 						fwrite( blob.data(), 1, size, file );
@@ -1053,6 +1160,7 @@ void Tr2PrimaryRenderContextAL::Destroy()
 	}
 	m_graphicsQueue = VK_NULL_HANDLE;
 	m_presentQueue = VK_NULL_HANDLE;
+	m_graphicsQueueFamilyIndex = 0xffffffffu;
 	m_physicalDevice = VK_NULL_HANDLE;
 }
 
@@ -1121,6 +1229,8 @@ ALResult Tr2PrimaryRenderContextAL::RebuildSwapChainVulkan( bool alreadyQuiesced
 
 	VkSwapchainKHR oldSwapChain = m_swapChain;
 	m_swapChain = created.swapChain;
+	m_swapChainExtent = created.extent;
+	m_swapChainTransform = created.transform;
 
 	// ORDER MATTERS HERE, and getting it wrong cost a device loss in one full-suite run out
 	// of twelve while the control lost none.
@@ -1171,6 +1281,23 @@ ALResult Tr2PrimaryRenderContextAL::RebuildSwapChainVulkan( bool alreadyQuiesced
 	m_currentImage = 0;
 	m_needsSwapChainRebuild = false;
 	return S_OK;
+}
+
+bool Tr2PrimaryRenderContextAL::SwapChainMatchesSurfaceVulkan() const
+{
+	if( m_surface == VK_NULL_HANDLE || m_swapChain == VK_NULL_HANDLE )
+	{
+		return false;
+	}
+	VkSurfaceCapabilitiesKHR surfaceCapabilities;
+	if( vkGetPhysicalDeviceSurfaceCapabilitiesKHR( m_physicalDevice, m_surface, &surfaceCapabilities ) != VK_SUCCESS )
+	{
+		return false;
+	}
+	const VkExtent2D extent = ChooseSwapChainExtent( surfaceCapabilities, m_presentParameters );
+	return extent.width == m_swapChainExtent.width &&
+		extent.height == m_swapChainExtent.height &&
+		GetSwapChainTransform( surfaceCapabilities ) == m_swapChainTransform;
 }
 
 ALResult Tr2PrimaryRenderContextAL::RecreateSurfaceVulkan()
@@ -1378,15 +1505,41 @@ ALResult Tr2PrimaryRenderContextAL::Present()
 	}
 
 	// VK_SUBOPTIMAL_KHR is a *success*: the frame was presented, and the swapchain no longer
-	// matches the surface. VK_ERROR_OUT_OF_DATE_KHR is a failure that says the same thing
-	// more firmly. Both mean rebuild, and so does a submit that failed for any other reason
-	// -- one recovery action for every cause, because they leave the same mess.
+	// matches the surface exactly. VK_ERROR_OUT_OF_DATE_KHR is a failure that says the same
+	// thing more firmly, and a submit that failed for any other reason leaves the same mess
+	// (see m_needsSwapChainRebuild). Those two always rebuild. SUBOPTIMAL rebuilds only when
+	// the rebuild would produce a different swapchain.
+	//
+	// It used to rebuild on SUBOPTIMAL unconditionally, and on Android that is a livelock.
+	// A portrait-natural device running a landscape app reports currentTransform=ROTATE_90;
+	// GetSwapChainTransform deliberately asks for IDENTITY; so Android answers every present
+	// with SUBOPTIMAL -- and the rebuild chose IDENTITY again. One vkDeviceWaitIdle and one
+	// swapchain (six gralloc allocations, every back-buffer view, every attachment) per
+	// frame, for the life of the process: shippreview at 14 fps where 68 was available on
+	// the S23 Ultra, and nothing to show for it, since the display hardware does the
+	// rotation as an overlay either way
+	// (docs/spikes/artifacts/m6-android-fps-suboptimal-20260911.txt).
+	const bool presentNeedsRebuild =
+		presentResult == VK_SUBOPTIMAL_KHR ? !SwapChainMatchesSurfaceVulkan()
+		                                    : presentResult != VK_SUCCESS;
 	const bool needsRebuild =
 		submitResult != VK_SUCCESS ||
-		presentResult != VK_SUCCESS;
+		presentNeedsRebuild;
 	if( needsRebuild )
 	{
 		m_needsSwapChainRebuild = true;
+	}
+
+	// TRINITY_SERIALIZE=1: drain the queue before beginning the next frame, so at most one
+	// frame is ever in flight. The A/B that separates a cross-frame resource race from a
+	// within-frame one.
+	static const bool serialize = []{
+		const char* value = getenv( "TRINITY_SERIALIZE" );
+		return value && value[0] == '1';
+	}();
+	if( serialize )
+	{
+		vkQueueWaitIdle( m_presentQueue );
 	}
 
 	FORWARD_HR( BeginFrame() );
@@ -1463,6 +1616,73 @@ ALResult Tr2PrimaryRenderContextAL::FlushAndSyncVulkan()
 uint64_t Tr2PrimaryRenderContextAL::GetRecordingFrameNumber() const
 {
 	return m_recordingFrame;
+}
+
+ALResult Tr2PrimaryRenderContextAL::AllocateUploadVulkan( VkDeviceSize size, VkBuffer& buffer, VkDeviceSize& offset, void*& mapped )
+{
+	UploadChunk& chunk = m_upload[m_frameIndex];
+	// 16-byte aligned starts: nothing a vkCmdCopyBuffer source needs, everything a caller
+	// writing vectors through the pointer is happier with.
+	VkDeviceSize start = ( chunk.used + 15 ) & ~VkDeviceSize( 15 );
+	if( chunk.buffer == VK_NULL_HANDLE || start + size > chunk.size )
+	{
+		// The chunk retires with this frame, not now: copies recorded earlier this frame
+		// still read it, and DestroyLater frees it when this slot's fence has passed.
+		if( chunk.buffer != VK_NULL_HANDLE )
+		{
+			vkUnmapMemory( m_device, chunk.memory );
+			DestroyLaterVulkan( chunk.buffer, &vkDestroyBuffer );
+			DestroyLaterVulkan( chunk.memory, &vkFreeMemory );
+			chunk = UploadChunk();
+		}
+		// Doubling, from a megabyte: a frame's synchronized writes are a few screen quads and
+		// a light buffer, and a chunk that was too small once is replaced by one that will
+		// not be for that frame's shape again.
+		VkDeviceSize wanted = std::max<VkDeviceSize>( VkDeviceSize( 1 ) << 20, size * 2 );
+		wanted = std::max( wanted, chunk.size * 2 );
+		FORWARD_HR( TrinityALImpl::CreateBuffer( chunk.buffer, chunk.memory, size_t( wanted ), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			VkMemoryPropertyFlagBits( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ), *this ) );
+		void* base = nullptr;
+		const ALResult mappedResult = Vk2Al( vkMapMemory( m_device, chunk.memory, 0, VK_WHOLE_SIZE, 0, &base ) );
+		if( FAILED( mappedResult ) )
+		{
+			DestroyLaterVulkan( chunk.buffer, &vkDestroyBuffer );
+			DestroyLaterVulkan( chunk.memory, &vkFreeMemory );
+			chunk = UploadChunk();
+			return mappedResult;
+		}
+		chunk.mapped = static_cast<uint8_t*>( base );
+		chunk.size = wanted;
+		chunk.used = 0;
+		start = 0;
+	}
+	buffer = chunk.buffer;
+	offset = start;
+	mapped = chunk.mapped + start;
+	chunk.used = start + size;
+	return S_OK;
+}
+
+void Tr2PrimaryRenderContextAL::DestroyUploadVulkan()
+{
+	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
+	{
+		UploadChunk& chunk = m_upload[i];
+		if( chunk.buffer == VK_NULL_HANDLE )
+		{
+			continue;
+		}
+		vkUnmapMemory( m_device, chunk.memory );
+		vkDestroyBuffer( m_device, chunk.buffer, nullptr );
+		vkFreeMemory( m_device, chunk.memory, nullptr );
+		chunk = UploadChunk();
+	}
+}
+
+VkDeviceSize Tr2PrimaryRenderContextAL::GetUniformBufferOffsetAlignmentVulkan() const
+{
+	const VkDeviceSize alignment = m_physicalDeviceProperties.limits.minUniformBufferOffsetAlignment;
+	return alignment < 16 ? 16 : alignment;
 }
 
 uint64_t Tr2PrimaryRenderContextAL::GetRenderedFrameNumber() const
@@ -1575,8 +1795,9 @@ ALResult Tr2PrimaryRenderContextAL::BeginFrame()
 
 	CR_RETURN_HR( Vk2Al( vkAcquireNextImageKHR( m_device, m_swapChain, UINT64_MAX, m_frameData[m_frameIndex].imageAvailableSemaphore, VK_NULL_HANDLE, &m_currentImage ) ) );
 	// The fence above has been waited on, so nothing submitted for this slot is still in
-	// flight and the sets it used can be handed out again.
+	// flight and the sets it used can be handed out again -- and so can its upload memory.
 	ResetConstantPoolVulkan();
+	m_upload[m_frameIndex].used = 0;
 
 	m_defaultBackBuffer.m_texture->SetCurrentImageVulkan( m_currentImage );
 
