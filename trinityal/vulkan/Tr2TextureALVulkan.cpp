@@ -10,6 +10,7 @@
 #include "Tr2PrimaryRenderContextVulkan.h"
 #include "VkResult.h"
 #include "UtilitiesVulkan.h"
+#include <algorithm>
 
 
 namespace
@@ -89,6 +90,7 @@ namespace TrinityALImpl
 	Tr2TextureAL::Tr2TextureAL()
 		:m_owner( nullptr ),
 		m_memory( VK_NULL_HANDLE ),
+		m_storageView( VK_NULL_HANDLE ),
 		m_currentIndex( 0 ),
 		m_cpuUsage( Tr2CpuUsage::NONE ),
 		m_gpuUsage( Tr2GpuUsage::NONE ),
@@ -344,7 +346,12 @@ namespace TrinityALImpl
 						rowPitch ? initialData[index].m_sysMemSlicePitch / rowPitch * blockHeight : 0,   // uint32_t                   bufferImageHeight
 						{ VK_IMAGE_ASPECT_COLOR_BIT, j, i, 1 },
 						{ 0, 0, 0 },
-						{ desc.GetMipWidth( j ), desc.GetMipHeight( j ), desc.GetMipDepth( j ) }
+						// TEXELS of the destination mip, which for a compressed format's 2x2
+						// and 1x1 tail is NOT what GetMipWidth reports -- see
+						// GetCopyTexelExtentVulkan. bufferRowLength/bufferImageHeight above
+						// stay block-rounded, because those really are counted in whole
+						// blocks; only the destination extent is a texel count.
+						GetCopyTexelExtentVulkan( desc, j )
 					};
 					copyInfo.push_back( buffer_image_copy_info );
 					size += initialData[index].m_sysMemSlicePitch * desc.GetMipDepth( j );
@@ -450,6 +457,12 @@ namespace TrinityALImpl
 			if( m_memory )
 			{
 				m_owner->DestroyLaterVulkan( m_memory, vkFreeMemory );
+				// Nulled, as Tr2BufferAL::Destroy and Tr2ConstantBufferAL::Destroy do: the
+				// destructor calls Destroy again, and everything else this clears below made
+				// a second pass a no-op -- except the memory, which was queued a second time.
+				// One VkDeviceMemory freed twice at the end of every validated app run on
+				// 2026-09-09 (VUID-vkFreeMemory-memory-parameter, m6-fps-validation-20260909).
+				m_memory = VK_NULL_HANDLE;
 			}
 			for( auto it = begin( m_imageViews ); it != end( m_imageViews ); ++it )
 			{
@@ -465,6 +478,11 @@ namespace TrinityALImpl
 			for( auto it = begin( m_attachmentViews ); it != end( m_attachmentViews ); ++it )
 			{
 				m_owner->DestroyLaterVulkan( it->second, vkDestroyImageView );
+			}
+			if( m_storageView != VK_NULL_HANDLE )
+			{
+				m_owner->DestroyLaterVulkan( m_storageView, vkDestroyImageView );
+				m_storageView = VK_NULL_HANDLE;
 			}
 			if( m_images.size() == 1 )
 			{
@@ -649,9 +667,13 @@ namespace TrinityALImpl
 				offset.x = 0;
 				offset.y = 0;
 				offset.z = 0;
-				extent.width = desc.GetMipWidth( mip );
-				extent.height = desc.GetMipHeight( mip );
-				extent.depth = desc.GetMipDepth( mip );
+				// Texels, not block-rounded storage size: this extent goes straight into a
+				// VkBufferImageCopy for both directions of the map (vkCmdCopyImageToBuffer in
+				// MapForReading, vkCmdCopyBufferToImage in Unmap), and the tail mips of a
+				// compressed texture are the case GetMipWidth answers a different question
+				// about. `pitch` and `size` below are unaffected -- they go through
+				// GetBlockCount, and ceil(2/4) and ceil(4/4) are both one block.
+				extent = GetCopyTexelExtentVulkan( desc, mip );
 			}
 
 			const bool isCompressed = Tr2RenderContextEnum::IsCompressedFormat( desc.GetFormat() );
@@ -900,9 +922,65 @@ namespace TrinityALImpl
 			srcExtent
 		};
 
+		if( DrawLogEnabledVulkan() )
+		{
+			// Before the transitions, so the layouts are the ones the images were LEFT in by
+			// whatever touched them last -- an UNDEFINED source here is a copy of nothing.
+			CCP_LOG( "copy: %s[%s] %ux%u -> %s[%s] %ux%u",
+					 source.m_name.c_str(), LayoutNameVulkan( source.GetLayoutVulkan() ),
+					 srcExtent.width, srcExtent.height,
+					 m_name.c_str(), LayoutNameVulkan( GetLayoutVulkan() ),
+					 dstExtent.width, dstExtent.height );
+		}
+
 		renderContext.EndRenderPassVulkan();
 		source.TransitionVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
 		TransitionForTransferWriteVulkan( renderContext.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
+
+		// TRINITY_DRAW_LOG=1: every 60th copy out of a named source, read a 32x32 box at its
+		// centre back to the host and say how many of its words are non-zero. It is the one
+		// question no draw count, target list or layout trace can answer -- whether anything
+		// LANDED -- and it costs a full GPU sync, which is why it is rationed and off by default.
+		if( DrawLogEnabledVulkan() && !source.m_name.empty() && source.m_desc.GetWidth() >= 32 && source.m_desc.GetHeight() >= 32 )
+		{
+			static uint32_t copies = 0;
+			if( ( ++copies % 60 ) == 30 )
+			{
+				const VkDeviceSize probeBytes = 32 * 32 * 4;
+				VkBuffer probe = VK_NULL_HANDLE;
+				VkDeviceMemory probeMemory = VK_NULL_HANDLE;
+				if( SUCCEEDED( CreateBuffer( probe, probeMemory, probeBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+						VkMemoryPropertyFlagBits( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ), *m_owner ) ) )
+				{
+					VkBufferImageCopy region = {};
+					region.imageSubresource = { GetAspectMaskVulkan( source.m_format ), 0, 0, 1 };
+					region.imageOffset = { int32_t( source.m_desc.GetWidth() / 2 - 16 ), int32_t( source.m_desc.GetHeight() / 2 - 16 ), 0 };
+					region.imageExtent = { 32, 32, 1 };
+					vkCmdCopyImageToBuffer( renderContext.m_commandBuffer, source.m_images[source.m_currentIndex],
+						VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, probe, 1, &region );
+					if( SUCCEEDED( m_owner->FlushAndSyncVulkan() ) )
+					{
+						void* mapped = nullptr;
+						if( vkMapMemory( m_owner->m_device, probeMemory, 0, VK_WHOLE_SIZE, 0, &mapped ) == VK_SUCCESS )
+						{
+							const uint32_t* words = static_cast<const uint32_t*>( mapped );
+							uint32_t nonzero = 0, minWord = 0xffffffffu, maxWord = 0;
+							for( uint32_t i = 0; i < 1024; ++i )
+							{
+								if( words[i] ) ++nonzero;
+								minWord = std::min( minWord, words[i] );
+								maxWord = std::max( maxWord, words[i] );
+							}
+							CCP_LOG( "probe: %s centre 32x32 -> %u/1024 words non-zero (min %08x max %08x, first %08x)",
+									 source.m_name.c_str(), nonzero, minWord, maxWord, words[0] );
+							vkUnmapMemory( m_owner->m_device, probeMemory );
+						}
+					}
+					m_owner->DestroyLaterVulkan( probe, &vkDestroyBuffer );
+					m_owner->DestroyLaterVulkan( probeMemory, &vkFreeMemory );
+				}
+			}
+		}
 
 		vkCmdCopyImage(
 			renderContext.m_commandBuffer,
@@ -1066,7 +1144,50 @@ namespace TrinityALImpl
 		const VkImageLayout oldLayout = m_layouts[m_currentIndex];
 		if( oldLayout == newLayout )
 		{
-			return;
+			// Same layout is not "nothing to do" when that layout is an attachment layout.
+			// Dynamic rendering has no implicit dependencies between passes: two consecutive
+			// vkCmdBeginRendering on the same image -- the screen's composite and then the HUD
+			// on the back buffer, every frame -- are unordered unless a barrier says otherwise,
+			// and this early return used to be the only thing between them. A same-layout
+			// barrier is legal and is exactly the dependency that pair needs; read-only
+			// layouts stay a no-op, since a read after a read is not a hazard.
+			//
+			// Added on 2026-09-11 as the fix for the shippreview flicker, which it was not:
+			// measured on 09-14 the flicker survived it unchanged, and a frame with a single
+			// pass on the back buffer flickered too. The cause was a vertex buffer mapped in
+			// place (Tr2BufferALVulkan.cpp, MapForWriting;
+			// docs/spikes/artifacts/m6-android-flicker-20260914.txt). The barrier stays on
+			// its own merits.
+			const bool attachmentLayout =
+				newLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ||
+				newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+			if( !attachmentLayout )
+			{
+				return;
+			}
+		}
+		// A transition FROM UNDEFINED is the one layout change that is allowed to throw the
+		// image's contents away, and it does so without a validation message. Legal and right
+		// for an image nothing has written yet; a whole frame's worth of draws lost if the
+		// tracker forgot where a written image was. Named images only: the unnamed ones are
+		// uploads and staging, which are exactly the ones that start UNDEFINED on purpose.
+		if( oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && DrawLogEnabledVulkan() && !m_name.empty() )
+		{
+			CCP_LOG( "discard: %s UNDEFINED -> %s (contents dropped)", m_name.c_str(), LayoutNameVulkan( newLayout ) );
+		}
+		// The back buffer's every transition, because its sequence within a frame is the order
+		// in which the screen's clear, the composite, the HUD, the read-back and the present
+		// touched it -- and which of those came first decides what a discard threw away.
+		else if( DrawLogEnabledVulkan() && m_name == "backbuffer" )
+		{
+			if( oldLayout == newLayout )
+			{
+				CCP_LOG( "backbuffer: barrier within %s (pass to pass)", LayoutNameVulkan( newLayout ) );
+			}
+			else
+			{
+				CCP_LOG( "backbuffer: %s -> %s", LayoutNameVulkan( oldLayout ), LayoutNameVulkan( newLayout ) );
+			}
 		}
 
 		// synchronization2: the stages ride in the barrier itself rather than as
@@ -1225,6 +1346,47 @@ namespace TrinityALImpl
 		return view;
 	}
 
+	VkImageView Tr2TextureAL::GetStorageViewVulkan()
+	{
+		if( m_desc.GetType() != Tr2RenderContextEnum::TEX_TYPE_CUBE )
+		{
+			return m_imageViews[m_currentIndex];
+		}
+		if( m_storageView != VK_NULL_HANDLE )
+		{
+			return m_storageView;
+		}
+		// The shader-resource view's extent -- every level, every layer -- with the one
+		// difference a storage descriptor of a cube needs: 2D_ARRAY, six layers, not CUBE.
+		VkImageViewCreateInfo createInfo = {
+			VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			nullptr,
+			0,
+			m_images[m_currentIndex],
+			VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+			m_format,
+			{
+				VK_COMPONENT_SWIZZLE_IDENTITY,
+				VK_COMPONENT_SWIZZLE_IDENTITY,
+				VK_COMPONENT_SWIZZLE_IDENTITY,
+				VK_COMPONENT_SWIZZLE_IDENTITY
+			},
+			{
+				GetAspectMaskVulkan( m_format ),
+				0,
+				VK_REMAINING_MIP_LEVELS,
+				0,
+				VK_REMAINING_ARRAY_LAYERS
+			}
+		};
+		if( FAILED( Vk2Al( vkCreateImageView( m_owner->m_device, &createInfo, nullptr, &m_storageView ) ) ) )
+		{
+			m_storageView = VK_NULL_HANDLE;
+			return m_imageViews[m_currentIndex];
+		}
+		return m_storageView;
+	}
+
 	uint32_t Tr2TextureAL::GetSrvIndexInHeap( Tr2RenderContextEnum::ColorSpace ) const
 	{
 		return 0xffffffff;
@@ -1240,14 +1402,19 @@ namespace TrinityALImpl
 		description["type"] = "Tr2TextureAL";
 	}
 
-	ALResult Tr2TextureAL::SetName( const char* )
+	ALResult Tr2TextureAL::SetName( const char* name )
 	{
-		return E_NOTIMPL;
+		// Stored, not pushed to the driver: vkSetDebugUtilsObjectNameEXT is not wired on this
+		// backend, and the name's one consumer here is the draw log. Returning E_NOTIMPL made
+		// GetName() null for every texture the pool had named, which is why a whole day of
+		// device runs referred to the scene's colour target by a handle.
+		m_name = name ? name : "";
+		return S_OK;
 	}
 
 	const char* Tr2TextureAL::GetName() const
 	{
-		return nullptr;
+		return m_name.c_str();
 	}
 }
 

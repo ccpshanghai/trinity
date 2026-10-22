@@ -1,7 +1,6 @@
 // Copyright © 2023 CCP ehf.
 
 #include "stdafx.h"
-#if _WIN32
 #include "DxReflection.h"
 #include "HLSLParser.h"
 #include "ParserUtils.h"
@@ -50,4 +49,3 @@ bool MakeEffectAnnotationFromSymbolAnnotation( const SymbolAnnotation& annotatio
 }
 
 }
-#endif

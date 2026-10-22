@@ -1,0 +1,25 @@
+// Copyright © 2026 CCP ehf.
+
+struct VS_OUTPUT
+{
+	float4 Position : SV_Position;
+	float2 TexCoord : TEXCOORD;
+};
+
+// Four descriptors behind one binding: dxc emits a single OpVariable for `maps`, decorated with
+// the binding of t0, of an array type of length 4 -- so the AL's layout for t0 has to say
+// descriptorCount 4 and its write has to fill all four (item 12). Constant indices on purpose:
+// a per-pixel index would need shaderSampledImageArrayDynamicIndexing, and the point here is
+// the descriptors, not the indexing -- which column wins is decided after all four are sampled.
+Texture2D maps[4] : register( t0, space1 );
+SamplerState sampl : register( s0, space1 );
+
+float4 main( VS_OUTPUT In ) : SV_Target
+{
+	float4 c0 = maps[0].Sample( sampl, In.TexCoord );
+	float4 c1 = maps[1].Sample( sampl, In.TexCoord );
+	float4 c2 = maps[2].Sample( sampl, In.TexCoord );
+	float4 c3 = maps[3].Sample( sampl, In.TexCoord );
+	float x = In.TexCoord.x;
+	return x < 0.25 ? c0 : ( x < 0.5 ? c1 : ( x < 0.75 ? c2 : c3 ) );
+}

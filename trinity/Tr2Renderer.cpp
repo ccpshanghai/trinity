@@ -1,6 +1,7 @@
 // Copyright © 2023 CCP ehf.
 
 #include "StdAfx.h"
+#include <set>
 #include "Tr2Renderer.h"
 #include "Shader/Tr2Effect.h"
 #include "Shader/Tr2Shader.h"
@@ -858,6 +859,17 @@ bool Tr2Renderer::RunComputeShader( Tr2Material* effect,
 	auto shader = effect->GetShaderStateInterface();
 	if( !shader )
 	{
+		// Once per material, as Tr2Blitter does: a compute pass that is skipped here leaves
+		// its output texture holding whatever the pool last put there, and the pass that
+		// samples it next has no way of knowing.
+		static std::set<const Tr2Material*> logged;
+		if( logged.insert( effect ).second )
+		{
+			const Tr2Effect* asEffect = dynamic_cast<const Tr2Effect*>( effect );
+			CCP_LOGERR( "Tr2Renderer::RunComputeShader: dispatch skipped, the material has no shader state: %s (%s)",
+						asEffect && asEffect->GetEffectPathName() ? asEffect->GetEffectPathName() : "(not a Tr2Effect)",
+						asEffect ? asEffect->DescribeShaderResolution() : "-" );
+		}
 		return false;
 	}
 	bool result = false;
@@ -876,6 +888,23 @@ bool Tr2Renderer::RunComputeShader( Tr2Material* effect,
 			effect->ApplyMaterialDataForPass( 0, i, renderContext );
 			CR_RETURN_VAL( renderContext.RunComputeShader( groupDimX, groupDimY, groupDimZ ), false );
 			result = true;
+		}
+	}
+	if( !result )
+	{
+		// The effect resolved, and to a technique with no compute pass in it. That is what a
+		// compute effect compiles to on a platform Compile.fxh does not list under
+		// PLATFORM_SUPPORTS_COMPUTE -- cas.fx, exposuretotexture.fx and the histogram passes
+		// all fall back to a Clear or a `_no_effect_ps` technique -- and the output texture
+		// the caller hands on is then never written. Silent until 2026-09-11, when it was the
+		// EVE scene's whole frame on Vulkan: the tonemapper read an unwritten sharpening
+		// output and painted black. Once per material.
+		static std::set<const Tr2Material*> logged;
+		if( logged.insert( effect ).second )
+		{
+			const Tr2Effect* asEffect = dynamic_cast<const Tr2Effect*>( effect );
+			CCP_LOGERR( "Tr2Renderer::RunComputeShader: nothing dispatched, technique 0 has no compute pass: %s",
+						asEffect && asEffect->GetEffectPathName() ? asEffect->GetEffectPathName() : "(not a Tr2Effect)" );
 		}
 	}
 	return result;

@@ -469,7 +469,9 @@ bool Tr2HostBitmap::Save( const wchar_t* path )
 	}
 	ON_BLOCK_EXIT( [&] { stream->Close(); } );
 
-	return ImageIO::SaveImage( path, *this, *stream );
+	// SaveImage returns ImageIO::Result, whose OK is 0: returned as a bool it read "false" for
+	// every successful save and "true" for every failure, and no Python caller could tell.
+	return ImageIO::SaveImage( path, *this, *stream ) == ImageIO::Result::OK;
 }
 
 bool Tr2HostBitmap::SaveAsync( const wchar_t* path )

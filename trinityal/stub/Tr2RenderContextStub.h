@@ -347,6 +347,24 @@ public:
 		return 0;
 	}
 
+	// Vulkan's three, and the contract every accessor here shares (spec D3): named for what
+	// they return, 0 where the concept does not exist. None of these three exists on this
+	// backend.
+	uint64_t GetNativeInstance() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativePhysicalDevice() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeQueueFamily() const
+	{
+		return 0;
+	}
+
 	TrinityALImpl::Tr2SamplerStateALFactory m_samplerStateFactory;
 };
 

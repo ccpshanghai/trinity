@@ -6,6 +6,7 @@
 #if TRINITY_PLATFORM == TRINITY_VULKAN
 
 #include <map>
+#include <memory>
 
 #include "../Tr2HalHelperStructures.h"
 #include "../Tr2RenderContextEnum.h"
@@ -230,14 +231,15 @@ public:
 
 	}
 
-	// Helper function to clear the current primary backbuffer, depth and/or stencil.
-	// Metal opens a render pass here; every other backend has an always-recording command
-	// list and there is nothing to do. Present on all of them so the shared TriStep that calls
-	// it compiles everywhere (spec 5: the frame graph asks, getters never drive).
-	ALResult BeginRenderPass()
-	{
-		return S_OK;
-	}
+	// Metal opens a render pass here, and so does this backend: with dynamic rendering a
+	// Vulkan command buffer is always recording but a *rendering scope* is not, and only a
+	// scope makes a vkCmdDraw legal. The comment this replaces said "every other backend has
+	// an always-recording command list and there is nothing to do", which was true of dx11
+	// and dx12 and never of Vulkan -- the step existed for Metal and quietly did nothing
+	// here. Out-of-line because it calls SetPass (spec 5: the frame graph asks, getters
+	// never drive -- GetNativeCommandBuffer also guarantees the scope, because a caller that
+	// forgets the step is exactly who needs the guarantee).
+	ALResult BeginRenderPass();
 
 	ALResult Clear(
 		uint32_t clearFlags,
@@ -341,16 +343,12 @@ public:
 		return false;
 	}
 
-	// The five native-handle accessors the Python exposure maps unconditionally, for
-	// hosting an ImGui backend inside Trinity's frame. They are DX12 handles; there is no
-	// DX12 anything here, and 0 is the documented "not available" value -- exactly as on
-	// dx11, metal and the stub.
+	// The native-handle accessors the Python exposure maps unconditionally, for hosting an
+	// ImGui backend inside Trinity's frame. Two of the five DX12-shaped ones have a Vulkan
+	// answer and now give it; the heaps and the command list do not exist here, and 0 is the
+	// documented "not available" value -- exactly as on dx11, metal and the stub (spec D3: a
+	// getter is named for what it returns).
 	uint64_t GetNativeCommandList() const
-	{
-		return 0;
-	}
-
-	uint64_t GetNativeDevice() const
 	{
 		return 0;
 	}
@@ -360,17 +358,52 @@ public:
 		return 0;
 	}
 
-	uint64_t GetNativeCommandQueue() const
-	{
-		return 0;
-	}
-
 	uint64_t GetNativeSamplerHeap() const
 	{
 		return 0;
 	}
 
-    
+	// Out-of-line, for GetNativeBackBufferFormat's reason: they read the owner, which this
+	// header cannot dereference.
+	uint64_t GetNativeDevice() const;         // VkDevice
+	uint64_t GetNativeCommandQueue() const;   // the graphics VkQueue
+
+	// Vulkan-only, and 0 on every other backend. ImGui_ImplVulkan_InitInfo needs all three
+	// beside the device and the queue, and none of them has a DX12 or Metal counterpart to
+	// borrow a name from.
+	uint64_t GetNativeInstance() const;       // VkInstance
+	uint64_t GetNativePhysicalDevice() const; // VkPhysicalDevice
+	uint64_t GetNativeQueueFamily() const;    // the graphics queue's family index
+
+	// Metal's two names. The encoder never exists here.
+	//
+	// GetNativeCommandBuffer is NOT a read-only getter on this backend and is not const
+	// (spec §7.4). Handing the recording buffer to something that will draw into it has two
+	// consequences the AL has to own:
+	//
+	//   1. A rendering scope must be open. The AL opens one lazily -- SetPass does it, driven
+	//      by m_dirtyPass -- so if the hosted UI is the first thing to draw after a Clear or
+	//      a SetRenderTarget, its vkCmdDraw lands outside any scope. The validation layer
+	//      says so at once, which is the good case; the bad case is a driver that tolerates
+	//      it and a frame that differs between vendors.
+	//   2. The AL's own pipeline and dynamic state are no longer what it believes. ImGui
+	//      binds its own pipeline, viewport and scissor. Without marking both dirty the AL's
+	//      next draw skips the rebind and renders with the UI's 1x1 scissor -- wrongly, and
+	//      with ZERO validation errors, which is the failure class this codebase calls the
+	//      green test that is the defect.
+	//
+	// Both are cheap and neither is optional. Re-opening the pass costs a store and a load on
+	// a tiler; the attachments' loadOp/storeOp are LOAD/STORE, so nothing the UI drew is lost.
+	uint64_t GetNativeCommandBuffer();
+
+	uint64_t GetNativeRenderEncoder() const
+	{
+		return 0;
+	}
+
+	// The swapchain's VkFormat, or 0 (VK_FORMAT_UNDEFINED) with no device. Out-of-line for
+	// dx12's reason: it reads the owner, which this header cannot dereference.
+	uint64_t GetNativeBackBufferFormat() const;
 
 	Tr2UpscalingAL::Result EnableUpscaling( Tr2UpscalingAL::Technique tech, Tr2UpscalingAL::Setting setting, bool framegeneration, uint32_t adapter )
 	{
@@ -452,6 +485,30 @@ private:
 		size_t GetHash() const;
 	} m_pipelineSource;
 
+	// What vkCmdBindVertexBuffers / vkCmdBindIndexBuffer were last given, and the buffer it
+	// came from. A renaming Tr2BufferAL (Tr2BufferALVulkan.cpp) moves to a new slot -- or a
+	// new allocation -- on every MapForWriting, and the effect state manager does not
+	// re-apply a stream whose Tr2BufferAL handle has not changed, so SetPipeline compares
+	// these against the buffer's current handle and offset and re-binds when they differ.
+	// The shared_ptr keeps the implementation alive to be asked.
+	struct BoundVertexStream
+	{
+		std::shared_ptr<TrinityALImpl::Tr2BufferAL> buffer;
+		VkBuffer boundBuffer = VK_NULL_HANDLE;
+		VkDeviceSize boundOffset = 0;
+		uint32_t callerOffset = 0;
+	};
+	BoundVertexStream m_boundStreams[MAX_VERTEX_STREAMS];
+	struct BoundIndexBuffer
+	{
+		std::shared_ptr<TrinityALImpl::Tr2BufferAL> buffer;
+		VkBuffer boundBuffer = VK_NULL_HANDLE;
+		VkDeviceSize boundOffset = 0;
+		VkIndexType indexType = VK_INDEX_TYPE_UINT16;
+	};
+	BoundIndexBuffer m_boundIndices;
+	void RebindMovedBuffersVulkan();
+
 	// Still an array of VkAttachmentDescription even though no VkRenderPass is created
 	// from it any more: the struct carries exactly the fields dynamic rendering needs
 	// (format, samples, the four ops, the layouts), SetRenderTarget/SetDepthStencil
@@ -487,11 +544,26 @@ private:
 
 	// Constant-buffer bindings (descriptor set 0), keyed by binding number. Set
 	// by SetConstants, written to a descriptor set and bound at SetPipeline time.
-	std::map<uint32_t, VkBuffer> m_constantBuffers;
+	// What SetConstants bound, per binding number, and what the current descriptor set was
+	// last written with. The buffer is held live rather than as a VkBuffer handle because
+	// its contents MOVE: every Lock takes a fresh slot (Tr2ConstantBufferALVulkan), so the
+	// offset a descriptor has to carry is only known at bind time, and a slot that differs
+	// from the one last written is what marks the set dirty.
+	struct ConstantBinding
+	{
+		std::shared_ptr<TrinityALImpl::Tr2ConstantBufferAL> buffer;
+		VkBuffer writtenBuffer = VK_NULL_HANDLE;
+		VkDeviceSize writtenOffset = 0;
+		VkDeviceSize writtenRange = 0;
+	};
+	std::map<uint32_t, ConstantBinding> m_constantBuffers;
 	bool m_constantsDirty;
 	// How many distinct constant descriptor sets one frame may use before the pool is
 	// exhausted. Reset every BeginFrame.
-	static const uint32_t CONSTANT_SETS_PER_FRAME = 64;
+	// A frame's budget of constant descriptor sets: one per SetConstants (or per Lock of a
+	// bound buffer) that changes something. 64 was enough while every object read the same
+	// constants; with each object bound at its own slot the EVE scene needs a few hundred.
+	static const uint32_t CONSTANT_SETS_PER_FRAME = 1024;
 	VkDescriptorPool m_constantPool;
 
 	// The newest frame that allocated a set from m_constantPool. The pool cannot be reset
@@ -552,6 +624,20 @@ public:
 	// On a tiler this is a resolve and a reload, so it is not free; it is here because
 	// Vulkan 1.0 has no host-side vkResetQueryPool, which arrived in 1.2.
 	void EndRenderPassVulkan();
+	// Whether a dynamic rendering instance is open right now -- what EndRenderPassVulkan
+	// would close. Tr2BufferAL asks, so the draw log can count the pass restarts its
+	// synchronized copies cause.
+	bool IsRenderingActiveVulkan() const { return m_renderingActive; }
+
+	// TRINITY_DRAW_LOG=1 only: one draw's worth of the per-scene tally EndScene prints. A
+	// member rather than free, so it can see whether a colour target is bound -- a draw with
+	// none is the shape of a scene rendering into nothing, and telling that apart from a scene
+	// issuing no draws at all is the whole point of the counter.
+	void CountDrawForLogVulkan( uint64_t vertices );
+
+	// SetRenderTarget and SetDepthStencil reopen the pass when the bound IMAGE changes, not
+	// only when its attachment description does; this is the comparison they use.
+	bool SameImageVulkan( const Tr2TextureAL& a, const Tr2TextureAL& b ) const;
 
 	VkCommandBuffer m_commandBuffer;
 

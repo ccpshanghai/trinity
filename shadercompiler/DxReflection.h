@@ -7,10 +7,14 @@
 #include "ParserState.h"
 #include "SymbolTable.h"
 #include "CompileMessageQueue.h"
-#include "FxAnalyzer.h"
+#include "FXAnalyzer.h"
 #include "HLSLParser.h"
 #include "ParserUtils.h"
 #include "ASTNode.h"
+// BindlessTextureType, used by ProcessReflection below. This header used to lean on the
+// including .cpp having it already: clang looks non-dependent names up when it parses the
+// template, not when it instantiates it, so DxReflection.cpp did not compile without it.
+#include "TextureFunctionConversionDX11.h"
 
 
 extern StringTable g_stringTable;
@@ -67,6 +71,8 @@ static bool GetTextureType( const T& desc, TextureType& type )
 		case D3D10_SRV_DIMENSION_BUFFER:
 			type = TEX_TYPE_BUFFER;
 			break;
+		default:
+			break; // anything else stays TEX_TYPE_TYPELESS
 		}
 		break;
 	case D3D_SIT_TBUFFER:
@@ -179,16 +185,22 @@ RegisterInputType GetRegisterType( const T& desc )
 	}
 }
 
+#if _WIN32
 inline uint8_t GetSpaceFromDesc( const D3D11_SHADER_INPUT_BIND_DESC& )
 {
 	return 0;
 }
+#endif
 
 inline uint8_t GetSpaceFromDesc( const D3D12_SHADER_INPUT_BIND_DESC& desc )
 {
 	return uint8_t( desc.Space );
 }
 
+// The DX11 traits name types from the Windows SDK's d3d11shader.h, which has no macOS
+// counterpart. ReflectionDx12 below comes from dxc's own d3d12shader.h and so compiles
+// everywhere -- it is the traits set the SPIR-V path reflects through.
+#if _WIN32
 struct ReflectionDx11
 {
 	using Reflection = ID3D11ShaderReflection;
@@ -199,6 +211,7 @@ struct ReflectionDx11
 	using TypeDesc = D3D11_SHADER_TYPE_DESC;
 	using SignatureParamDesc = D3D11_SIGNATURE_PARAMETER_DESC;
 };
+#endif
 
 struct ReflectionDx12
 {
@@ -344,6 +357,22 @@ static bool ProcessReflection( ParserState& parserState, typename Traits::Reflec
 
 			if( Symbol* symbol = parserState.GetSymbolTable().LookupGlobal( varDesc.Name ) )
 			{
+				// FXC's reflection carried each global's HLSL initialiser as DefaultValue; dxc's
+				// never does. The Windows DX11/DX12 compiles reflect through FXC and got their
+				// defaults that way; the SPIR-V path reflects through dxc and shipped none, so
+				// on the device every unset global was zero -- and a tonemapper whose curve
+				// parameters are all zero divides 0 by 0 and paints the frame white (the S23,
+				// 2026-09-10, m6-shippreview-s23-bisect-*). The initialiser is still in the
+				// AST; evaluate it, as the Metal compiler always has (its FillDefaults).
+				if( !varDesc.DefaultValue && symbol->definition )
+				{
+					if( ASTNode* initializer = symbol->definition->GetChildOrNull( 1 ) )
+					{
+						stage.defaultValues.resize( std::max( stage.defaultValues.size(), size_t( constant.offset + constant.size ) ) );
+						FillDefaultValueFromInitializer( parserState, initializer, symbol->type, &stage.defaultValues[constant.offset], constant.size, typeDesc.Elements );
+					}
+				}
+
 				if( annotations.find( constant.name ) == annotations.end() )
 				{
 					ParameterAnnotation paramAnnotations;

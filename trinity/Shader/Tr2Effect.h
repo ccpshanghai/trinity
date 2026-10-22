@@ -119,6 +119,11 @@ public:
 
 	// access parameters and resources
 	const char* GetEffectPathName() const;
+
+	// Why GetShaderStateInterface() is what it is, in one static string: "no resource",
+	// "loading", "resource failed", "resource good, shader null", or "ok". For the log line
+	// a skipped draw prints -- the state that decides a frame's fate is otherwise private.
+	const char* DescribeShaderResolution() const;
 	ITriEffectParameter* GetResourceByName( const char* name ) const;
 	bool HasSamplerOverride( const char* name ) const;
 	bool HasParameter( const char* name ) const;

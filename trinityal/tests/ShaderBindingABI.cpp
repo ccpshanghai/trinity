@@ -66,7 +66,7 @@ namespace
 {
 
 // ---------------------------------------------------------------------------
-// The sixteen modules, as bytes.
+// The seventeen modules, as bytes.
 // ---------------------------------------------------------------------------
 
 const uint8_t g_addConstantToBufferCs[] = {
@@ -101,6 +101,9 @@ const uint8_t g_positionOnlyWithPerObjectDataVs[] = {
 };
 const uint8_t g_sampleTextureCs[] = {
 #include INCLUDE_SHADER_CODE( SampleTexture.cs )
+};
+const uint8_t g_sampleTextureArrayFromTexCoordPs[] = {
+#include INCLUDE_SHADER_CODE( SampleTextureArrayFromTexCoord.ps )
 };
 const uint8_t g_sampleTextureFromTexCoordPs[] = {
 #include INCLUDE_SHADER_CODE( SampleTextureFromTexCoord.ps )
@@ -173,6 +176,14 @@ const DeclaredRegister EXPECTED_SAMPLE_TEXTURE_FROM_TEXCOORD[] = {
 	{ Tr2ShaderRegisterAL::SRV_TEXTURE2D, 0 },
 	{ Tr2ShaderRegisterAL::SAMPLER, 0 },
 };
+// The item 12 shader: `Texture2D maps[4] : register( t0, space1 )`. An array is ONE
+// decorated variable at t0's binding -- the four descriptors are the array type's length,
+// not four bindings -- so this entry is one register, and a module that decorated t0..t3
+// separately would fail here before any GPU saw it.
+const DeclaredRegister EXPECTED_SAMPLE_TEXTURE_ARRAY_FROM_TEXCOORD[] = {
+	{ Tr2ShaderRegisterAL::SRV_TEXTURE2D, 0 },
+	{ Tr2ShaderRegisterAL::SAMPLER, 0 },
+};
 // The Fix 1 shader. `b0` at the *pixel* stage is the one case in the whole set that
 // distinguishes "-fvk-b-shift applied" from "-fvk-b-shift ignored", because every
 // other set-0 register here is either `b1` (which is non-zero either way) or vertex
@@ -209,6 +220,7 @@ const ShaderModule ALL_MODULES[] = {
 	SHADER_MODULE_NO_REGISTERS( g_positionOnlyVs, VERTEX_SHADER ),
 	SHADER_MODULE( g_positionOnlyWithPerObjectDataVs, VERTEX_SHADER, EXPECTED_POSITION_ONLY_WITH_PER_OBJECT_DATA ),
 	SHADER_MODULE( g_sampleTextureCs, COMPUTE_SHADER, EXPECTED_SAMPLE_TEXTURE ),
+	SHADER_MODULE( g_sampleTextureArrayFromTexCoordPs, PIXEL_SHADER, EXPECTED_SAMPLE_TEXTURE_ARRAY_FROM_TEXCOORD ),
 	SHADER_MODULE( g_sampleTextureFromTexCoordPs, PIXEL_SHADER, EXPECTED_SAMPLE_TEXTURE_FROM_TEXCOORD ),
 	SHADER_MODULE( g_sampleTextureMipFromTexCoordPs, PIXEL_SHADER, EXPECTED_SAMPLE_TEXTURE_MIP_FROM_TEXCOORD ),
 	SHADER_MODULE( g_sampleVolumeTexturePs, PIXEL_SHADER, EXPECTED_SAMPLE_VOLUME_TEXTURE ),
@@ -360,8 +372,8 @@ std::string Describe( const std::vector<SpirvBinding>& bindings )
 // formula computes from that shader's declared registers.
 TEST( ShaderBindingABI, EverySpirvModuleDecoratesWhatTheALBindingFormulaComputes )
 {
-	ASSERT_EQ( size_t( 16 ), MODULE_COUNT )
-		<< "Shaders.vulkan has sixteen sources; a shader added or removed without "
+	ASSERT_EQ( size_t( 17 ), MODULE_COUNT )
+		<< "Shaders.vulkan has seventeen sources; a shader added or removed without "
 		<< "updating ALL_MODULES leaves the new one unchecked";
 
 	for( size_t m = 0; m < MODULE_COUNT; ++m )

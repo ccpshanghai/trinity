@@ -73,6 +73,8 @@ namespace TrinityALImpl
 			uint32_t binding;
 			uint32_t stage;
 			uint32_t registerIndex;
+			// Descriptors behind the binding: 1 for a plain register, N for `T name[N]`.
+			uint32_t arrayCount;
 
 			Tr2ShaderRegisterAL::RegisterType type;
 		};

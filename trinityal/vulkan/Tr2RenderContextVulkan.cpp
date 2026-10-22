@@ -13,8 +13,10 @@
 #include "Tr2TextureALVulkan.h"
 #include "Tr2ConstantBufferALVulkan.h"
 #include "Tr2ShaderBindingABIVulkan.h"
+#include "Tr2VideoAdapterInfoALVulkan.h"
 #include "UtilitiesVulkan.h"
 #include "VkResult.h"
+#include "ALLog.h"
 #include "../include/Tr2RtTopLevelAccelerationStructureAL.h"
 
 bool g_gatherPipelineStatistics = false;
@@ -25,6 +27,139 @@ bool g_gatherPipelineStatistics = false;
 // so it is the AL's to provide. The draws below feed it: a declared counter nobody adds to
 // reads a confident zero, which is worse than no counter at all.
 CCP_STATS_DECLARE( vertexCount, "Trinity/AL/vertexCount", true, CST_COUNTER_HIGH, "Vertex count in DrawPrimitive calls." );
+
+// TRINITY_DRAW_LOG=1: one line per EndScene naming what was submitted since the last one.
+//
+// The stats counter above is the engine's own and is not reachable from Python, so a device run
+// could say what was on the screen and not whether anything had been drawn -- which is the
+// difference between "the scene issued no draws" and "the scene issued draws that produced
+// nothing", and those want opposite investigations. Read once, because a getenv per frame is a
+// getenv per frame; off unless asked for, because the answer is a line of log per scene.
+namespace
+{
+bool DrawLogEnabled()
+{
+	return TrinityALImpl::DrawLogEnabledVulkan();
+}
+
+// TRINITY_CULL_OVERRIDE=none|front|back forces every pipeline's cull mode, ignoring what the
+// engine asks for. It exists because face culling is the one stage that discards a whole scene
+// with no error, no validation message and nothing a fragment-stage visualizer can show: the
+// draws are issued, depth passes, and no triangle survives. Vulkan's clip space differs from
+// D3D's in y and this backend answers that with a negative-height viewport, which also reverses
+// the winding the rasterizer sees -- so cullMode and frontFace have to compose correctly, and
+// every rendering test in this suite asks for CULLMODE_NONE and would pass either way.
+// -1 means "leave it alone", which is the default.
+int32_t CullOverride()
+{
+	static const int32_t mode = []{
+		const char* value = getenv( "TRINITY_CULL_OVERRIDE" );
+		if( !value )                          return int32_t( -1 );
+		if( strcmp( value, "none" ) == 0 )    return int32_t( VK_CULL_MODE_NONE );
+		if( strcmp( value, "front" ) == 0 )   return int32_t( VK_CULL_MODE_FRONT_BIT );
+		if( strcmp( value, "back" ) == 0 )    return int32_t( VK_CULL_MODE_BACK_BIT );
+		return int32_t( -1 );
+	}();
+	return mode;
+}
+
+// Not atomic: the render context these belong to is the one the frame is recorded on, and the
+// numbers are a diagnostic rather than a measurement -- a torn count would still answer the
+// question these exist to answer.
+uint32_t g_drawLogDraws = 0;
+uint64_t g_drawLogVertices = 0;
+uint32_t g_drawLogWithoutTarget = 0;
+uint32_t g_drawLogClears = 0;
+
+// Which colour targets the draws went to, by extent. A scene that issues its draws against one
+// size while the composite reads another is invisible for a reason no draw count can show, and
+// the extent is the cheapest handle on target identity that survives a pooled texture being
+// recycled. Eight is more than any frame here uses; a ninth is folded into the last.
+struct DrawLogTarget
+{
+	VkImage image;
+	VkCommandBuffer commandBuffer;
+	const char* name;
+	uint32_t width;
+	uint32_t height;
+	uint32_t draws;
+};
+DrawLogTarget g_drawLogTargets[16] = {};
+uint32_t g_drawLogTargetCount = 0;
+
+// Every SetRenderTarget( slot 0 ) the AL receives, by name, in order, deduplicated on repeats.
+// Distinct from the targets list above, which only knows targets a draw reached: a target
+// that is bound and never drawn into shows up here and not there, and that difference is
+// the whole question when a composite goes missing.
+std::string g_drawLogBinds;
+uint32_t g_drawLogBindCount = 0;
+
+// The depth state the colour draws ran under, and the value every depth clear asked for. EVE
+// renders reversed-Z: the buffer is cleared to 0 and the comparison is GREATER_EQUAL. Get either
+// half wrong and every scene draw fails depth while every screen-space pass, which disables the
+// test outright, still works -- a whole-scene blackout that no draw count, no target extent and
+// no fragment-stage visualizer can distinguish from a scene that draws nothing.
+struct DrawLogDepth
+{
+	uint32_t test;
+	uint32_t write;
+	uint32_t compareOp;
+	uint32_t cull;
+	uint32_t blend;
+	uint32_t mask;
+	uint32_t draws;
+};
+DrawLogDepth g_drawLogDepth[8] = {};
+uint32_t g_drawLogDepthCount = 0;
+struct DrawLogDepthClear { float depth; const char* name; uint32_t width; uint32_t height; };
+DrawLogDepthClear g_drawLogDepthClears[12] = {};
+uint32_t g_drawLogDepthClearCount = 0;
+
+void NoteDrawLogDepth( uint32_t test, uint32_t write, uint32_t compareOp, uint32_t cull,
+					   uint32_t blend, uint32_t mask )
+{
+	for( uint32_t i = 0; i < g_drawLogDepthCount; ++i )
+	{
+		if( g_drawLogDepth[i].test == test && g_drawLogDepth[i].write == write
+			&& g_drawLogDepth[i].compareOp == compareOp && g_drawLogDepth[i].cull == cull
+			&& g_drawLogDepth[i].blend == blend && g_drawLogDepth[i].mask == mask )
+		{
+			++g_drawLogDepth[i].draws;
+			return;
+		}
+	}
+	if( g_drawLogDepthCount < 8 )
+	{
+		g_drawLogDepth[g_drawLogDepthCount++] = { test, write, compareOp, cull, blend, mask, 1 };
+	}
+}
+
+// Keyed on the VkImage, not on the extent: a frame that renders its scene into one full-screen
+// target and composites a different one of the same size is invisible, and an extent cannot tell
+// those two apart. The handle is printed truncated because only its distinctness matters.
+// Keyed on the image AND the command buffer the draw was recorded into. A draw that lands in
+// the right image on a command buffer nobody submits -- or one submitted after the copy that
+// reads the image -- counts like any other and paints nothing; the handle is how to tell.
+void NoteDrawLogTarget( VkImage image, VkCommandBuffer commandBuffer, const char* name, uint32_t width, uint32_t height )
+{
+	for( uint32_t i = 0; i < g_drawLogTargetCount; ++i )
+	{
+		if( g_drawLogTargets[i].image == image && g_drawLogTargets[i].commandBuffer == commandBuffer )
+		{
+			++g_drawLogTargets[i].draws;
+			return;
+		}
+	}
+	if( g_drawLogTargetCount < 16 )
+	{
+		g_drawLogTargets[g_drawLogTargetCount++] = { image, commandBuffer, name, width, height, 1 };
+	}
+	else
+	{
+		++g_drawLogTargets[15].draws;
+	}
+}
+}
 
 namespace
 {
@@ -176,6 +311,19 @@ void Tr2RenderContextAL::Destroy() throw( )
 	m_boundDepthStencil = Tr2TextureAL();
 	m_dsStack.clear();
 
+	// The remembered vertex and index bindings are the same kind of reference, and are let go
+	// here for the same reason: each holds a shared_ptr to a Tr2BufferAL implementation, and a
+	// stream still bound when the context goes down would have that buffer's Destroy() run from
+	// the base-class destructor -- after this class has drained pendingDestroys and called
+	// vkDestroyDevice. Its DestroyLaterVulkan then queues onto a list nothing will drain again,
+	// so the buffer and its memory turn up at vkDestroyDevice as VUID-vkDestroyDevice-device-05137.
+	// One bound stream is one leaked VkBuffer and one leaked VkDeviceMemory.
+	for( uint32_t stream = 0; stream < MAX_VERTEX_STREAMS; ++stream )
+	{
+		m_boundStreams[stream] = BoundVertexStream();
+	}
+	m_boundIndices = BoundIndexBuffer();
+
 	if( m_constantPool != VK_NULL_HANDLE )
 	{
 		m_owner->DestroyLaterVulkan( m_constantPool, vkDestroyDescriptorPool );
@@ -206,7 +354,106 @@ ALResult Tr2RenderContextAL::BeginScene() throw( )
 
 ALResult Tr2RenderContextAL::EndScene()
 {
+	if( DrawLogEnabled() )
+	{
+		if( m_owner )
+		{
+			TrinityALImpl::ReadPendingProbeVulkan( *m_owner );
+		}
+		std::string targets;
+		for( uint32_t i = 0; i < g_drawLogTargetCount; ++i )
+		{
+			char one[128];
+			// The pool's name where there is one, the handle's low bits where there is not (the
+			// back buffer and anything created outside the pool). Both stay distinct per image.
+			const char* name = g_drawLogTargets[i].name;
+			if( name && name[0] )
+			{
+				snprintf( one, sizeof( one ), "%s%s@%ux%u/cb%04x:%u", targets.empty() ? "" : " ",
+						  name, g_drawLogTargets[i].width, g_drawLogTargets[i].height,
+						  unsigned( uintptr_t( g_drawLogTargets[i].commandBuffer ) & 0xffffu ),
+						  g_drawLogTargets[i].draws );
+			}
+			else
+			{
+				snprintf( one, sizeof( one ), "%s%ux%u#%04x/cb%04x:%u", targets.empty() ? "" : " ",
+						  g_drawLogTargets[i].width, g_drawLogTargets[i].height,
+						  unsigned( uintptr_t( g_drawLogTargets[i].image ) & 0xffffu ),
+						  unsigned( uintptr_t( g_drawLogTargets[i].commandBuffer ) & 0xffffu ),
+						  g_drawLogTargets[i].draws );
+			}
+			targets += one;
+		}
+		std::string depths;
+		for( uint32_t i = 0; i < g_drawLogDepthCount; ++i )
+		{
+			char one[80];
+			snprintf( one, sizeof( one ), "%stest%u/write%u/op%u/cull%u/blend%u/mask%x:%u",
+					  depths.empty() ? "" : " ",
+					  g_drawLogDepth[i].test, g_drawLogDepth[i].write, g_drawLogDepth[i].compareOp,
+					  g_drawLogDepth[i].cull, g_drawLogDepth[i].blend, g_drawLogDepth[i].mask,
+					  g_drawLogDepth[i].draws );
+			depths += one;
+		}
+		std::string depthClears;
+		for( uint32_t i = 0; i < g_drawLogDepthClearCount; ++i )
+		{
+			char one[128];
+			const char* name = g_drawLogDepthClears[i].name;
+			snprintf( one, sizeof( one ), "%s%.3f@%s%s%ux%u", depthClears.empty() ? "" : " ",
+					  g_drawLogDepthClears[i].depth, name ? name : "", ( name && name[0] ) ? "/" : "",
+					  g_drawLogDepthClears[i].width, g_drawLogDepthClears[i].height );
+			depthClears += one;
+		}
+		uint32_t syncMaps = 0, syncMapPassBreaks = 0;
+		uint64_t syncMapBytes = 0;
+		TrinityALImpl::TakeSyncMapStatsVulkan( syncMaps, syncMapBytes, syncMapPassBreaks );
+		CCP_LOG( "draws: %u draw(s), %u dispatch(es), %llu vertices, %u clear(s), %u draw(s) with no colour target bound; "
+				 "targets %s; depth %s; depth clears %s; sync maps %u (%llu bytes, %u closed an open pass)",
+				 g_drawLogDraws, TrinityALImpl::TakeDispatchCountVulkan(), (unsigned long long)g_drawLogVertices, g_drawLogClears, g_drawLogWithoutTarget,
+				 targets.empty() ? "(none)" : targets.c_str(),
+				 depths.empty() ? "(none)" : depths.c_str(),
+				 depthClears.empty() ? "(none)" : depthClears.c_str(),
+				 syncMaps, (unsigned long long)syncMapBytes, syncMapPassBreaks );
+		// Its own line: logcat truncates long lines, and the END of this sequence -- where a
+		// composite binds the back buffer, or fails to -- is the part worth reading.
+		CCP_LOG( "binds(%u) on cb%04x: %s", g_drawLogBindCount, unsigned( uintptr_t( m_commandBuffer ) & 0xffffu ),
+				 g_drawLogBinds.empty() ? "(none)" : g_drawLogBinds.c_str() );
+		g_drawLogBinds.clear();
+		g_drawLogBindCount = 0;
+		g_drawLogDraws = 0;
+		g_drawLogVertices = 0;
+		g_drawLogWithoutTarget = 0;
+		g_drawLogClears = 0;
+		g_drawLogTargetCount = 0;
+		g_drawLogDepthCount = 0;
+		g_drawLogDepthClearCount = 0;
+	}
 	return S_OK;
+}
+
+void Tr2RenderContextAL::CountDrawForLogVulkan( uint64_t vertices )
+{
+	if( !DrawLogEnabled() )
+	{
+		return;
+	}
+	++g_drawLogDraws;
+	g_drawLogVertices += vertices;
+	if( !m_boundRenderTargets[0].IsValid() )
+	{
+		++g_drawLogWithoutTarget;
+		return;
+	}
+	NoteDrawLogTarget( m_boundRenderTargets[0].m_texture->GetImageVulkan(), m_commandBuffer,
+					   m_boundRenderTargets[0].m_texture->GetName(),
+					   m_boundRenderTargets[0].GetWidth(), m_boundRenderTargets[0].GetHeight() );
+	NoteDrawLogDepth( m_pipelineSource.m_depthStencilState.depthTestEnable,
+					  m_pipelineSource.m_depthStencilState.depthWriteEnable,
+					  uint32_t( m_pipelineSource.m_depthStencilState.depthCompareOp ),
+					  uint32_t( m_pipelineSource.m_rasterizationState.cullMode ),
+					  uint32_t( m_pipelineSource.m_attachmentBlend[0].blendEnable ),
+					  uint32_t( m_pipelineSource.m_attachmentBlend[0].colorWriteMask ) );
 }
 
 ALResult Tr2RenderContextAL::Clear(
@@ -216,6 +463,19 @@ ALResult Tr2RenderContextAL::Clear(
 	uint32_t stencil,
 	uint32_t slot ) throw( )
 {
+	if( DrawLogEnabled() )
+	{
+		++g_drawLogClears;
+		if( ( clearFlags & Tr2RenderContextEnum::CLEARFLAGS_ZBUFFER )
+			&& g_drawLogDepthClearCount < 12 )
+		{
+			g_drawLogDepthClears[g_drawLogDepthClearCount++] = {
+				depth,
+				m_boundDepthStencil.IsValid() ? m_boundDepthStencil.m_texture->GetName() : "",
+				m_boundDepthStencil.IsValid() ? m_boundDepthStencil.GetWidth() : 0,
+				m_boundDepthStencil.IsValid() ? m_boundDepthStencil.GetHeight() : 0 };
+		}
+	}
 	if( clearFlags & Tr2RenderContextEnum::CLEARFLAGS_TARGET )
 	{
 		if( m_boundRenderTargets[slot].IsValid() )
@@ -298,22 +558,23 @@ ALResult Tr2RenderContextAL::SetStreamSource( uint32_t stream, const Tr2BufferAL
 	{
 		auto buf = m_owner->GetZeroBufferVulkan();
 		vkCmdBindVertexBuffers( m_commandBuffer, stream, 1, &buf, &deviceOffset );
+		m_boundStreams[stream] = BoundVertexStream();
 		return S_OK;
 	}
 	m_pipelineSource.m_streams[stream].stride = stride;
+	// Plus the slot the buffer's contents are in now -- 0 for a buffer that does not rename.
+	deviceOffset += buffer.m_buffer->GetOffsetVulkan();
 	vkCmdBindVertexBuffers( m_commandBuffer, stream, 1, &buffer.m_buffer->m_buffer, &deviceOffset );
+	m_boundStreams[stream].buffer = buffer.m_buffer;
+	m_boundStreams[stream].boundBuffer = buffer.m_buffer->m_buffer;
+	m_boundStreams[stream].boundOffset = deviceOffset;
+	m_boundStreams[stream].callerOffset = offset;
 	return S_OK;
 }
 
 ALResult Tr2RenderContextAL::SetIndices( const Tr2BufferAL & buffer ) throw( )
 {
-	if( !buffer.IsValid() )
-	{
-		vkCmdBindIndexBuffer( m_commandBuffer, m_owner->GetZeroBufferVulkan(), 0, VK_INDEX_TYPE_UINT16 );
-		return S_OK;
-	}
-	vkCmdBindIndexBuffer( m_commandBuffer, buffer.m_buffer->m_buffer, 0, buffer.GetDesc().stride == 4 ?  VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16 );
-	return S_OK;
+	return SetIndices( buffer, buffer.IsValid() ? buffer.GetDesc().stride : 2u );
 }
 
 // The caller-supplied-stride form. The overload above reads the stride out of the buffer
@@ -324,10 +585,49 @@ ALResult Tr2RenderContextAL::SetIndices( const Tr2BufferAL & buffer, uint32_t st
 	if( !buffer.IsValid() )
 	{
 		vkCmdBindIndexBuffer( m_commandBuffer, m_owner->GetZeroBufferVulkan(), 0, VK_INDEX_TYPE_UINT16 );
+		m_boundIndices = BoundIndexBuffer();
 		return S_OK;
 	}
-	vkCmdBindIndexBuffer( m_commandBuffer, buffer.m_buffer->m_buffer, 0, stride == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32 );
+	const VkIndexType indexType = stride == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+	const VkDeviceSize deviceOffset = buffer.m_buffer->GetOffsetVulkan();
+	vkCmdBindIndexBuffer( m_commandBuffer, buffer.m_buffer->m_buffer, deviceOffset, indexType );
+	m_boundIndices.buffer = buffer.m_buffer;
+	m_boundIndices.boundBuffer = buffer.m_buffer->m_buffer;
+	m_boundIndices.boundOffset = deviceOffset;
+	m_boundIndices.indexType = indexType;
 	return S_OK;
+}
+
+void Tr2RenderContextAL::RebindMovedBuffersVulkan()
+{
+	for( uint32_t stream = 0; stream < MAX_VERTEX_STREAMS; ++stream )
+	{
+		BoundVertexStream& bound = m_boundStreams[stream];
+		if( !bound.buffer || !bound.buffer->IsValid() )
+		{
+			continue;
+		}
+		const VkBuffer now = bound.buffer->GetBufferVulkan();
+		const VkDeviceSize offset = bound.buffer->GetOffsetVulkan() + bound.callerOffset;
+		if( now != bound.boundBuffer || offset != bound.boundOffset )
+		{
+			vkCmdBindVertexBuffers( m_commandBuffer, stream, 1, &now, &offset );
+			bound.boundBuffer = now;
+			bound.boundOffset = offset;
+		}
+	}
+	BoundIndexBuffer& indices = m_boundIndices;
+	if( indices.buffer && indices.buffer->IsValid() )
+	{
+		const VkBuffer now = indices.buffer->GetBufferVulkan();
+		const VkDeviceSize offset = indices.buffer->GetOffsetVulkan();
+		if( now != indices.boundBuffer || offset != indices.boundOffset )
+		{
+			vkCmdBindIndexBuffer( m_commandBuffer, now, offset, indices.indexType );
+			indices.boundBuffer = now;
+			indices.boundOffset = offset;
+		}
+	}
 }
 
 
@@ -411,7 +711,9 @@ ALResult Tr2RenderContextAL::SetConstants( const Tr2ConstantBufferAL& buffer, Tr
 	}
 	else
 	{
-		m_constantBuffers[binding] = buffer.m_buffer->GetBufferVulkan();
+		ConstantBinding& bound = m_constantBuffers[binding];
+		bound.buffer = buffer.m_buffer;
+		bound.writtenBuffer = VK_NULL_HANDLE;
 	}
 	m_constantsDirty = true;
 	return S_OK;
@@ -497,7 +799,8 @@ ALResult Tr2RenderContextAL::SetRenderState( Tr2RenderContextEnum::RenderState s
 		m_dirtyPso = true;
 		return S_OK;
 	case Tr2RenderContextEnum::RS_CULLMODE:
-		m_pipelineSource.m_rasterizationState.cullMode = value - 1;
+		m_pipelineSource.m_rasterizationState.cullMode =
+			CullOverride() >= 0 ? VkCullModeFlags( CullOverride() ) : VkCullModeFlags( value - 1 );
 		m_dirtyPso = true;
 		return S_OK;
 	case Tr2RenderContextEnum::RS_ALPHABLENDENABLE:
@@ -659,8 +962,45 @@ ALResult Tr2RenderContextAL::SetRenderStates( const uint32_t* stateValuePairs, u
 	return S_OK;
 }
 
+// Whether two bindings name the same image. The Tr2TextureAL wrapper's own equality is not
+// enough for the back buffer: it is one wrapper over several swap-chain images, and
+// GetImageVulkan() follows the acquired index, so a new frame's image reads as new here. A
+// member because m_texture is private to the wrapper and this class is its friend.
+bool Tr2RenderContextAL::SameImageVulkan( const Tr2TextureAL& a, const Tr2TextureAL& b ) const
+{
+	if( a.IsValid() != b.IsValid() )
+	{
+		return false;
+	}
+	return !a.IsValid() || a.m_texture->GetImageVulkan() == b.m_texture->GetImageVulkan();
+}
+
 ALResult Tr2RenderContextAL::SetRenderTarget( const Tr2TextureAL& renderTarget, uint32_t slot, uint32_t slice ) throw()
 {
+	// The pass has to reopen when the IMAGE changes, not only when its description does.
+	// The description below carries format, sample count, load/store ops and layouts, and two
+	// render targets of one format are byte-identical in it -- so a rebind from one to the
+	// other used to leave the pass open on the first, and every draw meant for the second
+	// landed on the first. Tr2PostProcessRenderer builds "Final Result" in the back buffer's
+	// own format, tonemaps into it, then binds the back buffer and draws it across: that draw
+	// went into Final Result, and an EVE scene of 43 draws a frame put nothing on the swap
+	// chain. dx12 compares the texture itself here (Tr2RenderContextDx12.cpp:985); this is
+	// that comparison, on the image rather than the wrapper for the back buffer's sake.
+	if( !SameImageVulkan( renderTarget, m_boundRenderTargets[slot] ) )
+	{
+		m_dirtyPass = true;
+	}
+	if( DrawLogEnabled() && slot == 0 )
+	{
+		const char* name = renderTarget.IsValid() ? renderTarget.m_texture->GetName() : "(null)";
+		if( !name || !name[0] ) name = "(unnamed)";
+		if( g_drawLogBinds.size() < 2500 )
+		{
+			g_drawLogBinds += g_drawLogBinds.empty() ? "" : " > ";
+			g_drawLogBinds += name;
+		}
+		++g_drawLogBindCount;
+	}
 	m_boundRenderTargets[slot] = renderTarget;
 
 	if( renderTarget.IsValid() )
@@ -714,6 +1054,13 @@ ALResult Tr2RenderContextAL::SetRenderTarget( const Tr2TextureAL& renderTarget, 
 
 ALResult Tr2RenderContextAL::SetDepthStencil( const Tr2TextureAL& depthStencil ) throw()
 {
+	// Same rule as SetRenderTarget, for the same reason: two depth buffers of one format
+	// have the same description, and a pass left open on the old one tests and writes depth
+	// against a buffer the caller has moved away from.
+	if( !SameImageVulkan( depthStencil, m_boundDepthStencil ) )
+	{
+		m_dirtyPass = true;
+	}
 	m_boundDepthStencil = depthStencil;
 
 	// Slot 0 of the render pass source is the depth attachment; CreateRenderPass has
@@ -850,8 +1197,23 @@ ALResult Tr2RenderContextAL::DrawIndexedPrimitive(
 
 	auto vc = m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second;
 	CCP_STATS_ADD( vertexCount, vc );
+	CountDrawForLogVulkan( vc );
 
-	vkCmdDrawIndexed( m_commandBuffer, vc, 1, 0, 0, 0 );
+	// startIndex is firstIndex and minimumIndex is vertexOffset. Both were passed as zero here,
+	// which drew the first primitiveCount triangles of whatever the index buffer begins with.
+	// dx12 spells the mapping out -- DrawIndexedInstanced( vc, 1, startIndex, minimumIndex, 0 )
+	// -- and dx11 names its fourth parameter baseVertexLocation outright, which is what
+	// minimumIndex is for despite the name it inherited from D3D9.
+	//
+	// This is only reachable through a suballocated buffer: TriGeometryRes::Draw binds the whole
+	// shared buffer through ApplyStreamSource and expresses the allocation's place in it as
+	// startIndex (indices.GetStartIndex() + area.m_firstIndex). Until READ | WRITE stopped being
+	// rejected there was no shared buffer, so nothing ever arrived here with a startIndex to
+	// drop -- the zeros were harmless for exactly as long as the buffer was impossible.
+	//
+	// numVertices is deliberately unused, as it is on dx11 and dx12: it is D3D9's NumVertices
+	// hint and Vulkan has nowhere to put it.
+	vkCmdDrawIndexed( m_commandBuffer, vc, 1, startIndex, int32_t( minimumIndex ), 0 );
 	return S_OK;
 }
 
@@ -861,8 +1223,10 @@ ALResult Tr2RenderContextAL::DrawPrimitive( uint32_t startVertex, uint32_t primi
 
 	auto vc = m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second;
 	CCP_STATS_ADD( vertexCount, vc );
+	CountDrawForLogVulkan( vc );
 
-	vkCmdDraw( m_commandBuffer, vc, 1, 0, 0 );
+	// firstVertex, for the same reason as startIndex above; dx12 passes it to DrawInstanced.
+	vkCmdDraw( m_commandBuffer, vc, 1, startVertex, 0 );
 	return S_OK;
 }
 
@@ -876,9 +1240,8 @@ ALResult Tr2RenderContextAL::DrawIndexedInstanced(
 
 	auto vc = m_primitiveToVertexCount.first * primitiveCount + m_primitiveToVertexCount.second;
 	CCP_STATS_ADD( vertexCount, vc * numInstances );
+	CountDrawForLogVulkan( vc * numInstances );
 
-	// startIndex is honoured here even though DrawIndexedPrimitive above still ignores it.
-	// Passing it is free and leaving it out would be a second copy of that defect.
 	vkCmdDrawIndexed(
 		m_commandBuffer,
 		vc,
@@ -899,6 +1262,7 @@ ALResult Tr2RenderContextAL::DrawIndexedInstanced(
 	SetPipeline();
 
 	CCP_STATS_ADD( vertexCount, indexCountPerInstance * instanceCount );
+	CountDrawForLogVulkan( uint64_t( indexCountPerInstance ) * instanceCount );
 
 	vkCmdDrawIndexed(
 		m_commandBuffer,
@@ -919,6 +1283,7 @@ ALResult Tr2RenderContextAL::DrawInstanced(
 	SetPipeline();
 
 	CCP_STATS_ADD( vertexCount, vertexCountPerInstance * instanceCount );
+	CountDrawForLogVulkan( uint64_t( vertexCountPerInstance ) * instanceCount );
 
 	vkCmdDraw(
 		m_commandBuffer,
@@ -1221,6 +1586,9 @@ ALResult Tr2RenderContextAL::SetPipeline()
 		EndRenderPassVulkan();
 	}
 
+	// Before the dirty-PSO early return: a buffer can move without anything else changing.
+	RebindMovedBuffersVulkan();
+
 	if( m_dirtyPass )
 	{
 		SetPass();
@@ -1380,6 +1748,27 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 		m_constantsDirty = true;
 	}
 
+	// A buffer that was locked since the set was written has moved to another slot, and the
+	// set still names the old one. That is the per-object case exactly: Lock, write,
+	// SetConstants, draw -- SetConstants marks dirty too, but a caller that locks without
+	// rebinding is caught here as well.
+	if( !m_constantsDirty )
+	{
+		for( auto it = begin( m_constantBuffers ); it != end( m_constantBuffers ); ++it )
+		{
+			if( program->m_constantBindings.find( it->first ) == program->m_constantBindings.end() )
+			{
+				continue;
+			}
+			if( it->second.writtenBuffer != it->second.buffer->GetBufferVulkan()
+				|| it->second.writtenOffset != it->second.buffer->GetOffsetVulkan() )
+			{
+				m_constantsDirty = true;
+				break;
+			}
+		}
+	}
+
 	if( m_constantsDirty )
 	{
 		// A fresh set rather than a rewrite of the bound one. vkUpdateDescriptorSets on a
@@ -1400,8 +1789,18 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 			m_constantSet = fresh;
 			m_constantPoolLastUse = m_owner->GetRecordingFrameNumber();
 		}
-		// If the pool is exhausted the old set is rewritten, which is what used to happen
-		// always. Better a validation error than a dropped draw.
+		else
+		{
+			// If the pool is exhausted the old set is rewritten, which is what used to happen
+			// always. Better a validation error than a dropped draw -- and better still a
+			// line that says the budget above is too small, once.
+			static bool logged = false;
+			if( !logged )
+			{
+				logged = true;
+				CCP_AL_LOGERR( "constant descriptor pool exhausted (%u sets a frame); rewriting a bound set, and draws after it may read the wrong constants", CONSTANT_SETS_PER_FRAME );
+			}
+		}
 
 		std::vector<VkWriteDescriptorSet> writes;
 		std::vector<VkDescriptorBufferInfo> bufferInfos;
@@ -1417,7 +1816,13 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 			{
 				continue;
 			}
-			VkDescriptorBufferInfo bufferInfo = { it->second, 0, VK_WHOLE_SIZE };
+			// The slot the buffer's contents are in NOW, and only as far as they reach: a
+			// range of VK_WHOLE_SIZE from a slot's offset would run into the next slot.
+			ConstantBinding& bound = it->second;
+			bound.writtenBuffer = bound.buffer->GetBufferVulkan();
+			bound.writtenOffset = bound.buffer->GetOffsetVulkan();
+			bound.writtenRange = bound.buffer->GetSize();
+			VkDescriptorBufferInfo bufferInfo = { bound.writtenBuffer, bound.writtenOffset, bound.writtenRange };
 			bufferInfos.push_back( bufferInfo );
 			VkWriteDescriptorSet write = {
 				VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -1485,6 +1890,38 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 		CR_RETURN_HR( Vk2Al( vkCreateComputePipelines( m_owner->m_device, m_owner->m_pipelineCache, 1, &pipelineInfo, nullptr, &m_computePipeline ) ) );
 	}
 
+	// The draw path moves the resource set's images into the layouts its descriptors
+	// declare in SetPass; a dispatch has no pass, and so it bound the set with its images
+	// wherever the last command had left them -- a texture just uploaded still in
+	// TRANSFER_DST_OPTIMAL read as SHADER_READ_ONLY_OPTIMAL, a storage image never taken out
+	// of UNDEFINED where GENERAL was promised: VUID-vkCmdDispatch-None-08114 x20,
+	// VkDescriptorImageInfo-imageLayout-00344 x20 and vkCmdDraw-None-09600 x10 in every
+	// shippreview frame on the S23 (2026-09-10). A barrier cannot be recorded inside a render
+	// pass, so an open pass ends first, exactly as SetPass does it.
+	EndRenderPassVulkan();
+	if( m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->NeedsTransitionVulkan() )
+	{
+		m_resourceSet.m_resourceSet->TransitionImagesVulkan( m_commandBuffer );
+	}
+
+	// Memory ordering around the dispatch, for everything the layout transitions above do
+	// not cover: a buffer written by this shader through a UAV and read by the next draw's
+	// pixel shader (a histogram, an exposure), or written by a draw and read here. Layout
+	// transitions carry that for images; buffers have no layout and no barrier was ever
+	// recorded for them, so the reader was free to see the buffer as it was before the
+	// dispatch -- a hazard a tiler serves consistently rather than occasionally. One global
+	// barrier on each side of the dispatch, every stage to every stage: compute is a handful
+	// of dispatches per frame in this engine, and correctness first.
+	VkMemoryBarrier2 memoryBarrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+	memoryBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	memoryBarrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+	memoryBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	memoryBarrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+	VkDependencyInfo dependencyInfo = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+	dependencyInfo.memoryBarrierCount = 1;
+	dependencyInfo.pMemoryBarriers = &memoryBarrier;
+	m_owner->m_vkCmdPipelineBarrier2( m_commandBuffer, &dependencyInfo );
+
 	vkCmdBindPipeline( m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_computePipeline );
 
 	if( m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet && program->m_resourceLayout )
@@ -1500,7 +1937,11 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 
 	FORWARD_HR( BindConstantBuffers( VK_PIPELINE_BIND_POINT_COMPUTE ) );
 
+	if( DrawLogEnabled() ) { TrinityALImpl::CountDispatchVulkan(); }
 	vkCmdDispatch( m_commandBuffer, groupDimX, groupDimY, groupDimZ );
+
+	// And the other side: what this dispatch wrote is visible to whatever comes next.
+	m_owner->m_vkCmdPipelineBarrier2( m_commandBuffer, &dependencyInfo );
 
 	return S_OK;
 }
@@ -1677,6 +2118,101 @@ ALResult Tr2RenderContextAL::UseTextures( Tr2GpuUsage::Type, size_t, Tr2TextureA
 ALResult Tr2RenderContextAL::UseAccelerationStructure( Tr2RtTopLevelAccelerationStructureAL tlas )
 {
     return S_OK;
+}
+
+uint64_t Tr2RenderContextAL::GetNativeDevice() const
+{
+	return m_owner ? static_cast<uint64_t>( reinterpret_cast<uintptr_t>( m_owner->m_device ) ) : 0;
+}
+
+uint64_t Tr2RenderContextAL::GetNativeCommandQueue() const
+{
+	// The graphics queue, not the present one. They are the same VkQueue on every device
+	// this backend has run on -- FindPresentableQueues prefers one family that does both --
+	// but where they differ, the queue a hosted UI submits its font upload on has to be the
+	// one whose family index GetNativeQueueFamily reports, or the submit is invalid.
+	return m_owner ? static_cast<uint64_t>( reinterpret_cast<uintptr_t>( m_owner->GetGraphicsQueueVulkan() ) ) : 0;
+}
+
+uint64_t Tr2RenderContextAL::GetNativeInstance() const
+{
+	// The instance is process-wide and outlives any device: Tr2VideoAdapterInfoALVulkan
+	// creates it once, lazily, and every enumeration since has gone through it. Asked for
+	// here rather than stored on the context because storing it would imply a second
+	// lifetime for something that has exactly one.
+	VkInstance instance = VK_NULL_HANDLE;
+	if( FAILED( TrinityALImpl::GetVulkanInstance( instance ) ) )
+	{
+		return 0;
+	}
+	return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( instance ) );
+}
+
+uint64_t Tr2RenderContextAL::GetNativePhysicalDevice() const
+{
+	return m_owner ? static_cast<uint64_t>( reinterpret_cast<uintptr_t>( m_owner->m_physicalDevice ) ) : 0;
+}
+
+uint64_t Tr2RenderContextAL::GetNativeQueueFamily() const
+{
+	// 0 with no device, like every other accessor here -- and 0 is also a legal family
+	// index, which is why this one is worth reading beside GetNativeDevice rather than on
+	// its own. The member's own "no device" value is 0xffffffff; it is not passed through,
+	// because a caller checking accessors for 0 (spec D3) would take 0xffffffff for a
+	// family and hand it to Vulkan.
+	if( !m_owner || m_owner->m_graphicsQueueFamilyIndex == 0xffffffffu )
+	{
+		return 0;
+	}
+	return static_cast<uint64_t>( m_owner->m_graphicsQueueFamilyIndex );
+}
+
+uint64_t Tr2RenderContextAL::GetNativeCommandBuffer()
+{
+	// Not a read-only getter: see the header, and spec §7.4.
+	if( !m_owner || m_commandBuffer == VK_NULL_HANDLE )
+	{
+		return 0;
+	}
+
+	// (1) A rendering scope, so the caller's draws are legal. SetPass returns early when
+	// the pass is already open, so the common case -- a TriStepBeginRenderPass ahead of the
+	// callback, which is what the HUD job does -- costs one branch.
+	SetPass();
+
+	// (2) Everything the AL established in this buffer is now suspect. Marking the pass
+	// dirty is what re-records the viewport and the scissor (SetPass owns both) and
+	// marking the PSO dirty is what rebinds the pipeline; the AL's next draw goes through
+	// SetPipeline, which acts on both. Ordered after SetPass on purpose: setting them
+	// first would make the call above re-open a scope that is already open, for nothing.
+	m_dirtyPass = true;
+	m_dirtyPso = true;
+
+	return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( m_commandBuffer ) );
+}
+
+ALResult Tr2RenderContextAL::BeginRenderPass()
+{
+	// The frame graph asking for a scope, ahead of a step that will record draws through
+	// GetNativeCommandBuffer. SetPass is idempotent, so a caller that asks twice pays a
+	// branch, and one that asks when nothing is bound gets SetPass's own answer.
+	return SetPass();
+}
+
+uint64_t Tr2RenderContextAL::GetNativeBackBufferFormat() const
+{
+	// 0 is VK_FORMAT_UNDEFINED and the stub's "no device, no format" alike, so a caller
+	// checking for 0 is right on every backend (spec D3).
+	if( !m_owner )
+	{
+		return 0;
+	}
+	const Tr2RenderContextEnum::PixelFormat format = m_owner->GetBackBufferFormat();
+	if( format == Tr2RenderContextEnum::PIXEL_FORMAT_UNKNOWN )
+	{
+		return 0;
+	}
+	return static_cast<uint64_t>( TrinityALImpl::GetVulkanFormat( format ) );
 }
 
 

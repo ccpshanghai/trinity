@@ -5,6 +5,8 @@
 #if TRINITY_PLATFORM == TRINITY_VULKAN
 
 #include "UtilitiesVulkan.h"
+#include <string>
+#include <algorithm>
 #include "ALResult.h"
 #include "Tr2PrimaryRenderContextVulkan.h"
 
@@ -207,6 +209,118 @@ namespace TrinityALImpl
 		return Vk2Al( vkBindBufferMemory( renderContext.m_device, buffer, memory, 0 ) );
 	}
 
+	bool DrawLogEnabledVulkan()
+	{
+		static const bool enabled = []{
+			const char* value = getenv( "TRINITY_DRAW_LOG" );
+			return value && value[0] == '1';
+		}();
+		return enabled;
+	}
+
+	namespace
+	{
+		struct PendingProbe
+		{
+			VkBuffer buffer = VK_NULL_HANDLE;
+			VkDeviceMemory memory = VK_NULL_HANDLE;
+			uint64_t frame = 0;
+			std::string name;
+		};
+		PendingProbe g_probe;
+		uint32_t g_dispatches = 0;
+	}
+
+	void RecordProbeVulkan( Tr2PrimaryRenderContextAL& owner, VkCommandBuffer commandBuffer, VkImage image, VkImageAspectFlags aspect, uint32_t width, uint32_t height, const char* name )
+	{
+		if( g_probe.buffer != VK_NULL_HANDLE || width < 32 || height < 32 )
+		{
+			return;
+		}
+		const VkDeviceSize probeBytes = 32 * 32 * 4;
+		VkBuffer buffer = VK_NULL_HANDLE;
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		if( FAILED( CreateBuffer( buffer, memory, probeBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+				VkMemoryPropertyFlagBits( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ), owner ) ) )
+		{
+			return;
+		}
+		VkBufferImageCopy region = {};
+		region.imageSubresource = { aspect, 0, 0, 1 };
+		region.imageOffset = { int32_t( width / 2 - 16 ), int32_t( height / 2 - 16 ), 0 };
+		region.imageExtent = { 32, 32, 1 };
+		vkCmdCopyImageToBuffer( commandBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region );
+		g_probe.buffer = buffer;
+		g_probe.memory = memory;
+		g_probe.frame = owner.GetRecordingFrameNumber();
+		g_probe.name = name ? name : "";
+	}
+
+	void ReadPendingProbeVulkan( Tr2PrimaryRenderContextAL& owner )
+	{
+		if( g_probe.buffer == VK_NULL_HANDLE || owner.GetRenderedFrameNumber() < g_probe.frame )
+		{
+			return;
+		}
+		void* mapped = nullptr;
+		if( vkMapMemory( owner.m_device, g_probe.memory, 0, VK_WHOLE_SIZE, 0, &mapped ) == VK_SUCCESS )
+		{
+			const uint32_t* words = static_cast<const uint32_t*>( mapped );
+			// Opaque black in an 8-bit target is 0xff000000, which is not zero; count it apart,
+			// or a black 8-bit image reads as "1024/1024 non-zero" and proves nothing.
+			uint32_t nonzero = 0, opaqueBlack = 0, minWord = 0xffffffffu, maxWord = 0;
+			for( uint32_t i = 0; i < 1024; ++i )
+			{
+				if( words[i] ) ++nonzero;
+				if( words[i] == 0xff000000u ) ++opaqueBlack;
+				minWord = std::min( minWord, words[i] );
+				maxWord = std::max( maxWord, words[i] );
+			}
+			CCP_LOG( "probe: %s centre 32x32 (frame %llu) -> %u/1024 words non-zero, %u opaque-black (min %08x max %08x, first %08x)",
+					 g_probe.name.c_str(), (unsigned long long)g_probe.frame, nonzero, opaqueBlack, minWord, maxWord, words[0] );
+			vkUnmapMemory( owner.m_device, g_probe.memory );
+		}
+		owner.DestroyLaterVulkan( g_probe.buffer, &vkDestroyBuffer );
+		owner.DestroyLaterVulkan( g_probe.memory, &vkFreeMemory );
+		g_probe = PendingProbe();
+	}
+
+	void CountDispatchVulkan() { ++g_dispatches; }
+	uint32_t TakeDispatchCountVulkan() { const uint32_t n = g_dispatches; g_dispatches = 0; return n; }
+
+	static uint32_t g_syncMaps = 0;
+	static uint64_t g_syncMapBytes = 0;
+	static uint32_t g_syncMapPassBreaks = 0;
+	void NoteSyncMapVulkan( uint64_t bytes, bool brokePass )
+	{
+		++g_syncMaps;
+		g_syncMapBytes += bytes;
+		if( brokePass ) ++g_syncMapPassBreaks;
+	}
+	void TakeSyncMapStatsVulkan( uint32_t& maps, uint64_t& bytes, uint32_t& passBreaks )
+	{
+		maps = g_syncMaps; bytes = g_syncMapBytes; passBreaks = g_syncMapPassBreaks;
+		g_syncMaps = 0; g_syncMapBytes = 0; g_syncMapPassBreaks = 0;
+	}
+
+	const char* LayoutNameVulkan( VkImageLayout layout )
+	{
+		switch( layout )
+		{
+		case VK_IMAGE_LAYOUT_UNDEFINED:                        return "UNDEFINED";
+		case VK_IMAGE_LAYOUT_GENERAL:                          return "GENERAL";
+		case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:         return "COLOR_ATTACHMENT";
+		case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL: return "DEPTH_ATTACHMENT";
+		case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL:  return "DEPTH_READ_ONLY";
+		case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:         return "SHADER_READ_ONLY";
+		case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:             return "TRANSFER_SRC";
+		case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:             return "TRANSFER_DST";
+		case VK_IMAGE_LAYOUT_PREINITIALIZED:                   return "PREINITIALIZED";
+		case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:                  return "PRESENT_SRC";
+		default:                                               return "other";
+		}
+	}
+
 	void GetLayoutStageAccessVulkan( VkImageLayout layout, VkPipelineStageFlags2& stage, VkAccessFlags2& access )
 	{
 		switch( layout )
@@ -283,6 +397,28 @@ namespace TrinityALImpl
 		default:
 			return VK_IMAGE_ASPECT_COLOR_BIT;
 		}
+	}
+
+	VkExtent3D GetCopyTexelExtentVulkan( const Tr2BitmapDimensions& desc, uint32_t level )
+	{
+		// GetMipWidth's own out-of-range convention, so a caller looping on GetMipCount rather
+		// than GetTrueMipCount still gets a zero it can test rather than a whole block.
+		if( level >= desc.GetTrueMipCount() )
+		{
+			return { 0, 0, 0 };
+		}
+
+		// `>> level` with a floor of 1, which is the mip chain's definition and exactly what
+		// GetMipWidth already does for an uncompressed format -- so this is the same number
+		// there, and only the compressed case changes. Deliberately NOT routed through
+		// GetMipWidth with a divide-back-down: the block-rounding loses the information, and
+		// `min( GetMipWidth( level ), width >> level )` would be the same expression wearing
+		// a disguise.
+		return {
+			std::max( desc.GetWidth() >> level, 1u ),
+			std::max( desc.GetHeight() >> level, 1u ),
+			desc.GetMipDepth( level )
+		};
 	}
 
 	ALResult CreateImage( VkImage& image, VkDeviceMemory& memory, const Tr2BitmapDimensions& desc, const Tr2MsaaDesc& msaa, VkImageUsageFlags usage, VkImageCreateFlags flags, VkMemoryPropertyFlagBits memoryProperty, Tr2PrimaryRenderContextAL& renderContext )

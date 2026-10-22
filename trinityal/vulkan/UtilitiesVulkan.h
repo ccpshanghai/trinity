@@ -114,11 +114,51 @@ namespace TrinityALImpl
 	// These are the conservative pairings, not the tightest ones. A tighter srcStage for
 	// a known producer would be faster; getting it wrong is a data race that validation
 	// cannot always see, so the wide mask is the right default until something measures.
+	// TRINITY_DRAW_LOG=1, read once. The render context prints its per-scene tally under it;
+	// the texture prints its layout discards and copies under the same switch, so one variable
+	// turns on everything that answers "what did this frame actually do".
+	bool DrawLogEnabledVulkan();
+	const char* LayoutNameVulkan( VkImageLayout layout );
+
+	// TRINITY_DRAW_LOG=1 only. A 32x32 box at the centre of `image` is copied into a probe
+	// buffer NOW (the image must be in TRANSFER_SRC_OPTIMAL), and its contents are read back
+	// and logged from a later frame, once the GPU has rendered this one -- so it costs no
+	// stall. One probe in flight at a time; a request while one is pending is dropped.
+	// `name` is only for the log line.
+	void RecordProbeVulkan( Tr2PrimaryRenderContextAL& owner, VkCommandBuffer commandBuffer, VkImage image, VkImageAspectFlags aspect, uint32_t width, uint32_t height, const char* name );
+	void ReadPendingProbeVulkan( Tr2PrimaryRenderContextAL& owner );
+	void CountDispatchVulkan();
+	uint32_t TakeDispatchCountVulkan();
+	// A synchronized MapForWriting / UpdateBuffer landed its copy: how many bytes, and whether
+	// recording it had to close a render pass that was open (a store and a reload on a tiler).
+	void NoteSyncMapVulkan( uint64_t bytes, bool brokePass );
+	void TakeSyncMapStatsVulkan( uint32_t& maps, uint64_t& bytes, uint32_t& passBreaks );
+
 	void GetLayoutStageAccessVulkan( VkImageLayout layout, VkPipelineStageFlags2& stage, VkAccessFlags2& access );
 
 	// Colour formats get the colour aspect, depth formats get depth (plus stencil where
 	// the format has one). Barriers and image views both need this and both used to
 	// hardcode VK_IMAGE_ASPECT_COLOR_BIT, which is why nothing depth-shaped worked.
 	VkImageAspectFlags GetAspectMaskVulkan( VkFormat format );
+
+	// The texel extent of one mip, for `VkBufferImageCopy::imageExtent`.
+	//
+	// NOT BitmapDimensions::GetMipWidth/GetMipHeight, which is the trap this exists to close.
+	// Those round a compressed mip UP to a whole block, because they answer the *storage*
+	// question -- a 2x2 BC2 mip really does occupy one whole 4x4 block, and DX12 wants exactly
+	// that number in D3D12_SUBRESOURCE_FOOTPRINT. Vulkan wants the other number: imageExtent is
+	// counted in texels of the destination subresource and must fit inside it
+	// (VUID-vkCmdCopyBufferToImage-imageSubresource-07971/07972). A copy region is allowed to
+	// end on a partial block precisely when it ends at the mip's edge, which is the case here.
+	//
+	// Passing the block-rounded value cost 168 validation errors in a single shippreview frame
+	// -- every one of them on the 2x2 and 1x1 tail mips of the scene's BC2 cube maps, which is
+	// why nothing smaller than a cube map with a full mip chain ever showed it.
+	//
+	// Depth comes straight from GetMipDepth: it is never block-aligned (no 3D block format is
+	// mapped here) and is 1 for everything that is not TEX_TYPE_3D.
+	//
+	// Returns a zero extent for a level past the chain, keeping GetMipWidth's own convention.
+	VkExtent3D GetCopyTexelExtentVulkan( const Tr2BitmapDimensions& desc, uint32_t level );
 
 }

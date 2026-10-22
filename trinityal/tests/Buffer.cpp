@@ -178,6 +178,28 @@ TEST_F( Buffer, CanCreate32BitIndexBuffer )
 	ASSERT_HRESULT_SUCCEEDED( buffer.Create( 2, 4, Tr2GpuUsage::INDEX_BUFFER, Tr2CpuUsage::WRITE, nullptr, *renderContext ) );
 }
 
+// READ | WRITE together. Nothing in this file asked for the pair before, which is how the
+// Vulkan port came to reject it as invalid -- dx12 and metal reject READ | WRITE_OFTEN, a
+// buffer read back *and* rewritten every frame, and the port dropped the _OFTEN. Plain
+// host-visible memory serves both, and Tr2SuballocatedBuffer asks for exactly this: it is
+// where every TriGeometryRes vertex and index allocation lives, so on the backend that
+// refused it an EVE hull loaded its mesh and drew nothing.
+TEST_F( Buffer, CanCreateBufferThatIsBothReadableAndWritable )
+{
+	ENSURE_GPU_OR_SKIP
+	Tr2BufferAL buffer;
+	ASSERT_HRESULT_SUCCEEDED( buffer.Create( 4, 64, Tr2GpuUsage::VERTEX_BUFFER | Tr2GpuUsage::INDEX_BUFFER, Tr2CpuUsage::READ | Tr2CpuUsage::WRITE, nullptr, *renderContext ) );
+	EXPECT_TRUE( buffer.IsValid() );
+
+	void* forWriting = nullptr;
+	ASSERT_HRESULT_SUCCEEDED( buffer.MapForWriting( forWriting, *renderContext ) );
+	buffer.UnmapForWriting( *renderContext );
+
+	const void* forReading = nullptr;
+	ASSERT_HRESULT_SUCCEEDED( buffer.MapForReading( forReading, 0, 256, *renderContext ) );
+	buffer.UnmapForReading( *renderContext );
+}
+
 #if TRINITY_PLATFORM_SUPPORTS_BUFFER_SHADER_RESOURCES
 
 TEST_F( Buffer, CanCreateStructuredShaderResourceBuffer )
@@ -199,6 +221,18 @@ TEST_F( Buffer, CanCreateVertexBufferWithShaderResource )
 	ENSURE_GPU_OR_SKIP
 	Tr2BufferAL buffer;
 	ASSERT_HRESULT_SUCCEEDED( buffer.Create( 64, 4, Tr2GpuUsage::SHADER_RESOURCE | Tr2GpuUsage::VERTEX_BUFFER, Tr2CpuUsage::WRITE, nullptr, *renderContext ) );
+}
+
+// g_sharedBuffer's own description, spelled out: the three gpu usages TriGeometryRes asks for
+// on every backend but dx11, at the stride Tr2SuballocatedBuffer::OnPrepareResources uses.
+// The test above covers the cpuUsage pair on its own; this one covers the combination that
+// actually ships, because that is the one that was broken.
+TEST_F( Buffer, CanCreateTheSharedGeometryBufferDescription )
+{
+	ENSURE_GPU_OR_SKIP
+	Tr2BufferAL buffer;
+	ASSERT_HRESULT_SUCCEEDED( buffer.Create( 4, 1024, Tr2GpuUsage::VERTEX_BUFFER | Tr2GpuUsage::INDEX_BUFFER | Tr2GpuUsage::SHADER_RESOURCE, Tr2CpuUsage::READ | Tr2CpuUsage::WRITE, nullptr, *renderContext ) );
+	EXPECT_TRUE( buffer.IsValid() );
 }
 
 TEST_F( Buffer, CanCreateDynamicSrvBuffer )

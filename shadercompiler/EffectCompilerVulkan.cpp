@@ -1,7 +1,6 @@
 // Copyright © 2026 CCP ehf.
 
 #include "stdafx.h"
-#if _WIN32
 #include "EffectCompilerVulkan.h"
 #include "Macro.h"
 #include "Platforms.h"
@@ -29,4 +28,3 @@ bool EffectCompilerVulkan::CompileEffect( const char* source, size_t sourceLengt
 	}
 	return m_compiler.CompileEffect( source, sourceLength, newDefines, result, { "6_0", true, false, true }, workQueue );
 }
-#endif
