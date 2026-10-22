@@ -29,11 +29,13 @@
         "nvidia-aftermath",
         "nvidia-streamline",
         "openvdb",
-        "protobuf"
+        "protobuf",
+        "tbb",
+        "directx-dxc"
       ],
       "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
-      "reference": "mobile-exp",
-      "baseline": "85e14980063813c293cf8071eff47371993f977d"
+      "reference": "m6-overlays-to-registry",
+      "baseline": "821802053d234b3060bd0a560fd0cd1d2e2f788e"
     }
   ]
 }
