@@ -34,8 +34,8 @@
         "directx-dxc"
       ],
       "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
-      "reference": "m6-overlays-to-registry",
-      "baseline": "4862448670eddf0a540ce1edcc456bb174171532"
+      "reference": "mobile-exp",
+      "baseline": "df11087fa9e48a1c21865c077677483c140e499a"
     }
   ]
 }
