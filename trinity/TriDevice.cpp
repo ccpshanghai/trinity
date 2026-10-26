@@ -1126,10 +1126,15 @@ void TriDevice::PyRender()
 // copies sprite sets on a background thread - these sprite sets are registered
 // here, and the builder might happen to do that just as something is being
 // created on the main thread.
+//
+// Never destroyed, like the set it guards (GetResourcesRegistered). Resources still unregister
+// during static destruction: blue's MotherLode releases cached effects from its own destructor,
+// and on Linux blue.so's destructors run after this module's, so a function-local static mutex
+// was already destroyed and locking it hung the process at exit.
 CcpMutex& GetResourcesRegisteredMutex()
 {
-	static CcpMutex s_resourcesRegisteredMutex( "TriDevice", "s_resourcesRegisteredMutex" );
-	return s_resourcesRegisteredMutex;
+	static CcpMutex* s_resourcesRegisteredMutex = new CcpMutex( "TriDevice", "s_resourcesRegisteredMutex" );
+	return *s_resourcesRegisteredMutex;
 }
 
 // We manage a set of weak references to objects that have registered themselves
