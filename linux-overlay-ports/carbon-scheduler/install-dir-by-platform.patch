@@ -1,0 +1,20 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -170,7 +170,7 @@
+                 TARGETS Scheduler
+                 EXPORT SchedulerTargets
+                 CONFIGURATIONS ${CMAKE_CONFIGURATION_TYPES}
+-                LIBRARY DESTINATION $<IF:$<PLATFORM_ID:Darwin>,lib,bin>/${CCP_PLATFORM}/${CCP_ARCHITECTURE}/${CCP_TOOLSET}/
++                LIBRARY DESTINATION $<IF:$<PLATFORM_ID:Windows>,bin,lib>/${CCP_PLATFORM}/${CCP_ARCHITECTURE}/${CCP_TOOLSET}/
+         )
+         # Install rule for available public headers
+         install(FILES ${PUBLIC_HEADER_FILES} DESTINATION include)
+@@ -191,7 +191,7 @@
+                 TARGETS Scheduler
+                 EXPORT SchedulerTargets
+                 CONFIGURATIONS ${CMAKE_CONFIGURATION_TYPES}
+-                LIBRARY DESTINATION $<IF:$<PLATFORM_ID:Darwin>,lib,bin>
++                LIBRARY DESTINATION $<IF:$<PLATFORM_ID:Windows>,bin,lib>
+         )
+         # Install rule to ensure that our runtime and linker files are in the expected, platform-specific folders
+         install(DIRECTORY include DESTINATION . FILES_MATCHING PATTERN "*.h")

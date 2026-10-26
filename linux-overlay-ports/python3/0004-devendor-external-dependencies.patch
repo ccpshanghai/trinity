@@ -1,0 +1,150 @@
+From 6c5c3793cbc6ba2a1d0d623a2bdaa9c2125be516 Mon Sep 17 00:00:00 2001
+From: Adam Johnson <AdamJohnso@gmail.com>
+Date: Wed, 9 Sep 2020 15:24:38 -0400
+Subject: [PATCH 3/6] devendor external dependencies
+
+externally fetched libraries may cause linker errors resulting from
+duplicate symbols in downstream projects.
+
+M2: _decimal joins the list. 3.13 unbundled libmpdec (gh-115119) and
+compiles it straight into _decimal.vcxproj instead of via a separate
+vendored project, so here that means excluding the vendored
+$(mpdecimalDir)\libmpdec sources and vcdiv64.asm, and dropping
+$(mpdecimalDir)\libmpdec and the windows/mpdecimal.h shim from
+AdditionalIncludeDirectories so #include <mpdecimal.h> falls through
+to the mpdecimal port's installed header instead.
+---
+ PCbuild/_bz2.vcxproj     | 4 +++-
+ PCbuild/_decimal.vcxproj | 8 ++++---
+ PCbuild/_lzma.vcxproj    | 5 ++---
+ PCbuild/_sqlite3.vcxproj | 2 +-
+ PCbuild/_ssl.vcxproj     | 2 +-
+ PCbuild/pyexpat.vcxproj  | 6 ++++--
+ 6 files changed, 16 insertions(+), 11 deletions(-)
+
+diff --git a/PCbuild/_bz2.vcxproj b/PCbuild/_bz2.vcxproj
+index 3fe95fbf83..6b12e8818e 100644
+--- a/PCbuild/_bz2.vcxproj
++++ b/PCbuild/_bz2.vcxproj
+@@ -101,6 +101,8 @@
+   </ItemDefinitionGroup>
+   <ItemGroup>
+     <ClCompile Include="..\Modules\_bz2module.c" />
++  </ItemGroup>
++  <ItemGroup Condition="false">
+     <ClCompile Include="$(bz2Dir)\blocksort.c" />
+     <ClCompile Include="$(bz2Dir)\bzlib.c" />
+     <ClCompile Include="$(bz2Dir)\compress.c" />
+@@ -109,7 +111,7 @@
+     <ClCompile Include="$(bz2Dir)\huffman.c" />
+     <ClCompile Include="$(bz2Dir)\randtable.c" />
+   </ItemGroup>
+-  <ItemGroup>
++  <ItemGroup Condition="false">
+     <ClInclude Include="$(bz2Dir)\bzlib.h" />
+     <ClInclude Include="$(bz2Dir)\bzlib_private.h" />
+   </ItemGroup>
+diff --git a/PCbuild/_decimal.vcxproj b/PCbuild/_decimal.vcxproj
+index ee74214..d8c4906 100644
+--- a/PCbuild/_decimal.vcxproj
++++ b/PCbuild/_decimal.vcxproj
+@@ -98,10 +98,10 @@
+       <PreprocessorDefinitions Condition="'$(Platform)'=='ARM'">CONFIG_32;ANSI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+       <PreprocessorDefinitions Condition="'$(Platform)'=='ARM64'">CONFIG_64;ANSI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+       <PreprocessorDefinitions Condition="'$(Platform)' == 'x64'">CONFIG_64;MASM;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+-      <AdditionalIncludeDirectories>..\Modules\_decimal;..\Modules\_decimal\windows;$(mpdecimalDir)\libmpdec;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
++      <AdditionalIncludeDirectories>..\Modules\_decimal;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+     </ClCompile>
+   </ItemDefinitionGroup>
+-  <ItemGroup>
++  <ItemGroup Condition="false">
+     <ClInclude Include="$(mpdecimalDir)\libmpdec\basearith.h" />
+     <ClInclude Include="$(mpdecimalDir)\libmpdec\bits.h" />
+     <ClInclude Include="$(mpdecimalDir)\libmpdec\constants.h" />
+@@ -125,6 +125,8 @@
+   </ItemGroup>
+   <ItemGroup>
+     <ClCompile Include="..\Modules\_decimal\_decimal.c" />
++  </ItemGroup>
++  <ItemGroup Condition="false">
+     <ClCompile Include="$(mpdecimalDir)\libmpdec\basearith.c" />
+     <ClCompile Include="$(mpdecimalDir)\libmpdec\constants.c" />
+     <ClCompile Include="$(mpdecimalDir)\libmpdec\context.c" />
+@@ -140,7 +142,7 @@
+     <ClCompile Include="$(mpdecimalDir)\libmpdec\sixstep.c" />
+     <ClCompile Include="$(mpdecimalDir)\libmpdec\transpose.c" />
+   </ItemGroup>
+-  <ItemGroup>
++  <ItemGroup Condition="false">
+     <CustomBuild Include="$(mpdecimalDir)\libmpdec\vcdiv64.asm">
+       <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
+       <ExcludedFromBuild Condition="'$(Platform)'=='ARM'">true</ExcludedFromBuild>
+diff --git a/PCbuild/_lzma.vcxproj b/PCbuild/_lzma.vcxproj
+index fe076a6fc5..70cc61dd95 100644
+--- a/PCbuild/_lzma.vcxproj
++++ b/PCbuild/_lzma.vcxproj
+@@ -94,10 +94,9 @@
+   <ItemDefinitionGroup>
+     <ClCompile>
+       <AdditionalIncludeDirectories>$(lzmaDir)src/liblzma/api;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+-      <PreprocessorDefinitions>WIN32;_FILE_OFFSET_BITS=64;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;LZMA_API_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
++      <PreprocessorDefinitions>WIN32;_FILE_OFFSET_BITS=64;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+     </ClCompile>
+     <Link>
+-      <AdditionalDependencies>$(OutDir)liblzma$(PyDebugExt).lib;%(AdditionalDependencies)</AdditionalDependencies>
+     </Link>
+   </ItemDefinitionGroup>
+   <ItemGroup>
+@@ -111,7 +110,7 @@
+       <Project>{cf7ac3d1-e2df-41d2-bea6-1e2556cdea26}</Project>
+       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+     </ProjectReference>
+-    <ProjectReference Include="liblzma.vcxproj">
++    <ProjectReference Condition="false" Include="liblzma.vcxproj">
+       <Project>{12728250-16eC-4dc6-94d7-e21dd88947f8}</Project>
+       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+     </ProjectReference>
+diff --git a/PCbuild/_sqlite3.vcxproj b/PCbuild/_sqlite3.vcxproj
+index 7e0062692b..6fb3279a20 100644
+--- a/PCbuild/_sqlite3.vcxproj
++++ b/PCbuild/_sqlite3.vcxproj
+@@ -127,7 +127,7 @@
+       <Project>{cf7ac3d1-e2df-41d2-bea6-1e2556cdea26}</Project>
+       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+     </ProjectReference>
+-    <ProjectReference Include="sqlite3.vcxproj">
++    <ProjectReference Condition="false" Include="sqlite3.vcxproj">
+       <Project>{a1a295e5-463c-437f-81ca-1f32367685da}</Project>
+       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+     </ProjectReference>
+diff --git a/PCbuild/pyexpat.vcxproj b/PCbuild/pyexpat.vcxproj
+index b2d9f5d57d..4efb826a05 100644
+--- a/PCbuild/pyexpat.vcxproj
++++ b/PCbuild/pyexpat.vcxproj
+@@ -89,19 +89,21 @@
+   </ImportGroup>
+   <PropertyGroup Label="UserMacros" />
+   <ItemDefinitionGroup>
+-    <ClCompile>
++    <ClCompile Condition="false">
+       <AdditionalIncludeDirectories>$(PySourcePath)Modules\expat;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;PYEXPAT_EXPORTS;XML_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+     </ClCompile>
+   </ItemDefinitionGroup>
+-  <ItemGroup>
++  <ItemGroup Condition="false">
+     <ClInclude Include="..\Modules\expat\fallthrough.h" />
+     <ClInclude Include="..\Modules\expat\memory_sanitizer.h" />
+     <ClInclude Include="..\Modules\expat\xmlrole.h" />
+     <ClInclude Include="..\Modules\expat\xmltok.h" />
+   </ItemGroup>
+   <ItemGroup>
+     <ClCompile Include="..\Modules\pyexpat.c" />
++  </ItemGroup>
++  <ItemGroup Condition="false">
+     <ClCompile Include="..\Modules\expat\xmlparse.c" />
+     <ClCompile Include="..\Modules\expat\xmlrole.c" />
+     <ClCompile Include="..\Modules\expat\xmltok.c" />
+-- 
+2.28.0.windows.1
+

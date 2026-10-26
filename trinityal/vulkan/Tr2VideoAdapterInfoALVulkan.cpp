@@ -14,6 +14,10 @@
 #endif
 #include "UtilitiesVulkan.h"
 
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
+
 // The Windows build enumerates adapters and display modes through DXGI and matches
 // them to Vulkan physical devices by vendor/device id; everywhere else the Vulkan
 // physical device list IS the adapter list, and "display modes" collapse to a single
@@ -32,6 +36,8 @@ namespace
 		VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
 #elif defined(VK_USE_PLATFORM_ANDROID_KHR)
 		VK_KHR_ANDROID_SURFACE_EXTENSION_NAME,
+#elif defined(VK_USE_PLATFORM_WAYLAND_KHR)
+		VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME,
 #elif defined(VK_USE_PLATFORM_XCB_KHR)
 		VK_KHR_XCB_SURFACE_EXTENSION_NAME,
 #elif defined(VK_USE_PLATFORM_XLIB_KHR)
@@ -254,6 +260,14 @@ namespace
 			{
 				continue;
 			}
+#if defined( VK_USE_PLATFORM_WAYLAND_KHR )
+			// Lavapipe reports itself as a CPU device and is already skipped above.
+			// A build that labels it otherwise must still not present on it.
+			if( std::strstr( info.properties.deviceName, "llvmpipe" ) != nullptr )
+			{
+				continue;
+			}
+#endif
 
 			std::vector<VkQueueFamilyProperties> queue_family_properties;
 			TrinityALImpl::QueryArrayNoFail( &vkGetPhysicalDeviceQueueFamilyProperties, physicalDevices[i], queue_family_properties );
@@ -291,6 +305,39 @@ namespace
 
 			s_devices.push_back( info );
 		}
+#if defined( VK_USE_PLATFORM_WAYLAND_KHR )
+		// Adapter 0 is the one the shell presents on. Prefer the discrete NVIDIA
+		// device (vendor 0x10de) over any other non-CPU device the loader listed first.
+		const auto rank = []( const TrinityALImpl::VulkanDeviceInfo& info )
+		{
+			const bool nvidia = info.properties.vendorID == 0x10deu;
+			const bool discrete = info.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+			if( nvidia && discrete )
+			{
+				return 0;
+			}
+			if( discrete )
+			{
+				return 1;
+			}
+			if( nvidia )
+			{
+				return 2;
+			}
+			return 3;
+		};
+		std::stable_sort( s_devices.begin(), s_devices.end(), [&]( const TrinityALImpl::VulkanDeviceInfo& a, const TrinityALImpl::VulkanDeviceInfo& b ) {
+			return rank( a ) < rank( b );
+		} );
+		if( !s_devices.empty() )
+		{
+			std::fprintf( stderr, "vulkan: presenting on \"%s\" vendor=0x%04x device=0x%04x type=%d\n",
+				s_devices[0].properties.deviceName,
+				s_devices[0].properties.vendorID,
+				s_devices[0].properties.deviceID,
+				int( s_devices[0].properties.deviceType ) );
+		}
+#endif
 		return S_OK;
 	}
 }

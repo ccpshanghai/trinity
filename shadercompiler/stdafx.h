@@ -29,6 +29,7 @@
 #else
 
 #include <cstdint>
+#include <cmath>
 #include <unistd.h>
 
 // dxc's own portable Windows shims, plus the one D3D reflection header its

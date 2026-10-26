@@ -3,7 +3,7 @@
 #include "StdAfx.h"
 #include "../include/Tr2BufferAL.h"
 
-#include TRINITY_AL_PLATFORM_INCLUDE( Tr2BufferAL )
+#include TRINITY_AL_PLATFORM_INCLUDE(Tr2BufferAL)
 
 
 using namespace Tr2RenderContextEnum;

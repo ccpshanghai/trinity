@@ -1,0 +1,22 @@
+{
+  "name": "carbon-exefileconsole",
+  "version": "1.1.1",
+  "description": "Wrapper to run exefile processes from a command shell without spawning a new command shell process",
+  "dependencies": [
+    {
+      "name": "ccp-debug-info",
+      "host": true,
+      "version>=": "1.0.1"
+    },
+    {
+      "name": "vcpkg-cmake",
+      "host": true,
+      "version>=": "2024-04-23"
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true,
+      "version>=": "2024-05-23"
+    }
+  ]
+}

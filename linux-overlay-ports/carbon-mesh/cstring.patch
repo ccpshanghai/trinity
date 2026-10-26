@@ -1,0 +1,11 @@
+diff --git a/include/cmf/cmf.h b/include/cmf/cmf.h
+--- a/include/cmf/cmf.h
++++ b/include/cmf/cmf.h
+@@ -4,6 +4,7 @@
+ 
+ #include "carbon_mesh_export.h"
+ #include <cstdint>
++#include <cstring>
+ #include <type_traits>
+ 
+ namespace cmf

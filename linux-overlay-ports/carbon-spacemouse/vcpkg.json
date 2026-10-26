@@ -1,0 +1,39 @@
+{
+  "name": "carbon-spacemouse",
+  "version": "3.0.0",
+  "description": "Provides SpaceMouse integration for Carbon projects.",
+  "homepage": "https://github.com/carbonengine/spacemouse",
+  "license": "MIT",
+  "supports": "(windows & x64) | osx",
+  "dependencies": [
+    {
+      "name": "3dxwaresdk-osx",
+      "platform": "osx",
+      "version>=": "10.7.0"
+    },
+    {
+      "name": "3dxwaresdk-win",
+      "platform": "windows",
+      "version>=": "10.5.10"
+    },
+    {
+      "name": "ccp-debug-info",
+      "host": true,
+      "version>=": "1.0.2"
+    },
+    {
+      "name": "python3",
+      "version>=": "3.12.9#1"
+    },
+    {
+      "name": "vcpkg-cmake",
+      "host": true,
+      "version>=": "2024-04-23"
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true,
+      "version>=": "2024-05-23"
+    }
+  ]
+}
