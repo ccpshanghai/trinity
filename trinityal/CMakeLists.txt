@@ -571,6 +571,34 @@ elseif(ANDROID)
         set_shared_trinityal_properties(vulkan)
     endif()
 
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+
+    if(BUILD_VULKAN)
+
+        # Desktop Wayland. The loader is the vcpkg port (Vulkan::Loader), not
+        # Android's NDK libvulkan and not dxgi. VK_USE_PLATFORM_WAYLAND_KHR
+        # selects the shell-owned {wl_display, wl_surface} surface path.
+        find_package(VulkanHeaders CONFIG REQUIRED)
+        find_package(VulkanMemoryAllocator CONFIG REQUIRED)
+        find_package(VulkanLoader CONFIG REQUIRED)
+        # The distro ships wayland-client.pc, not WaylandConfig.cmake.
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
+
+        # The metal .mm files are in _SOURCES for every target; GCC will not
+        # treat them as empty C++. Same exclusion as the Android branch.
+        list(FILTER _SOURCES EXCLUDE REGEX "\\.mm$")
+
+        ccp_add_library(TrinityAL_vulkan STATIC)
+        target_compile_definitions(TrinityAL_vulkan PUBLIC TRINITY_PLATFORM=TRINITY_VULKAN VK_USE_PLATFORM_WAYLAND_KHR)
+        target_link_libraries(TrinityAL_vulkan PUBLIC
+                                                    Vulkan::Headers
+                                                    GPUOpen::VulkanMemoryAllocator
+                                                    Vulkan::Loader
+                                                    PkgConfig::WAYLAND_CLIENT)
+        set_shared_trinityal_properties(vulkan)
+    endif()
+
 elseif(APPLE)
     
     if(BUILD_METAL)

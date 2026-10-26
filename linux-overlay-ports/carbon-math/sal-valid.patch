@@ -1,0 +1,27 @@
+--- a/include/Requirements.h
++++ b/include/Requirements.h
+@@ -19,5 +19,22 @@
+ #include "DirectXMath.h"
+ #include "DirectXPackedVector.h"
+ 
++#ifndef _WIN32
++// sal.h's non-Windows branch defines these as empty annotation macros.
++// libstdc++ uses the same names (__valid in <mutex>, __pre in <regex>).
++// DirectXMath has already expanded them.
++#undef __valid
++#undef __notvalid
++#undef __maybevalid
++#undef __pre
++#undef __post
++#undef __notnull
++#undef __deref
++#undef __maybenull
++#undef __readonly
++#undef __notreadonly
++#undef __maybereadonly
++#endif
++
+ using namespace DirectX;
+-using namespace DirectX::PackedVector;
+\ No newline at end of file
++using namespace DirectX::PackedVector;

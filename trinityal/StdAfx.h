@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 
 #ifndef _WIN32

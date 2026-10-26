@@ -1,0 +1,17 @@
+{
+  "name": "libb2",
+  "version": "0.98.1",
+  "port-version": 7,
+  "description": "C library providing BLAKE2b, BLAKE2s, BLAKE2bp, BLAKE2sp. CMake build so a Linux host without autoconf can still produce libb2 for CPython.",
+  "homepage": "https://github.com/BLAKE2/libb2",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ]
+}

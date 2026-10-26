@@ -1,0 +1,22 @@
+Add an exefile interpreter port that depends on blue & exefile. This is mainly meant for carbon components that need to run their tests through exefile. On it provides this interface:
+Example here is from carbon-localization:
+
+```
+ccp_prepare_interpreter(
+        TARGET MyCarbonComponent
+        BUILD_TYPE ${CMAKE_BUILD_TYPE}
+        COMMAND_OUT PYTHON_INTERPRETER
+        PYTHONPATH_OUT PYTHONPATH
+        RUN_DIR $<TARGET_FILE_DIR:MyCarbonComponent>
+        BLUE_DIR_OUT BLUE_LOCATION_DIR
+)
+```
+
+a test is then added like so:
+```
+add_test(NAME ${PYTHON_TEST}
+    COMMAND ${PYTHON_INTERPRETER} /inherit /buildflavor=$<LOWER_CASE:$<CONFIG>> /py ${PYTHON_TEST}
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/myCarbonComponent/tests
+)
+set_tests_properties(${PYTHON_TEST} PROPERTIES ENVIRONMENT "PYTHONPATH=${PYTHONPATH}\;${CMAKE_CURRENT_SOURCE_DIR}/python;BUILDFLAVOR=$<LOWER_CASE:$<CONFIG>>")
+```

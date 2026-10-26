@@ -1,0 +1,32 @@
+{
+  "name": "carbon-exefile",
+  "version": "4.1.1",
+  "description": "Elements used to build the final exefile executable",
+  "dependencies": [
+    {
+      "name": "carbon-core",
+      "version>=": "2.4.0"
+    },
+    {
+      "name": "ccp-debug-info",
+      "host": true,
+      "version>=": "1.0.1"
+    },
+    {
+      "name": "crashpad",
+      "version>=": "2021-04-14#1"
+    },
+    {
+      "name": "python3",
+      "version>=": "3.12.9#1"
+    },
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ]
+}

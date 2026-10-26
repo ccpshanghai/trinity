@@ -45,4 +45,4 @@ private:
 	std::shared_ptr<TrinityALImpl::Tr2PipelineStatsQueryAL> m_query;
 };
 
-#include TRINITY_AL_PLATFORM_INCLUDE( Tr2PipelineStatsQueryAL )
+#include TRINITY_AL_PLATFORM_INCLUDE(Tr2PipelineStatsQueryAL)

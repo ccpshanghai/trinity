@@ -26,10 +26,14 @@ std::string GetDirPath( const char* filepath )
 #if _WIN32
 	const char* filename = PathFindFileName( filepath );
 	return std::string( filepath, filename - filepath );
-#else
+#elif defined(__APPLE__)
 	char storage[MAXPATHLEN];
 	const char* dirName = dirname_r( filepath, storage );
 	return dirName;
+#else
+	// glibc dirname rewrites its argument and has no dirname_r.
+	std::string storage( filepath );
+	return dirname( storage.data() );
 #endif
 }
 

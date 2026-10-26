@@ -2,7 +2,7 @@
 
 #include "StdAfx.h"
 #include "../include/Tr2ShaderProgramAL.h"
-#include TRINITY_AL_PLATFORM_INCLUDE( Tr2ShaderProgramAL )
+#include TRINITY_AL_PLATFORM_INCLUDE(Tr2ShaderProgramAL)
 
 
 namespace

@@ -5,6 +5,9 @@
 #ifdef __APPLE__
 #include <mach/semaphore.h>
 #include <mach/mach.h>
+#elif defined(__linux__)
+#include <semaphore.h>
+#include <cerrno>
 #endif
 
 #include "CompileMessageQueue.h"
@@ -130,6 +133,11 @@ public:
 
 #ifdef __APPLE__
 		semaphore_create( current_task(), &m_activeWorkersSemaphore, SYNC_POLICY_FIFO, (int32_t)activeWorkersCount );
+#elif defined(__linux__)
+		if( sem_init( &m_activeWorkersSemaphore, 0, static_cast<unsigned int>( activeWorkersCount ) ) != 0 )
+		{
+			g_messages.AddMessage( "WorkQueue2: Creating m_activeWorkersSemaphore failed! Error: %d", errno );
+		}
 #else
 		m_activeWorkersSemaphore = CreateSemaphore( NULL, (long)activeWorkersCount, (long)activeWorkersCount, NULL );
 		if( m_activeWorkersSemaphore == NULL )
@@ -158,6 +166,8 @@ public:
 		Join();
 #ifdef __APPLE__
 		semaphore_destroy( current_task(), m_activeWorkersSemaphore );
+#elif defined(__linux__)
+		sem_destroy( &m_activeWorkersSemaphore );
 #else
 		CloseHandle( m_activeWorkersSemaphore );
 #endif
@@ -206,6 +216,11 @@ private:
 		{
 			g_messages.AddMessage( "WorkQueue2: Waiting on m_activeWorkersSemaphore failed! Error: %d", waitResult );
 		}
+#elif defined(__linux__)
+		if( sem_wait( &m_activeWorkersSemaphore ) != 0 )
+		{
+			g_messages.AddMessage( "WorkQueue2: Waiting on m_activeWorkersSemaphore failed! Error: %d", errno );
+		}
 #else
 		DWORD waitResult = WaitForSingleObject( m_activeWorkersSemaphore, INFINITE );
 		if( waitResult != WAIT_OBJECT_0 )
@@ -226,6 +241,11 @@ private:
 	{
 #ifdef __APPLE__
 		semaphore_signal( m_activeWorkersSemaphore );
+#elif defined(__linux__)
+		if( sem_post( &m_activeWorkersSemaphore ) != 0 )
+		{
+			g_messages.AddMessage( "WorkQueue2::OnBlocked: ReleaseSemaphore m_activeWorkersSemaphore error: %d", errno );
+		}
 #else
 		if( !ReleaseSemaphore( m_activeWorkersSemaphore, 1, NULL ) )
 		{
@@ -286,6 +306,8 @@ private:
 	size_t m_activeWorkersCount;
 #ifdef __APPLE__
 	semaphore_t m_activeWorkersSemaphore;
+#elif defined(__linux__)
+	sem_t m_activeWorkersSemaphore;
 #else
 	HANDLE m_activeWorkersSemaphore;
 #endif

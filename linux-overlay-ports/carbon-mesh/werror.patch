@@ -1,0 +1,20 @@
+--- a/src/cmf/tangents.cpp
++++ b/src/cmf/tangents.cpp
+@@ -267,7 +267,5 @@
+ 				{
+ 					auto newVb = ChangeBufferVertexDeclaration( morphTarget.vb, mesh.morphTargets.decl, newVertexDeclaration, allocator, bufferManager );
+-					auto newTangents = BufferElementStream<Vector3>( newTangentElement, newVb, bufferManager );
+-					auto newBitangents = BufferElementStream<Vector3>( newBitangentElement, newVb, bufferManager );
+ 
+ 					GenerateMikkTSpaceTangents(
+ 						ConstBufferElementStream<Vector3>( *positionElement, morphTarget.vb, bufferManager ),
+--- a/src/cmf/animation.cpp
++++ b/src/cmf/animation.cpp
+@@ -531,6 +531,6 @@
+ 	{
+ 		const auto& localTransform = pose.boneTransforms[i];
+ 		const auto localMatrix = TransformationMatrix( localTransform.scale, localTransform.rotation, localTransform.position );
+-		if( pose.skeleton->parents[i] != -1 )
++		if( pose.skeleton->parents[i] != static_cast<decltype(pose.skeleton->parents[i])>(-1) )
+ 		{
+ 			outWorldTransforms[i] = localMatrix * outWorldTransforms[pose.skeleton->parents[i]];

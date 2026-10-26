@@ -180,7 +180,7 @@ void Tr2GpuSharedEmitter::SpawnParticles(
 	if( velocityStart && velocityEnd )
 	{
 		velStart = XMVector3TransformNormal( *velocityStart, arguments.parentTransform );
-		velEnd = XMVector3TransformNormal( *velocityEnd, arguments.parentTransform ) - arguments.originShift;
+		velEnd = Vector3( XMVector3TransformNormal( *velocityEnd, arguments.parentTransform ) ) - arguments.originShift;
 	}
 	else
 	{

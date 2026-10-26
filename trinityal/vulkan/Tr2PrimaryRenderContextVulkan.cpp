@@ -486,6 +486,34 @@ namespace
 			reinterpret_cast<ANativeWindow*>( window )
 		};
 		CR_RETURN_HR( Vk2Al( vkCreateAndroidSurfaceKHR( instance, &surfacecreateInfo, nullptr, &surface ) ) );
+#elif defined( VK_USE_PLATFORM_WAYLAND_KHR )
+		// The shell owns this for the SDL window's lifetime and passes its address
+		// as Tr2WindowHandle. Layout is wl_display* then wl_surface*. Trinity reads
+		// the pointers and does not free them. window == 0 is handled above.
+		struct CarbonWaylandWindow
+		{
+			struct wl_display* display;
+			struct wl_surface* surface;
+		};
+		const auto* wayland = reinterpret_cast<const CarbonWaylandWindow*>( static_cast<uintptr_t>( window ) );
+		if( !wayland || !wayland->display || !wayland->surface )
+		{
+			surface = VK_NULL_HANDLE;
+			return E_FAIL;
+		}
+		VkWaylandSurfaceCreateInfoKHR surfacecreateInfo = {
+			VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR,
+			nullptr,
+			0,
+			wayland->display,
+			wayland->surface
+		};
+		const VkResult created = vkCreateWaylandSurfaceKHR( instance, &surfacecreateInfo, nullptr, &surface );
+		if( created != VK_SUCCESS )
+		{
+			CCP_AL_LOGERR( "vkCreateWaylandSurfaceKHR failed (%d); VK_KHR_wayland_surface was rejected. Not creating an X11 surface.", int( created ) );
+			return Vk2Al( created );
+		}
 #else
 		static_assert( false, "Define swapchain creation for this platform here" );
 #endif
