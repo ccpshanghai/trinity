@@ -1,0 +1,11 @@
+diff --git a/StdAfx.h b/StdAfx.h
+--- a/StdAfx.h
++++ b/StdAfx.h
+@@ -5,6 +5,7 @@
+ #include <CcpCore.h>
+ 
+ #include <csetjmp>
+ #include <cmath>
+ #include <memory>
+ #include <limits>
++#include <cstring>

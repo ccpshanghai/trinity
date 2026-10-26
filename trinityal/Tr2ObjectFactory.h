@@ -2,6 +2,9 @@
 
 #pragma once
 
+#include <memory>
+#include <unordered_map>
+
 class Tr2PrimaryRenderContextAL;
 
 namespace TrinityALImpl

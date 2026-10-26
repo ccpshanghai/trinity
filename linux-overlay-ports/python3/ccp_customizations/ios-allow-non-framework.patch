@@ -1,0 +1,55 @@
+--- a/configure.ac
++++ b/configure.ac
+@@ -552,7 +552,6 @@
+ 	case $enableval in
+ 	no)
+ 		case $ac_sys_system in
+-			iOS) AC_MSG_ERROR([iOS builds must use --enable-framework]) ;;
+ 			*)
+ 				PYTHONFRAMEWORK=
+ 				PYTHONFRAMEWORKDIR=no-framework
+@@ -662,7 +661,6 @@
+ 		esac
+ 	],[
+ 	case $ac_sys_system in
+-		iOS) AC_MSG_ERROR([iOS builds must use --enable-framework]) ;;
+ 		*)
+ 			PYTHONFRAMEWORK=
+ 			PYTHONFRAMEWORKDIR=no-framework
+@@ -3521,8 +3519,13 @@
+ 		fi
+ 		;;
+ 	iOS/*)
+-		LDSHARED='$(CC) -dynamiclib -F . -framework $(PYTHONFRAMEWORK)'
+-		LDCXXSHARED='$(CXX) -dynamiclib -F . -framework $(PYTHONFRAMEWORK)'
++		if test "$enable_framework"; then
++			LDSHARED='$(CC) -dynamiclib -F . -framework $(PYTHONFRAMEWORK)'
++			LDCXXSHARED='$(CXX) -dynamiclib -F . -framework $(PYTHONFRAMEWORK)'
++		else
++			LDSHARED='$(CC) -dynamiclib -undefined dynamic_lookup'
++			LDCXXSHARED='$(CXX) -dynamiclib -undefined dynamic_lookup'
++		fi
+ 		BLDSHARED="$LDSHARED"
+ 		;;
+ 	Emscripten*|WASI*)
+@@ -3669,7 +3672,10 @@
+ 			fi
+ 			LINKFORSHARED="$LINKFORSHARED"
+ 		elif test $ac_sys_system = "iOS"; then
+-			LINKFORSHARED="-Wl,-stack_size,$stack_size $LINKFORSHARED "'$(PYTHONFRAMEWORKDIR)/$(PYTHONFRAMEWORK)'
++			LINKFORSHARED="-Wl,-stack_size,$stack_size $LINKFORSHARED"
++			if test "$enable_framework"; then
++				LINKFORSHARED="$LINKFORSHARED "'$(PYTHONFRAMEWORKDIR)/$(PYTHONFRAMEWORK)'
++			fi
+ 		fi
+ 		;;
+ 	OpenUNIX*|UnixWare*) LINKFORSHARED="-Wl,-Bexport";;
+@@ -6367,7 +6373,7 @@
+ fi
+ 
+ # On iOS the shared libraries must be linked with the Python framework
+-if test "$ac_sys_system" = "iOS"; then
++if test "$ac_sys_system" = "iOS" && test -n "$enable_framework"; then
+   MODULE_DEPS_SHARED="$MODULE_DEPS_SHARED \$(PYTHONFRAMEWORKDIR)/\$(PYTHONFRAMEWORK)"
+ fi
+ 

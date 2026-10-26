@@ -3,7 +3,7 @@
 #include "StdAfx.h"
 #include "include/Tr2ShaderAL.h"
 
-#include TRINITY_AL_PLATFORM_INCLUDE( Tr2ShaderAL )
+#include TRINITY_AL_PLATFORM_INCLUDE(Tr2ShaderAL)
 
 namespace
 {

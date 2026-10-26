@@ -2,7 +2,7 @@
 
 #include "StdAfx.h"
 #include "../include/Tr2SwapChainAL.h"
-#include TRINITY_AL_PLATFORM_INCLUDE( Tr2SwapChainAL )
+#include TRINITY_AL_PLATFORM_INCLUDE(Tr2SwapChainAL)
 
 namespace
 {

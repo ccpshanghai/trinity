@@ -1,0 +1,17 @@
+--- a/configure.ac
++++ b/configure.ac
+@@ -953,8 +953,12 @@
+ dnl Add the compiler flag for the iOS minimum supported OS version.
+ AS_CASE([$ac_sys_system],
+   [iOS], [
+-    AS_VAR_APPEND([CFLAGS], [" -mios-version-min=${IPHONEOS_DEPLOYMENT_TARGET}"])
+-    AS_VAR_APPEND([LDFLAGS], [" -mios-version-min=${IPHONEOS_DEPLOYMENT_TARGET}"])
++    dnl The device needs -mios-version-min; the simulator needs its own flag family,
++    dnl -mios-simulator-version-min -- configure has no simulator branch, so the portfile
++    dnl passes IOS_MIN_VERSION_FLAG for the simulator triplet (default stays device).
++    AS_IF([test -z "$IOS_MIN_VERSION_FLAG"], [IOS_MIN_VERSION_FLAG="-mios-version-min"])
++    AS_VAR_APPEND([CFLAGS], [" ${IOS_MIN_VERSION_FLAG}=${IPHONEOS_DEPLOYMENT_TARGET}"])
++    AS_VAR_APPEND([LDFLAGS], [" ${IOS_MIN_VERSION_FLAG}=${IPHONEOS_DEPLOYMENT_TARGET}"])
+   ],
+ )
+ 
