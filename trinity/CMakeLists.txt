@@ -8,10 +8,16 @@ endif()
 
 project(trinity VERSION 1.0.0)
 
-# Public headers live in Include/. Quoted includes and this file's include
-# directory say include/. Those are different directories on Linux.
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/include")
-    file(CREATE_LINK "${CMAKE_CURRENT_SOURCE_DIR}/Include" "${CMAKE_CURRENT_SOURCE_DIR}/include" SYMBOLIC)
+# Public headers live in Include/, but quoted includes say include/. Those are
+# different directories on Linux, so the build tree carries an include -> Include
+# link and every target below searches it. The source tree is left untouched.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(_trinity_case_include_root "${CMAKE_CURRENT_BINARY_DIR}/case-include")
+    if(NOT EXISTS "${_trinity_case_include_root}/include")
+        file(MAKE_DIRECTORY "${_trinity_case_include_root}")
+        file(CREATE_LINK "${CMAKE_CURRENT_SOURCE_DIR}/Include" "${_trinity_case_include_root}/include" SYMBOLIC)
+    endif()
+    include_directories("${_trinity_case_include_root}")
 endif()
 
 if(BUILD_FOR_PYTHON_2)
@@ -1927,7 +1933,7 @@ function(set_shared_trinity_properties target)
     target_include_directories(${target}
         PUBLIC
             $<TARGET_PROPERTY:PNG::PNG,INTERFACE_INCLUDE_DIRECTORIES>
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
             $<INSTALL_INTERFACE:include>
             $<TARGET_PROPERTY:PNG::PNG,INTERFACE_INCLUDE_DIRECTORIES>
         PRIVATE
