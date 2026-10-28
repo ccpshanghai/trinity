@@ -84,10 +84,16 @@ inline CodeStream& operator<<( CodeStream& os, const Endl& )
 	return os;
 }
 
+struct Symbol;
+
 struct HLSL
 {
 	ASTNode* node;
 	SymbolTable* symbolTable;
+	// Vulkan ray tracing only: the cbuffers to emit as [[vk::shader_record_ext]], i.e. as the
+	// data of the shader binding table record. Null everywhere else, which emits every cbuffer
+	// as it always was.
+	const std::set<const Symbol*>* shaderRecordCBuffers = nullptr;
 };
 
 struct MSL

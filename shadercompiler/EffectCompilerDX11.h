@@ -8,6 +8,10 @@
 // d3dcommon type, both of which macOS has through the directx-dxc port.
 #include "EffectCompilerBase.h"
 
+class ParserState;
+struct GlobalInputElement;
+struct Library;
+
 
 class EffectCompilerDX11 : public EffectCompilerBase
 {
@@ -35,7 +39,10 @@ private:
 		CComPtr<IDxcBlob> libraryReflection;
 		CComPtr<IDxcBlob> passSpirv; // -spirv object
 		CComPtr<IDxcBlob> passSpirvReflection; // DXC_OUT_REFLECTION from the DXIL sibling compile
+		CComPtr<IDxcBlob> librarySpirv; // -spirv object of a ray tracing library
 	};
+
+	bool CompileLibrarySpirv( ParserState& state, const std::vector<GlobalInputElement>& globalInputs, ID3D12LibraryReflection* reflection, const std::string& libraryName, Library& library, class IWorkQueue* workQueue );
 
 	std::unordered_map<std::string, std::shared_ptr<SyncData>> m_compiled;
 	std::mutex m_compiledCS;
