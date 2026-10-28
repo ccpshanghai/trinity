@@ -143,6 +143,186 @@ float4 MainPS( float2 uv : TEXCOORD0 ) : SV_Target
 technique T0 { pass P0 { PixelShader = compile ps_5_0 MainPS(); } }
 )";
 
+// A ray tracing library in the shape of rtshadows.fx plus rtcalculatefroxels.fx's local cbuffer:
+// a ray generation and a miss export, an acceleration structure, a UAV and a cbuffer named in the
+// globalinput, and one cbuffer that is not -- which makes it local, the shader record's data.
+const char* RT_LIBRARY_EFFECT = R"(
+RaytracingAccelerationStructure Scene;
+RWTexture2D<float4> Output;
+cbuffer PerFrame { float4 SunDirection; };
+cbuffer LocalData { float4 Tint; float4x4 Transform; float4 Weights[2]; };
+
+struct Payload { float visibility; };
+
+[shader( "raygeneration" )]
+[globalinput( "Scene;Output;PerFrame" )]
+void RayGen()
+{
+	RayDesc ray;
+	ray.Origin = mul( float4( 0, 0, 0, 1 ), Transform ).xyz;
+	ray.Direction = SunDirection.xyz;
+	ray.TMin = 0.0;
+	ray.TMax = 1000.0;
+	Payload payload;
+	payload.visibility = 0;
+	TraceRay( Scene, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, 0xFF, 0, 1, 0, ray, payload );
+	Output[DispatchRaysIndex().xy] = payload.visibility * Tint * Weights[1].x;
+}
+
+[shader( "miss" )]
+[globalinput( "Scene;Output;PerFrame" )]
+void Miss( inout Payload payload )
+{
+	payload.visibility = 1;
+}
+
+technique T0
+{
+	library L0
+	{
+		RayGenShader = compile lib_6_3 RayGen();
+		MissShader = compile lib_6_3 Miss();
+		payloadsize = 4;
+	}
+}
+)";
+
+// The same library with a second local cbuffer read by the same entry point. Vulkan gives a
+// library one local signature, whose one constant buffer is every record's data; DXC would put
+// both blocks at record offset 0.
+const char* RT_TWO_LOCAL_CBUFFERS_EFFECT = R"(
+RaytracingAccelerationStructure Scene;
+RWTexture2D<float4> Output;
+cbuffer LocalA { float4 Tint; };
+cbuffer LocalB { float4 Origin; };
+
+struct Payload { float visibility; };
+
+[shader( "raygeneration" )]
+[globalinput( "Scene;Output" )]
+void RayGen()
+{
+	RayDesc ray;
+	ray.Origin = Origin.xyz;
+	ray.Direction = float3( 0, 0, 1 );
+	ray.TMin = 0.0;
+	ray.TMax = 1000.0;
+	Payload payload;
+	payload.visibility = 0;
+	TraceRay( Scene, RAY_FLAG_NONE, 0xFF, 0, 1, 0, ray, payload );
+	Output[DispatchRaysIndex().xy] = payload.visibility * Tint;
+}
+
+[shader( "miss" )]
+[globalinput( "Scene;Output" )]
+void Miss( inout Payload payload )
+{
+	payload.visibility = 1;
+}
+
+technique T0
+{
+	library L0
+	{
+		RayGenShader = compile lib_6_3 RayGen();
+		MissShader = compile lib_6_3 Miss();
+		payloadsize = 4;
+	}
+}
+)";
+
+// Two entry points, each reading a different local cbuffer: one each per entry point, but two
+// for the library. The AL builds every group's record from the library's one local signature
+// and refuses a signature with two constant buffers, so this would compile and then switch ray
+// tracing off at run time.
+const char* RT_LOCAL_CBUFFER_PER_ENTRY_POINT_EFFECT = R"(
+RaytracingAccelerationStructure Scene;
+RWTexture2D<float4> Output;
+cbuffer RayGenData { float4 Origin; };
+cbuffer MissData { float4 Sky; };
+
+struct Payload { float4 colour; };
+
+[shader( "raygeneration" )]
+[globalinput( "Scene;Output" )]
+void RayGen()
+{
+	RayDesc ray;
+	ray.Origin = Origin.xyz;
+	ray.Direction = float3( 0, 0, 1 );
+	ray.TMin = 0.0;
+	ray.TMax = 1000.0;
+	Payload payload;
+	payload.colour = 0;
+	TraceRay( Scene, RAY_FLAG_NONE, 0xFF, 0, 1, 0, ray, payload );
+	Output[DispatchRaysIndex().xy] = payload.colour;
+}
+
+[shader( "miss" )]
+[globalinput( "Scene;Output" )]
+void Miss( inout Payload payload )
+{
+	payload.colour = Sky;
+}
+
+technique T0
+{
+	library L0
+	{
+		RayGenShader = compile lib_6_3 RayGen();
+		MissShader = compile lib_6_3 Miss();
+		payloadsize = 16;
+	}
+}
+)";
+
+// A local cbuffer whose array of floats D3D strides at 16 bytes and a shader record at 4: the
+// record would not be a byte copy of the constant buffer.
+const char* RT_PACKED_LOCAL_CBUFFER_EFFECT = R"(
+RWTexture2D<float4> Output;
+cbuffer LocalData { float Weights[4]; float4 Tint; };
+
+[shader( "raygeneration" )]
+[globalinput( "Output" )]
+void RayGen()
+{
+	Output[DispatchRaysIndex().xy] = Weights[DispatchRaysIndex().x & 3] * Tint;
+}
+
+technique T0 { library L0 { RayGenShader = compile lib_6_3 RayGen(); payloadsize = 4; } }
+)";
+
+// A local cbuffer that leaves no room for the group handle in a 4096-byte record.
+const char* RT_OVERSIZED_LOCAL_CBUFFER_EFFECT = R"(
+RWTexture2D<float4> Output;
+cbuffer LocalData { float4 Rows[256]; };
+
+[shader( "raygeneration" )]
+[globalinput( "Output" )]
+void RayGen()
+{
+	Output[DispatchRaysIndex().xy] = Rows[DispatchRaysIndex().x & 255];
+}
+
+technique T0 { library L0 { RayGenShader = compile lib_6_3 RayGen(); payloadsize = 4; } }
+)";
+
+// Valid to this compiler's parser, refused by DXC: a write to a read-only texture.
+const char* RT_DXC_ERROR_EFFECT = R"(
+Texture2D<float4> Input;
+RWTexture2D<float4> Output;
+
+[shader( "raygeneration" )]
+[globalinput( "Input;Output" )]
+void RayGen()
+{
+	Input[DispatchRaysIndex().xy] = 1;
+	Output[DispatchRaysIndex().xy] = 2;
+}
+
+technique T0 { library L0 { RayGenShader = compile lib_6_3 RayGen(); payloadsize = 4; } }
+)";
+
 EffectData CompileSpirv( const char* src )
 {
 	EffectCompilerDX11 compiler;
@@ -217,6 +397,82 @@ std::map<uint32_t, Decoration> ScanDecorations( const uint32_t* words, size_t wo
 		i += std::max<size_t>( length, 1u );
 	}
 	return byId;
+}
+
+// What the ray tracing tests read from a library's SPIR-V module.
+struct SpirvLibraryInfo
+{
+	std::map<std::string, uint32_t> entryPoints; // name -> execution model
+	std::set<uint32_t> capabilities;
+	std::map<uint32_t, std::string> names;
+	std::map<std::string, uint32_t> variableStorageClasses; // variable name -> storage class
+	std::map<uint32_t, Decoration> decorations;
+};
+
+std::string SpirvString( const uint32_t* words, size_t wordCount )
+{
+	const char* bytes = reinterpret_cast<const char*>( words );
+	return std::string( bytes, strnlen( bytes, wordCount * 4 ) );
+}
+
+SpirvLibraryInfo ReadSpirvLibrary( const Library& library )
+{
+	SpirvLibraryInfo info;
+	auto words = reinterpret_cast<const uint32_t*>( g_stringTable.GetString( library.shaderDataStr ) );
+	size_t wordCount = library.shaderSize / 4;
+	info.decorations = ScanDecorations( words, wordCount );
+	std::vector<std::pair<uint32_t, uint32_t>> variables;
+	for( size_t i = 5; i < wordCount; )
+	{
+		uint32_t opcode = words[i] & 0xFFFF;
+		uint32_t length = words[i] >> 16;
+		if( length == 0 )
+		{
+			break;
+		}
+		if( opcode == 17 ) // OpCapability
+		{
+			info.capabilities.insert( words[i + 1] );
+		}
+		else if( opcode == 15 ) // OpEntryPoint
+		{
+			info.entryPoints[SpirvString( words + i + 3, length - 3 )] = words[i + 1];
+		}
+		else if( opcode == 5 ) // OpName
+		{
+			info.names[words[i + 1]] = SpirvString( words + i + 2, length - 2 );
+		}
+		else if( opcode == 59 ) // OpVariable
+		{
+			variables.push_back( { words[i + 2], words[i + 3] } );
+		}
+		i += length;
+	}
+	for( auto& variable : variables )
+	{
+		info.variableStorageClasses[info.names[variable.first]] = variable.second;
+	}
+	return info;
+}
+
+const uint32_t SPIRV_EXECUTION_MODEL_RAY_GENERATION = 5313;
+const uint32_t SPIRV_EXECUTION_MODEL_MISS = 5317;
+const uint32_t SPIRV_CAPABILITY_RAY_QUERY = 4472;
+const uint32_t SPIRV_CAPABILITY_RAY_TRACING = 4479;
+const uint32_t SPIRV_STORAGE_CLASS_SHADER_RECORD_BUFFER = 5343;
+
+// Compiling must fail, and the messages must name every one of `expected`.
+void ExpectRefused( const char* src, std::initializer_list<const char*> expected )
+{
+	testing::internal::CaptureStdout();
+	bool compiled = TryCompileSpirv( src );
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_FALSE( compiled );
+	for( auto text : expected )
+	{
+		EXPECT_NE( output.find( text ), std::string::npos ) << "'" << text << "' not in: " << output;
+	}
 }
 
 // Every register input a stage declares must appear in the module on the set and
@@ -443,4 +699,93 @@ TEST( VulkanCompiler, ASecondResourceArrayIsRefusedRatherThanMisbound )
 	EXPECT_FALSE( compiled );
 	EXPECT_NE( output.find( "NormalMaps" ), std::string::npos ) << output;
 	EXPECT_NE( output.find( "register space 2" ), std::string::npos ) << output;
+}
+
+TEST( VulkanCompiler, ARayTracingLibraryIsOneSpirvModuleWithAnEntryPointPerExport )
+{
+	EffectData data = CompileSpirv( RT_LIBRARY_EFFECT );
+	ASSERT_EQ( data.techniques.size(), 1u );
+	ASSERT_EQ( data.techniques[0].libraries.size(), 1u );
+	auto& library = data.techniques[0].libraries[0];
+	ASSERT_GE( library.shaderSize, 20u );
+	auto words = reinterpret_cast<const uint32_t*>( g_stringTable.GetString( library.shaderDataStr ) );
+	EXPECT_EQ( words[0], 0x07230203u ) << "the library bytecode is not SPIR-V (DXIL starts with DXBC)";
+
+	auto info = ReadSpirvLibrary( library );
+	ASSERT_EQ( info.entryPoints.size(), 2u );
+	EXPECT_EQ( info.entryPoints["RayGen"], SPIRV_EXECUTION_MODEL_RAY_GENERATION );
+	EXPECT_EQ( info.entryPoints["Miss"], SPIRV_EXECUTION_MODEL_MISS );
+	EXPECT_TRUE( info.capabilities.count( SPIRV_CAPABILITY_RAY_TRACING ) );
+	// A device with ray queries and no ray tracing pipeline must not be asked for them.
+	EXPECT_FALSE( info.capabilities.count( SPIRV_CAPABILITY_RAY_QUERY ) );
+
+	// The exports are the entry points, by their HLSL names; the reflection is the DXIL's.
+	ASSERT_EQ( library.exports.size(), 2u );
+	EXPECT_STREQ( g_stringTable.GetString( library.exports[0].name ), "RayGen" );
+	EXPECT_STREQ( g_stringTable.GetString( library.exports[1].name ), "Miss" );
+	EXPECT_EQ( library.payloadSize, 4u );
+
+	// Global inputs are bound through the engine's COMPUTE_SHADER slots.
+	using namespace Tr2VulkanBindingABI;
+	std::set<std::pair<uint32_t, uint32_t>> present;
+	for( auto& d : info.decorations )
+	{
+		present.insert( { d.second.set, d.second.binding } );
+	}
+	ASSERT_FALSE( library.globalInputs.registerInputs.empty() );
+	for( auto& ri : library.globalInputs.registerInputs )
+	{
+		uint32_t expectedSet = DescriptorSetIndex( uint32_t( ri.registerType.Packed() ) );
+		uint32_t expectedBinding = BindingNumber( uint32_t( ri.registerType.Packed() ), ri.registerIndex, uint32_t( COMPUTE_STAGE ) );
+		EXPECT_TRUE( present.count( { expectedSet, expectedBinding } ) )
+			<< "register type " << int( ri.registerType.Packed() ) << " index " << ri.registerIndex
+			<< " expected set " << expectedSet << " binding " << expectedBinding;
+	}
+}
+
+TEST( VulkanCompiler, ALocalCBufferIsTheShaderRecord )
+{
+	EffectData data = CompileSpirv( RT_LIBRARY_EFFECT );
+	auto& library = data.techniques[0].libraries[0];
+	auto info = ReadSpirvLibrary( library );
+
+	ASSERT_TRUE( info.variableStorageClasses.count( "LocalData" ) );
+	EXPECT_EQ( info.variableStorageClasses["LocalData"], SPIRV_STORAGE_CLASS_SHADER_RECORD_BUFFER );
+	ASSERT_TRUE( info.variableStorageClasses.count( "PerFrame" ) );
+	EXPECT_NE( info.variableStorageClasses["PerFrame"], SPIRV_STORAGE_CLASS_SHADER_RECORD_BUFFER );
+
+	// The reflection still describes it as the library's local input, as on DX12.
+	ASSERT_EQ( library.localInputs.registerInputs.size(), 1u );
+	EXPECT_EQ( int( library.localInputs.registerInputs[0].registerType.Packed() ), int( RT_CONSTANT_BUFFER ) );
+	EXPECT_NE( library.source.find( "[[vk::shader_record_ext]]" ), std::string::npos );
+}
+
+TEST( VulkanCompiler, TwoLocalCBuffersInOneEntryPointAreRefused )
+{
+	ExpectRefused( RT_TWO_LOCAL_CBUFFERS_EFFECT, { "'T0/L0'", "'RayGen'", "'LocalA'", "'LocalB'", "one local signature" } );
+}
+
+TEST( VulkanCompiler, TwoEntryPointsReadingDifferentLocalCBuffersAreRefused )
+{
+	// The message names the library and every local cbuffer with the entry points that read it;
+	// CompileMessageQueue puts the effect's path in front.
+	ExpectRefused( RT_LOCAL_CBUFFER_PER_ENTRY_POINT_EFFECT,
+				   { "'T0/L0'", "'RayGenData' (entry point 'RayGen')", "'MissData' (entry point 'Miss')", "one local signature" } );
+}
+
+TEST( VulkanCompiler, ALocalCBufferPackedDifferentlyAsARecordIsRefused )
+{
+	ExpectRefused( RT_PACKED_LOCAL_CBUFFER_EFFECT, { "'RayGen'", "'LocalData'", "laid out differently" } );
+}
+
+TEST( VulkanCompiler, ALocalCBufferTooLargeForARecordIsRefused )
+{
+	ExpectRefused( RT_OVERSIZED_LOCAL_CBUFFER_EFFECT, { "'RayGen'", "'LocalData'", "4096 bytes" } );
+}
+
+TEST( VulkanCompiler, ADxcErrorInARayTracingLibraryIsReported )
+{
+	// IDxcCompiler3 answers S_OK with a failed status; the library's DXIL compile used to read
+	// that as success and dereference a reflection that was never produced.
+	ExpectRefused( RT_DXC_ERROR_EFFECT, { "cannot assign to return value" } );
 }
