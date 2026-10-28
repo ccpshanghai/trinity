@@ -70,14 +70,21 @@ set(_SOURCES
 )
 
 set(_TEST_SOURCES
-    tests/Bindless.cpp
-    tests/GlobalInputTest.cpp
-    tests/MetalConversionTest.cpp
-    tests/RayTracingTest.cpp
     tests/ShaderCompilerTest.cpp
     tests/TesingUtils.h
     tests/VulkanCompilerTest.cpp
 )
+# These suites compile through EffectCompilerDX12 on Windows and EffectCompilerMetal
+# everywhere else, which shells out to `xcrun metal`. Linux has neither, so it builds the
+# SPIR-V suite alone.
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND _TEST_SOURCES
+        tests/Bindless.cpp
+        tests/GlobalInputTest.cpp
+        tests/MetalConversionTest.cpp
+        tests/RayTracingTest.cpp
+    )
+endif()
 
 
 set(TELEMETRY_DEFAULT OFF)
@@ -361,7 +368,13 @@ endif()
  
 option(BUILD_TESTING "Build and run tests. Enabled by default." ON)
 message(STATUS " BUILD_TESTING VALUE IS ${BUILD_TESTING}")
-if(BUILD_TESTING)
+# A second way in, so a tree can build this suite without BUILD_TESTING's AL suites and their
+# vcpkg features: x64-linux-vulkan turns this on and BUILD_TESTING off. OFF by default and ORed
+# rather than defaulting to BUILD_TESTING, because an option keeps its first value in the cache
+# and a tree that turned BUILD_TESTING on later would lose the suite. gtest is a top-level
+# dependency of the manifest, so it is installed either way.
+option(BUILD_SHADER_COMPILER_TESTS "Build ShaderCompilerTest without BUILD_TESTING." OFF)
+if(BUILD_TESTING OR BUILD_SHADER_COMPILER_TESTS)
 
     find_package(GTest REQUIRED)
 

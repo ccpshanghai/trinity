@@ -103,6 +103,29 @@ float4 MainPS( float2 uv : TEXCOORD0 ) : SV_Target
 technique T0 { pass P0 { PixelShader = compile ps_5_0 MainPS(); } }
 )";
 
+// Thread-group memory beside ordinary globals -- createhistograms.fx's shape. CreateGlobalsCB used
+// to sweep the groupshared array into the generated `cbuffer Globals`; DXIL reserved its bytes in
+// the cbuffer and carried on, DXC's SPIR-V back end refused the first write with "cannot store to
+// Uniform Blocks", and the dynamic exposure chain had no compute shaders on Vulkan.
+const char* GROUPSHARED_BESIDE_GLOBALS_EFFECT = R"(
+float MinLuminance = 0.01;
+groupshared uint histogram[64];
+float MaxLuminance = 10.0;
+RWBuffer<uint> Output;
+
+[numthreads( 64, 1, 1 )]
+void MainCS( uint3 localIdx : SV_GroupThreadID )
+{
+	histogram[localIdx.x] = 0;
+	GroupMemoryBarrierWithGroupSync();
+	InterlockedAdd( histogram[localIdx.x], uint( MinLuminance + MaxLuminance ) );
+	GroupMemoryBarrierWithGroupSync();
+	Output[localIdx.x] = histogram[localIdx.x];
+}
+
+technique T0 { pass P0 { ComputeShader = compile cs_5_0 MainCS(); } }
+)";
+
 // Globals with HLSL initialisers, the way every EVE effect declares its tunables. Whether the
 // compiled stage carries them is the whole difference between a tonemapper with a curve and
 // one that divides zero by zero.
@@ -290,6 +313,20 @@ TEST( VulkanCompiler, AStaticConstArrayStaysOutOfTheGlobalsCbuffer )
 	// Compiling at all is the assertion: before the fix this effect was refused with DXC's
 	// "generated SPIR-V is invalid". The module is then checked for its magic like the others.
 	EffectData data = CompileSpirv( STATIC_CONST_ARRAY_EFFECT );
+	ASSERT_EQ( data.techniques.size(), 1u );
+	auto& stages = data.techniques[0].passes[0].stages;
+	ASSERT_EQ( stages.size(), 1u );
+	size_t wordCount = 0;
+	const uint32_t* words = ShaderWords( stages[0], wordCount );
+	ASSERT_GE( wordCount, 5u );
+	EXPECT_EQ( words[0], 0x07230203u );
+}
+
+TEST( VulkanCompiler, AGroupSharedArrayStaysOutOfTheGlobalsCbuffer )
+{
+	// Compiling at all is the assertion, as for the static above: before the fix DXC refused the
+	// module with "generated SPIR-V is invalid ... cannot store to Uniform Blocks".
+	EffectData data = CompileSpirv( GROUPSHARED_BESIDE_GLOBALS_EFFECT );
 	ASSERT_EQ( data.techniques.size(), 1u );
 	auto& stages = data.techniques[0].passes[0].stages;
 	ASSERT_EQ( stages.size(), 1u );

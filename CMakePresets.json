@@ -368,6 +368,7 @@
         "BUILD_DX12": "OFF",
         "BUILD_METAL": "OFF",
         "BUILD_TESTING": "OFF",
+        "BUILD_SHADER_COMPILER_TESTS": "ON",
         "CMAKE_COMPILE_WARNING_AS_ERROR": "OFF"
       }
     },

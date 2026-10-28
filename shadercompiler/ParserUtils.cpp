@@ -961,46 +961,58 @@ bool ForceVulkanRegisterSpaces( ASTNode* root, VulkanRegisterSpaceReject& reject
 	return true;
 }
 
+namespace
+{
+bool DeclaresCbuffer( ASTNode* declaration )
+{
+	for( unsigned i = 0; i < 2; ++i )
+	{
+		if( auto child = declaration->GetChildOrNull( i ) )
+		{
+			if( child->GetNodeType() == NT_CBUFFER )
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+// A top-level declaration that the generated `cbuffer Globals` takes as a member: a plain
+// global, not a cbuffer, a resource, a `static` or a `groupshared`. GetNodeOrder sorts by it
+// and CreateGlobalsCB sweeps by it, so the two cannot disagree.
+//
+// `static const` is a compile-time constant. Swept into the cbuffer it became a member with an
+// initializer, which DXIL tolerates and DXC's SPIR-V back end answers with "cbuffer member
+// initializer ignored" and then invalid SPIR-V: M6 item 9, 27 of 30 EVE effects that declare
+// one, tonemapping and shadowdepth among them (2026-09-10).
+//
+// `groupshared` is thread-group memory. Swept into the cbuffer, createhistograms'
+// `groupshared uint histogram[64]` became a uniform block member that SPIR-V refuses to store
+// to ("cannot store to Uniform Blocks"), and DXIL gave it a 16-byte row per element -- a
+// 1032-byte cbuffer for three floats (2026-10-28).
+bool IsGlobalsCbufferMember( ASTNode* declaration )
+{
+	if( declaration->GetNodeType() != NT_VAR_DECLARATION_LIST || DeclaresCbuffer( declaration ) )
+	{
+		return false;
+	}
+	const Type& type = declaration->GetType();
+	return !GetRegisterType( type ) && type.storageClass != OP_STATIC && type.storageClass != OP_GROUPSHARED;
+}
+}
+
 int GetNodeOrder( ASTNode* t )
 {
 	switch( t->GetNodeType() )
 	{
 	case NT_VAR_DECLARATION_LIST:
-		if( auto child = t->GetChildOrNull( 0 ) )
-		{
-			if( child->GetNodeType() == NT_CBUFFER )
-			{
-				return 2;
-			}
-		}
-		if( auto child = t->GetChildOrNull( 1 ) )
-		{
-			if( child->GetNodeType() == NT_CBUFFER )
-			{
-				return 2;
-			}
-		}
-		if( GetRegisterType( t->GetType() ) )
+		if( DeclaresCbuffer( t ) || GetRegisterType( t->GetType() ) )
 		{
 			return 2;
 		}
-		else if( t->GetType().storageClass == OP_STATIC )
-		{
-			// After the globals and the resources, before the functions: a `static const`
-			// global is a compile-time constant, not a constant-buffer member, and
-			// CreateGlobalsCB below sweeps a contiguous run of order-1 declarations into the
-			// generated `cbuffer Globals`. Sorted in with them, `static const float4 c[16] =
-			// {...}` became a cbuffer member with an initializer -- which DXIL tolerates and
-			// which DXC's SPIR-V back end answers with "cbuffer member initializer ignored"
-			// and then invalid SPIR-V (OpAccessChain out of bounds / non-composite type):
-			// M6 item 9's "static-const-misclassified" class, 27 of 30 EVE effects that
-			// declare one, tonemapping and shadowdepth among them (2026-09-10).
-			return 3;
-		}
-		else
-		{
-			return 1;
-		}
+		// Statics and groupshared after the globals and the resources, before the functions.
+		return IsGlobalsCbufferMember( t ) ? 1 : 3;
 	case NT_TECHNIQUE:
 		return 12;
 	case NT_FUNCTION_DEFINITION:
@@ -1117,30 +1129,10 @@ void CreateGlobalsCB( ParserState& state )
 		{
 			continue;
 		}
-		if( child->GetNodeType() == NT_VAR_DECLARATION_LIST )
+		if( IsGlobalsCbufferMember( child ) )
 		{
-			if( auto name = child->GetChildOrNull( 0 ) )
-			{
-				if( name->GetNodeType() == NT_CBUFFER )
-				{
-					continue;
-				}
-			}
-			if( auto name = child->GetChildOrNull( 1 ) )
-			{
-				if( name->GetNodeType() == NT_CBUFFER )
-				{
-					continue;
-				}
-			}
-			// Not a resource, and not `static`: statics sort after this range (GetNodeOrder),
-			// so they cannot fall inside it, but the rule is stated here too so that a
-			// reordering elsewhere cannot silently put them back into the cbuffer.
-			if( !GetRegisterType( child->GetType() ) && child->GetType().storageClass != OP_STATIC )
-			{
-				varStart = std::min( varStart, i );
-				varEnd = std::max( varEnd, i );
-			}
+			varStart = std::min( varStart, i );
+			varEnd = std::max( varEnd, i );
 		}
 	}
 	if( varStart <= varEnd )
