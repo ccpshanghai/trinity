@@ -216,8 +216,16 @@ private:
 
 	Tr2EffectPtr m_updateMieEnvironmentMap;
 
+	// FroxelPerObjectData in Fog.fxh, member for member. The 2026-COW shaders open it with
+	// the two projection matrices (CalculateFroxelsImpl.fxh unprojects with the inverse); an
+	// engine struct without them put Resolution 128 bytes early, so the froxel kernels' bounds
+	// check read matrix bits as a size and wrote past the 3D texture -- a lost device on Vulkan
+	// -- and the ray-traced kernel's shader record (this buffer's bytes) came up 128 short.
 	struct FogPerObjectData
 	{
+		Matrix ProjectionMatrix;
+		Matrix InverseProjectionMatrix;
+
 		uint32_t ResolutionX;
 		uint32_t ResolutionY;
 		uint32_t ResolutionZ;
@@ -276,6 +284,7 @@ private:
 
 		CcpMath::Sphere planets[2];
 	};
+	static_assert( sizeof( FogPerObjectData ) == 2432, "FogPerObjectData must match FroxelPerObjectData in Fog.fxh" );
 
 	void UpdatePerObjectData( FogPerObjectData * data, const Matrix& view, const Matrix& projection, const Matrix& viewLast, const Matrix& projectionLast, const Vector3d& origin, const Vector3d& originShift, const Vector3& sunDirection, const Color& sunColor, uint32_t width, uint32_t height, uint32_t depth, const Vector3& jitter, const Tr2ShadowMap* cascadedShadowMap );
 

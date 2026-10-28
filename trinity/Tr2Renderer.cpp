@@ -886,7 +886,20 @@ bool Tr2Renderer::RunComputeShader( Tr2Material* effect,
 		{
 			shader->ApplyAllStateForPass( 0, i, renderContext );
 			effect->ApplyMaterialDataForPass( 0, i, renderContext );
-			CR_RETURN_VAL( renderContext.RunComputeShader( groupDimX, groupDimY, groupDimZ ), false );
+			if( FAILED( renderContext.RunComputeShader( groupDimX, groupDimY, groupDimZ ) ) )
+			{
+				// The AL refused the dispatch (on Vulkan: the material's resource set did not
+				// build, so a parameter the shader reads is unset). Named once per material,
+				// because the AL cannot say which effect it was.
+				static std::set<const Tr2Material*> logged;
+				if( logged.insert( effect ).second )
+				{
+					const Tr2Effect* asEffect = dynamic_cast<const Tr2Effect*>( effect );
+					CCP_LOGERR( "Tr2Renderer::RunComputeShader: the dispatch failed: %s",
+								asEffect && asEffect->GetEffectPathName() ? asEffect->GetEffectPathName() : "(not a Tr2Effect)" );
+				}
+				return false;
+			}
 			result = true;
 		}
 	}
