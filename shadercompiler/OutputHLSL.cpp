@@ -31,7 +31,11 @@ struct Children
 template <typename XSL>
 XSL XSLChild( const XSL& parent, size_t childIndex )
 {
-	return XSL{ parent.node->GetChild( childIndex ), parent.symbolTable };
+	// A copy of the parent with only the node swapped, so whatever else the parent carries
+	// (HLSL::shaderRecordCBuffers) reaches every child.
+	XSL child = parent;
+	child.node = parent.node->GetChild( childIndex );
+	return child;
 }
 
 template <typename XSL>
@@ -1149,6 +1153,10 @@ CodeStream& operator<<( CodeStream& os, const HLSL& hlsl )
 		if( !HasUsedDeclarations( node ) )
 		{
 			break;
+		}
+		if( hlsl.shaderRecordCBuffers && hlsl.shaderRecordCBuffers->count( node->GetSymbol() ) )
+		{
+			os << "[[vk::shader_record_ext]]" << Endl();
 		}
 		if( node->GetToken()->type == OP_TBUFFER )
 		{
