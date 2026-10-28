@@ -349,6 +349,51 @@ public:
 	PFN_vkCmdPipelineBarrier2 m_vkCmdPipelineBarrier2;
 	PFN_vkQueueSubmit2 m_vkQueueSubmit2;
 
+	// The ray-tracing entry points, fetched with vkGetDeviceProcAddr at device creation for the
+	// same reason as the two pairs above. All null unless GetCaps().SupportsRaytracing(), and
+	// the cap is only true when every one of them resolved.
+	struct RaytracingEntryPointsVulkan
+	{
+		PFN_vkGetAccelerationStructureBuildSizesKHR getAccelerationStructureBuildSizes = nullptr;
+		PFN_vkCreateAccelerationStructureKHR createAccelerationStructure = nullptr;
+		PFN_vkDestroyAccelerationStructureKHR destroyAccelerationStructure = nullptr;
+		PFN_vkCmdBuildAccelerationStructuresKHR cmdBuildAccelerationStructures = nullptr;
+		PFN_vkGetAccelerationStructureDeviceAddressKHR getAccelerationStructureDeviceAddress = nullptr;
+		PFN_vkCreateRayTracingPipelinesKHR createRayTracingPipelines = nullptr;
+		PFN_vkGetRayTracingShaderGroupHandlesKHR getRayTracingShaderGroupHandles = nullptr;
+		PFN_vkCmdTraceRaysKHR cmdTraceRays = nullptr;
+		PFN_vkGetBufferDeviceAddress getBufferDeviceAddress = nullptr;
+
+		bool IsComplete() const
+		{
+			return getAccelerationStructureBuildSizes && createAccelerationStructure && destroyAccelerationStructure && cmdBuildAccelerationStructures && getAccelerationStructureDeviceAddress && createRayTracingPipelines && getRayTracingShaderGroupHandles && cmdTraceRays && getBufferDeviceAddress;
+		}
+	};
+	RaytracingEntryPointsVulkan m_raytracing;
+
+	// Read at device creation when ray tracing is on (zeroed, sType aside, otherwise): the
+	// shader binding table's handle size and alignments, the recursion limit, and the scratch
+	// alignment acceleration structure builds need.
+	VkPhysicalDeviceRayTracingPipelinePropertiesKHR m_rayTracingPipelineProperties = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR };
+	VkPhysicalDeviceAccelerationStructurePropertiesKHR m_accelerationStructureProperties = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR };
+
+	// Host-visible shader binding table buffers between tables. The engine builds every table
+	// again every frame (Tr2RaytracingManager, and a stack-local one per froxel-fog dispatch),
+	// so a buffer per table was a vkAllocateMemory per table per frame. A table's buffer comes
+	// back here when the table is destroyed, stamped with the recording frame, and is handed
+	// out again once GetRenderedFrameNumber has passed that frame
+	// (Tr2RtShaderTableALVulkan.cpp). Freed in Destroy, after the device is idle.
+	struct RtTableBufferVulkan
+	{
+		VkBuffer buffer = VK_NULL_HANDLE;
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		VkDeviceSize size = 0; // bytes the buffer holds
+		VkDeviceAddress address = 0; // of byte 0, unaligned
+		uint8_t* mapped = nullptr; // byte 0; mapped for the buffer's life
+		uint64_t lastUsedFrame = 0;
+	};
+	std::vector<RtTableBufferVulkan> m_rtTableBuffers;
+
 	// True when the device was created with VK_KHR_swapchain_mutable_format, which is
 	// what lets the swapchain carry an sRGB view alongside its UNORM one -- the whole
 	// mechanism behind RS_SRGBWRITEENABLE on the default back buffer. Where the
@@ -363,11 +408,16 @@ public:
 	// because texture creation records upload commands and cannot run mid-pass.
 	Tr2TextureAL m_dummyTexture;
 	VkSampler m_dummySampler;
+	// The same black texel for a Texture2DArray slot: two layers, because a one-layer
+	// texture gets a 2D view (Tr2TextureALVulkan.cpp) and an arrayed image in SPIR-V needs
+	// a 2D_ARRAY one.
+	Tr2TextureAL m_dummyTextureArray;
 
 	// The dummy's sampled view, for writers that are not friends of the texture wrapper
 	// (the shader program's default descriptor set). Defined in the .cpp because it
 	// needs the texture impl's full type.
 	VkImageView GetDummyImageViewVulkan() const;
+	VkImageView GetDummyArrayImageViewVulkan() const;
 
 	// size_t, not unsigned: the key is the size_t composite of two GetHash() results
 	// built in Tr2RenderContextVulkan.cpp's SetPipeline, so a 32-bit key truncated it

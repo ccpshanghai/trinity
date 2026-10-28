@@ -43,6 +43,13 @@ namespace TrinityALImpl
 		// slot is how it knows the buffer was locked again.
 		VkDeviceSize GetOffsetVulkan() const { return VkDeviceSize( m_slot ) * m_stride; }
 
+		// Copies the current slot's first `size` bytes (at most GetSize()) to `data`. For a
+		// ray tracing shader record, which holds a local constant buffer's bytes inline
+		// (Tr2RtShaderTableALVulkan) -- the snapshot DX12 takes with UploadConstants, taken
+		// here at table creation. Not to be called while a Lock is outstanding: the memory is
+		// mapped by Lock, and mapping it twice is invalid, not an error code.
+		ALResult ReadCurrentVulkan( void* data, uint32_t size ) const;
+
 		Tr2ALMemoryType GetMemoryClass() const;
 		void Describe( Tr2DeviceResourceDescriptionAL& description ) const;
 		ALResult SetName( const char* name );

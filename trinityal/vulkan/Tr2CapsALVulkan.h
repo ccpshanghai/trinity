@@ -13,7 +13,11 @@
 #define TRINITY_PLATFORM_SUPPORTS_RENDER_PASS_HINTS 0
 #define TRINITY_PLATFORM_IS_LOW_PERFORMACE 0
 #define TRINITY_PLATFORM_MAX_CONSTANT_BUFFER_SIZE ( 64 * 1024 )
-#define TRINITY_PLATFORM_SUPPORTS_RAY_TRACING 0
+// 1 says this backend has ray-tracing classes to compile; whether *this* device can use them
+// is SupportsRaytracing() below, decided at device creation (dx12 and metal follow the same
+// split). TrinityAL_vulkan is one library for Windows, Android and Linux, so the S23 gets the
+// classes too and is kept off them by the run-time answer alone.
+#define TRINITY_PLATFORM_SUPPORTS_RAY_TRACING 1
 #define TRINITY_PLATFORM_SUPPORTS_ASTC_TEXTURES 0
 
 
@@ -54,9 +58,15 @@ public:
 	{
 		return false;
 	}
+	// True only when the device was created with VK_KHR_acceleration_structure,
+	// VK_KHR_ray_tracing_pipeline and VK_KHR_deferred_host_operations, the
+	// accelerationStructure, rayTracingPipeline and bufferDeviceAddress features, and every
+	// ray-tracing entry point resolved -- see Tr2PrimaryRenderContextAL::CreateDevice. When
+	// false the device, its buffers and its allocations are created exactly as before ray
+	// tracing existed in this backend.
 	bool SupportsRaytracing() const
 	{
-		return false;
+		return m_supportsRaytracing;
 	}
 	// ASTC sampling, the one M3 asks about. A capability, not a platform (spec D7): the answer
 	// differs between two Metal devices, so a compile-time #if would be wrong even here.
@@ -70,9 +80,23 @@ public:
 	}
 
 private:
-	Tr2CapsAL() {}
-	Tr2CapsAL( const Tr2CapsAL& ) {}
-	Tr2CapsAL& operator=( const Tr2CapsAL& ) { return *this; }
+	Tr2CapsAL() :
+		m_supportsRaytracing( false )
+	{
+	}
+
+	Tr2CapsAL( const Tr2CapsAL& other ) :
+		m_supportsRaytracing( other.m_supportsRaytracing )
+	{
+	}
+
+	Tr2CapsAL& operator=( const Tr2CapsAL& other )
+	{
+		m_supportsRaytracing = other.m_supportsRaytracing;
+		return *this;
+	}
+
+	bool m_supportsRaytracing;
 
 	friend class Tr2PrimaryRenderContextAL;
 };

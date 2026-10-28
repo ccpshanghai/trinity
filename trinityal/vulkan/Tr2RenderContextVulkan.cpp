@@ -18,6 +18,11 @@
 #include "VkResult.h"
 #include "ALLog.h"
 #include "../include/Tr2RtTopLevelAccelerationStructureAL.h"
+#include "../include/Tr2RtPipelineStateAL.h"
+#include "../include/Tr2RtShaderTableAL.h"
+#include "Tr2RtPipelineStateALVulkan.h"
+#include "Tr2RtShaderTableALVulkan.h"
+#include <set>
 
 bool g_gatherPipelineStatistics = false;
 
@@ -1702,13 +1707,22 @@ void Tr2RenderContextAL::ResetConstantPoolVulkan()
 ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint )
 {
 	auto* program = m_pipelineSource.m_shaderProgram.m_program.get();
-	if( !program || !program->m_constantLayout || m_constantBuffers.empty() )
+	if( !program )
 	{
 		return S_OK;
 	}
-	if( m_boundConstantLayout != program->m_constantLayout )
+	return BindConstantBuffers( bindPoint, program->m_constantLayout, program->m_constantBindings, program->m_pipelineLayout );
+}
+
+ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint, VkDescriptorSetLayout constantLayout, const std::set<uint32_t>& constantBindings, VkPipelineLayout pipelineLayout )
+{
+	if( !constantLayout || m_constantBuffers.empty() )
 	{
-		m_boundConstantLayout = program->m_constantLayout;
+		return S_OK;
+	}
+	if( m_boundConstantLayout != constantLayout )
+	{
+		m_boundConstantLayout = constantLayout;
 		if( m_constantPool )
 		{
 			m_owner->DestroyLaterVulkan( m_constantPool, vkDestroyDescriptorPool );
@@ -1742,7 +1756,7 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 			nullptr,
 			m_constantPool,
 			1,
-			&program->m_constantLayout
+			&constantLayout
 		};
 		CR_RETURN_HR( Vk2Al( vkAllocateDescriptorSets( m_owner->m_device, &allocateInfo, &m_constantSet ) ) );
 		m_constantsDirty = true;
@@ -1756,7 +1770,7 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 	{
 		for( auto it = begin( m_constantBuffers ); it != end( m_constantBuffers ); ++it )
 		{
-			if( program->m_constantBindings.find( it->first ) == program->m_constantBindings.end() )
+			if( constantBindings.find( it->first ) == constantBindings.end() )
 			{
 				continue;
 			}
@@ -1781,7 +1795,7 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 			nullptr,
 			m_constantPool,
 			1,
-			&program->m_constantLayout
+			&constantLayout
 		};
 		VkDescriptorSet fresh = VK_NULL_HANDLE;
 		if( SUCCEEDED( Vk2Al( vkAllocateDescriptorSets( m_owner->m_device, &reallocateInfo, &fresh ) ) ) )
@@ -1812,7 +1826,7 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 			// whatever the caller has set, which outlives any one shader program, and
 			// writing a descriptor to a binding the layout does not have is
 			// VUID-VkWriteDescriptorSet-dstBinding-00315.
-			if( program->m_constantBindings.find( it->first ) == program->m_constantBindings.end() )
+			if( constantBindings.find( it->first ) == constantBindings.end() )
 			{
 				continue;
 			}
@@ -1846,7 +1860,7 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 	vkCmdBindDescriptorSets(
 		m_commandBuffer,
 		bindPoint,
-		program->m_pipelineLayout,
+		pipelineLayout,
 		0,
 		1,
 		&m_constantSet,
@@ -1861,6 +1875,21 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 	if( !program || !program->m_pipelineLayout || program->m_shaderInfo.empty() )
 	{
 		return E_INVALIDCALL;
+	}
+
+	const bool resourceSetBound = m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet;
+	if( program->m_resourceLayout && !resourceSetBound )
+	{
+		// The program reads set-1 resources and the caller's resource set failed to build (or
+		// was never set). Dispatching anyway reads unbound descriptors, which lost the device
+		// on the first froxel-fog frame; skipping is the failure the caller can see.
+		static bool logged = false;
+		if( !logged )
+		{
+			logged = true;
+			CCP_AL_LOGERR( "Tr2RenderContextAL::RunComputeShader: dispatch skipped, the program has resources and no resource set is bound" );
+		}
+		return E_FAIL;
 	}
 
 	// The compute pipeline is determined by the shader module and pipeline layout,
@@ -1924,7 +1953,7 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 
 	vkCmdBindPipeline( m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_computePipeline );
 
-	if( m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet && program->m_resourceLayout )
+	if( resourceSetBound && program->m_resourceLayout )
 	{
 		vkCmdBindDescriptorSets(
 			m_commandBuffer,
@@ -1943,6 +1972,79 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 	// And the other side: what this dispatch wrote is visible to whatever comes next.
 	m_owner->m_vkCmdPipelineBarrier2( m_commandBuffer, &dependencyInfo );
 
+	return S_OK;
+}
+
+ALResult Tr2RenderContextAL::DispatchRays( Tr2RtPipelineStateAL& pipeline, Tr2RtShaderTableAL& shaderTable, const wchar_t* rayGenShader, uint32_t width, uint32_t height, uint32_t depth )
+{
+	if( !m_owner || !m_owner->GetCaps().SupportsRaytracing() )
+	{
+		return E_FAIL;
+	}
+	auto* rt = pipeline.TrinityALImpl_GetObject();
+	auto* table = shaderTable.TrinityALImpl_GetObject();
+	if( !rt || !rt->IsValid() || !table || !table->IsValid() )
+	{
+		return E_INVALIDARG;
+	}
+	VkStridedDeviceAddressRegionKHR rayGen;
+	if( !table->GetRayGenRegionVulkan( rayGenShader, rayGen ) )
+	{
+		return E_INVALIDARG;
+	}
+	const VkStridedDeviceAddressRegionKHR callable = {};
+
+	// As RunComputeShader: no rendering scope, the set's images in the layouts its
+	// descriptors claim, and memory ordered on both sides -- the target UAV cleared just before
+	// (ClearUav) and read by the denoiser's draws right after.
+	EndRenderPassVulkan();
+	if( m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->NeedsTransitionVulkan() )
+	{
+		m_resourceSet.m_resourceSet->TransitionImagesVulkan( m_commandBuffer );
+	}
+	VkMemoryBarrier2 memoryBarrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+	memoryBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	memoryBarrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+	memoryBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	memoryBarrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+	VkDependencyInfo dependencyInfo = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+	dependencyInfo.memoryBarrierCount = 1;
+	dependencyInfo.pMemoryBarriers = &memoryBarrier;
+	m_owner->m_vkCmdPipelineBarrier2( m_commandBuffer, &dependencyInfo );
+
+	vkCmdBindPipeline( m_commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt->m_pipeline );
+	if( rt->m_resourceLayout )
+	{
+		// The set ApplyMaterialDataForRtState created against this pipeline. Any other set
+		// (one left bound by an earlier draw) was allocated against another layout and is not
+		// legal here.
+		if( !m_resourceSet.IsValid() || !m_resourceSet.m_resourceSet->m_descriptorSet || m_resourceSet.m_resourceSet->m_layout != rt->m_resourceLayout )
+		{
+			return E_INVALIDCALL;
+		}
+		vkCmdBindDescriptorSets( m_commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt->m_pipelineLayout, 1, 1, &m_resourceSet.m_resourceSet->m_descriptorSet, 0, nullptr );
+	}
+	FORWARD_HR( BindConstantBuffers( VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt->m_constantLayout, rt->m_constantBindings, rt->m_pipelineLayout ) );
+
+	m_owner->m_raytracing.cmdTraceRays( m_commandBuffer, &rayGen, &table->GetMissRegionVulkan(), &table->GetHitRegionVulkan(), &callable, width, height, depth );
+	// Once per pipeline: the shadow pass and the froxel fog each build their own, so each says
+	// once that it traced, and with what record stride (a local constant buffer's bytes
+	// travel inside the raygen and miss records).
+	static std::set<VkPipeline> loggedPipelines;
+	if( loggedPipelines.insert( rt->m_pipeline ).second )
+	{
+		CCP_AL_LOG( "vulkan: first DispatchRays on pipeline %p: %ux%ux%u, raygen record stride %u, %u miss (stride %u), %u hit group records",
+					(void*)rt->m_pipeline,
+					width,
+					height,
+					depth,
+					uint32_t( rayGen.stride ),
+					uint32_t( table->GetMissRegionVulkan().stride ? table->GetMissRegionVulkan().size / table->GetMissRegionVulkan().stride : 0 ),
+					uint32_t( table->GetMissRegionVulkan().stride ),
+					uint32_t( table->GetHitRegionVulkan().stride ? table->GetHitRegionVulkan().size / table->GetHitRegionVulkan().stride : 0 ) );
+	}
+
+	m_owner->m_vkCmdPipelineBarrier2( m_commandBuffer, &dependencyInfo );
 	return S_OK;
 }
 

@@ -739,27 +739,109 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	// it rather than failing device creation. Its dependencies (maintenance2,
 	// image_format_list) are core from 1.2, which every device past the two required
 	// features has.
-	bool swapChainMutableFormat = false;
+	std::vector<VkExtensionProperties> availableExtensions;
 	{
 		uint32_t extensionCount = 0;
 		vkEnumerateDeviceExtensionProperties( physicalDevice.device, nullptr, &extensionCount, nullptr );
-		std::vector<VkExtensionProperties> availableExtensions( extensionCount );
+		availableExtensions.resize( extensionCount );
 		if( extensionCount )
 		{
 			vkEnumerateDeviceExtensionProperties( physicalDevice.device, nullptr, &extensionCount, availableExtensions.data() );
 		}
+	}
+	auto hasExtension = [&availableExtensions]( const char* name ) {
 		for( auto it = begin( availableExtensions ); it != end( availableExtensions ); ++it )
 		{
-			if( strcmp( it->extensionName, VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME ) == 0 )
+			if( strcmp( it->extensionName, name ) == 0 )
 			{
-				swapChainMutableFormat = physicalDevice.properties.apiVersion >= VK_API_VERSION_1_2;
-				break;
+				return true;
 			}
 		}
-	}
+		return false;
+	};
+
+	const bool swapChainMutableFormat = hasExtension( VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME ) && physicalDevice.properties.apiVersion >= VK_API_VERSION_1_2;
 	if( swapChainMutableFormat )
 	{
 		extensions.push_back( VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME );
+	}
+
+	// Ray tracing: optional, and all or nothing. Three extensions, three features and (after
+	// vkCreateDevice) every entry point, or the cap stays false. When it is false nothing below
+	// adds an extension, a feature struct or a flag, so vkCreateDevice gets exactly the
+	// arguments it got before this backend knew about ray tracing -- that is the path the S23
+	// takes (it has acceleration_structure and ray_query but no ray_tracing_pipeline).
+	// buffer_device_address, descriptor_indexing and spirv_1_4, which the two KHR extensions
+	// depend on, are core from 1.2, hence the version floor; no extension name is needed for
+	// them.
+	//
+	// raytracingMissing is the reason the cap is false, for the one log line below; null means on.
+	// TRINITY_VULKAN_RAYTRACING=0 forces the cap off on a device that has everything, so the
+	// no-ray-tracing device can be exercised on a desktop GPU. A TRINITY_* name like the AL's
+	// other switches (TRINITY_PIPELINE_CACHE_DIR, TRINITY_SERIALIZE): it is read here, in the
+	// AL, because the app shell has no C++ path into this extension module (see
+	// PipelineCacheDirectory above) and device creation is the only place the answer is used.
+	const char* raytracingMissing = nullptr;
+	{
+		const char* forced = getenv( "TRINITY_VULKAN_RAYTRACING" );
+		if( forced && strcmp( forced, "0" ) == 0 )
+		{
+			raytracingMissing = "forced off by TRINITY_VULKAN_RAYTRACING=0";
+		}
+		else if( physicalDevice.properties.apiVersion < VK_API_VERSION_1_2 )
+		{
+			raytracingMissing = "device API version below 1.2";
+		}
+		else if( !hasExtension( VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME ) )
+		{
+			raytracingMissing = "no " VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME;
+		}
+		else if( !hasExtension( VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME ) )
+		{
+			raytracingMissing = "no " VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME;
+		}
+		else if( !hasExtension( VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME ) )
+		{
+			raytracingMissing = "no " VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME;
+		}
+	}
+	// Feature and property structs of an extension may only be chained once the device is
+	// known to have it, so both queries wait for the extension check above.
+	VkPhysicalDeviceRayTracingPipelinePropertiesKHR rayTracingPipelineProperties = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR };
+	VkPhysicalDeviceAccelerationStructurePropertiesKHR accelerationStructureProperties = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR };
+	if( !raytracingMissing )
+	{
+		VkPhysicalDeviceBufferDeviceAddressFeatures supportedBufferDeviceAddress = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES };
+		VkPhysicalDeviceAccelerationStructureFeaturesKHR supportedAccelerationStructure = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR, &supportedBufferDeviceAddress };
+		VkPhysicalDeviceRayTracingPipelineFeaturesKHR supportedRayTracingPipeline = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR, &supportedAccelerationStructure };
+		VkPhysicalDeviceFeatures2 supportedRaytracingFeatures = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &supportedRayTracingPipeline };
+		vkGetPhysicalDeviceFeatures2( physicalDevice.device, &supportedRaytracingFeatures );
+		if( !supportedAccelerationStructure.accelerationStructure )
+		{
+			raytracingMissing = "no accelerationStructure feature";
+		}
+		else if( !supportedRayTracingPipeline.rayTracingPipeline )
+		{
+			raytracingMissing = "no rayTracingPipeline feature";
+		}
+		else if( !supportedBufferDeviceAddress.bufferDeviceAddress )
+		{
+			raytracingMissing = "no bufferDeviceAddress feature";
+		}
+		else
+		{
+			rayTracingPipelineProperties.pNext = &accelerationStructureProperties;
+			VkPhysicalDeviceProperties2 properties2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &rayTracingPipelineProperties };
+			vkGetPhysicalDeviceProperties2( physicalDevice.device, &properties2 );
+			rayTracingPipelineProperties.pNext = nullptr;
+			accelerationStructureProperties.pNext = nullptr;
+		}
+	}
+	if( !raytracingMissing )
+	{
+		extensions.push_back( VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME );
+		extensions.push_back( VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME );
+		extensions.push_back( VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME );
 	}
 
 	VkPhysicalDeviceShaderDemoteToHelperInvocationFeatures enabledDemote = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES };
@@ -801,9 +883,18 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	// Tr2PipelineStatsQueryAL cannot be implemented at all without this.
 	enabledFeatures.pipelineStatisticsQuery = physicalDevice.features.pipelineStatisticsQuery;
 
+	// Chained in front of the existing features only when every ray-tracing requirement above
+	// was met; otherwise pNext is &enabledDynamicRendering, as it always was.
+	VkPhysicalDeviceBufferDeviceAddressFeatures enabledBufferDeviceAddress = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES, &enabledDynamicRendering };
+	enabledBufferDeviceAddress.bufferDeviceAddress = VK_TRUE;
+	VkPhysicalDeviceAccelerationStructureFeaturesKHR enabledAccelerationStructure = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR, &enabledBufferDeviceAddress };
+	enabledAccelerationStructure.accelerationStructure = VK_TRUE;
+	VkPhysicalDeviceRayTracingPipelineFeaturesKHR enabledRayTracingPipeline = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR, &enabledAccelerationStructure };
+	enabledRayTracingPipeline.rayTracingPipeline = VK_TRUE;
+
 	VkDeviceCreateInfo device_create_info = {
 		VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-		&enabledDynamicRendering,
+		raytracingMissing ? static_cast<const void*>( &enabledDynamicRendering ) : static_cast<const void*>( &enabledRayTracingPipeline ),
 		0,
 		uint32_t( queueCreateInfos.size() ),
 		&queueCreateInfos[0],
@@ -843,6 +934,46 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	{
 		CCP_AL_LOGERR( "dynamic rendering / synchronization2 entry points not resolvable despite the features" );
 		return E_FAIL;
+	}
+
+	// The ray-tracing entry points, through vkGetDeviceProcAddr for the reason the members give:
+	// Android's libvulkan exports no KHR prototypes, so a direct call would not even link there.
+	// A device that took the extensions and then fails to resolve one keeps the extensions (the
+	// device exists) but reports no ray tracing, so no buffer ever asks for a device address.
+	RaytracingEntryPointsVulkan raytracingEntryPoints;
+	if( !raytracingMissing )
+	{
+		raytracingEntryPoints.getAccelerationStructureBuildSizes = reinterpret_cast<PFN_vkGetAccelerationStructureBuildSizesKHR>( vkGetDeviceProcAddr( device, "vkGetAccelerationStructureBuildSizesKHR" ) );
+		raytracingEntryPoints.createAccelerationStructure = reinterpret_cast<PFN_vkCreateAccelerationStructureKHR>( vkGetDeviceProcAddr( device, "vkCreateAccelerationStructureKHR" ) );
+		raytracingEntryPoints.destroyAccelerationStructure = reinterpret_cast<PFN_vkDestroyAccelerationStructureKHR>( vkGetDeviceProcAddr( device, "vkDestroyAccelerationStructureKHR" ) );
+		raytracingEntryPoints.cmdBuildAccelerationStructures = reinterpret_cast<PFN_vkCmdBuildAccelerationStructuresKHR>( vkGetDeviceProcAddr( device, "vkCmdBuildAccelerationStructuresKHR" ) );
+		raytracingEntryPoints.getAccelerationStructureDeviceAddress = reinterpret_cast<PFN_vkGetAccelerationStructureDeviceAddressKHR>( vkGetDeviceProcAddr( device, "vkGetAccelerationStructureDeviceAddressKHR" ) );
+		raytracingEntryPoints.createRayTracingPipelines = reinterpret_cast<PFN_vkCreateRayTracingPipelinesKHR>( vkGetDeviceProcAddr( device, "vkCreateRayTracingPipelinesKHR" ) );
+		raytracingEntryPoints.getRayTracingShaderGroupHandles = reinterpret_cast<PFN_vkGetRayTracingShaderGroupHandlesKHR>( vkGetDeviceProcAddr( device, "vkGetRayTracingShaderGroupHandlesKHR" ) );
+		raytracingEntryPoints.cmdTraceRays = reinterpret_cast<PFN_vkCmdTraceRaysKHR>( vkGetDeviceProcAddr( device, "vkCmdTraceRaysKHR" ) );
+		// Core 1.2, KHR alias second, like the dynamic rendering entry points above.
+		raytracingEntryPoints.getBufferDeviceAddress = reinterpret_cast<PFN_vkGetBufferDeviceAddress>( vkGetDeviceProcAddr( device, "vkGetBufferDeviceAddress" ) );
+		if( !raytracingEntryPoints.getBufferDeviceAddress )
+		{
+			raytracingEntryPoints.getBufferDeviceAddress = reinterpret_cast<PFN_vkGetBufferDeviceAddress>( vkGetDeviceProcAddr( device, "vkGetBufferDeviceAddressKHR" ) );
+		}
+		if( !raytracingEntryPoints.IsComplete() )
+		{
+			raytracingMissing = "a ray-tracing entry point did not resolve";
+			raytracingEntryPoints = RaytracingEntryPointsVulkan();
+		}
+	}
+	if( raytracingMissing )
+	{
+		CCP_AL_LOG( "vulkan: ray tracing off (%s)", raytracingMissing );
+	}
+	else
+	{
+		CCP_AL_LOG( "vulkan: ray tracing on (shaderGroupHandleSize=%u shaderGroupBaseAlignment=%u maxRayRecursionDepth=%u minAccelerationStructureScratchOffsetAlignment=%u)",
+					rayTracingPipelineProperties.shaderGroupHandleSize,
+					rayTracingPipelineProperties.shaderGroupBaseAlignment,
+					rayTracingPipelineProperties.maxRayRecursionDepth,
+					accelerationStructureProperties.minAccelerationStructureScratchOffsetAlignment );
 	}
 
 	Tr2DisplayModeInfo actualMode = presentationParameters.mode;
@@ -926,6 +1057,12 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	m_vkCmdEndRendering = endRendering;
 	m_vkCmdPipelineBarrier2 = pipelineBarrier2;
 	m_vkQueueSubmit2 = queueSubmit2;
+	// Before anything below creates a buffer: Tr2BufferAL::Create reads the cap to decide its
+	// usage bits, and m_zeroBuffer / the dummy texture are created further down.
+	m_caps.m_supportsRaytracing = raytracingMissing == nullptr;
+	m_raytracing = raytracingEntryPoints;
+	m_rayTracingPipelineProperties = rayTracingPipelineProperties;
+	m_accelerationStructureProperties = accelerationStructureProperties;
 	// Before AssignFromSwapChainVulkan below, which reads it to decide whether the back
 	// buffer gets sRGB views.
 	m_swapChainMutableFormat = swapChainMutableFormat;
@@ -1044,6 +1181,12 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 			Tr2GpuUsage::SHADER_RESOURCE,
 			&dummyData,
 			*this );
+		Tr2SubresourceData dummyLayers[2] = { dummyData, dummyData };
+		m_dummyTextureArray.Create(
+			Tr2BitmapDimensions( Tr2RenderContextEnum::TEX_TYPE_2D, Tr2RenderContextEnum::PIXEL_FORMAT_B8G8R8A8_UNORM, 1, 1, 1, 1, 2 ),
+			Tr2GpuUsage::SHADER_RESOURCE,
+			dummyLayers,
+			*this );
 
 		VkSamplerCreateInfo dummySamplerInfo = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
 		dummySamplerInfo.magFilter = VK_FILTER_NEAREST;
@@ -1052,6 +1195,16 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		// draws a best-practices advisory per device; the dummy has one mip either way.
 		dummySamplerInfo.maxLod = VK_LOD_CLAMP_NONE;
 		vkCreateSampler( m_device, &dummySamplerInfo, nullptr, &m_dummySampler );
+
+		// Submitted here rather than with the first frame: the shell's first
+		// SetPresentParameters ends this command buffer unsubmitted and BeginFrame moves on
+		// to the next slot, so the dummies' uploads were dropped and both stayed UNDEFINED
+		// and unwritten -- unnoticed until the froxel fog sampled one
+		// (VUID-vkCmdDispatch-None-09600 on every dispatch that read it).
+		if( m_commandBufferRecording )
+		{
+			FlushAndSyncVulkan();
+		}
 	}
 
 	if( m_events )
@@ -1082,7 +1235,15 @@ void Tr2PrimaryRenderContextAL::Destroy()
 	}
 	m_pipelines.clear();
 
+	for( auto& table : m_rtTableBuffers )
+	{
+		vkDestroyBuffer( m_device, table.buffer, nullptr );
+		vkFreeMemory( m_device, table.memory, nullptr );
+	}
+	m_rtTableBuffers.clear();
+
 	m_dummyTexture = Tr2TextureAL();
+	m_dummyTextureArray = Tr2TextureAL();
 	if( m_dummySampler != VK_NULL_HANDLE )
 	{
 		vkDestroySampler( m_device, m_dummySampler, nullptr );
@@ -1186,6 +1347,10 @@ void Tr2PrimaryRenderContextAL::Destroy()
 		vkDestroyDevice( m_device, nullptr );
 		m_device = VK_NULL_HANDLE;
 	}
+	// After the device and everything destroyed with it: a pending destroy above may still
+	// call through one of these entry points.
+	m_caps.m_supportsRaytracing = false;
+	m_raytracing = RaytracingEntryPointsVulkan();
 	m_graphicsQueue = VK_NULL_HANDLE;
 	m_presentQueue = VK_NULL_HANDLE;
 	m_graphicsQueueFamilyIndex = 0xffffffffu;
@@ -1427,6 +1592,11 @@ VkImageView Tr2PrimaryRenderContextAL::GetDummyImageViewVulkan() const
 	return m_dummyTexture.IsValid()
 		? m_dummyTexture.m_texture->GetImageView( Tr2RenderContextEnum::COLOR_SPACE_LINEAR )
 		: VK_NULL_HANDLE;
+}
+
+VkImageView Tr2PrimaryRenderContextAL::GetDummyArrayImageViewVulkan() const
+{
+	return m_dummyTextureArray.IsValid() ? m_dummyTextureArray.m_texture->GetImageView( Tr2RenderContextEnum::COLOR_SPACE_LINEAR ) : VK_NULL_HANDLE;
 }
 
 ALResult Tr2PrimaryRenderContextAL::Present()

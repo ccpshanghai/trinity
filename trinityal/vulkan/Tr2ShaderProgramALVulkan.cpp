@@ -14,9 +14,9 @@
 using namespace Tr2RenderContextEnum;
 
 
-namespace
+namespace TrinityALImpl
 {
-	VkDescriptorType GetDescriptorType( Tr2ShaderRegisterAL::RegisterType registerType )
+	VkDescriptorType GetDescriptorTypeVulkan( Tr2ShaderRegisterAL::RegisterType registerType )
 	{
 		switch( registerType )
 		{
@@ -59,7 +59,10 @@ namespace
 			return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 		}
 	}
+}
 
+namespace
+{
 	// The binding-number block a register lives in -- RegisterClassOffset, and the
 	// whole binding formula with it -- now lives in Tr2ShaderBindingABIVulkan.h, so
 	// that trinityal/tests/ShaderBindingABI.cpp can derive its expected SPIR-V
@@ -179,7 +182,7 @@ namespace TrinityALImpl
 				const uint32_t arrayCount = it->arrayCount ? it->arrayCount : 1;
 				VkDescriptorSetLayoutBinding binding = {
 					Tr2VulkanBindingABI::BindingNumber( it->registerType, it->registerIndex, shaders[i].GetType() ),
-					GetDescriptorType( it->registerType ),
+					GetDescriptorTypeVulkan( it->registerType ),
 					arrayCount,
 					static_cast<VkShaderStageFlags>( info.stage ),
 					nullptr
@@ -196,7 +199,7 @@ namespace TrinityALImpl
 					resourceSetBindings.push_back( binding );
 				}
 
-				RegisterInput ri = { binding.binding, static_cast<uint32_t>( shaders[i].GetType() ), it->registerIndex, arrayCount, it->registerType };
+				RegisterInput ri = { binding.binding, static_cast<uint32_t>( shaders[i].GetType() ), it->registerIndex, arrayCount, it->registerType, binding.descriptorType, false };
 				m_registerInput.push_back( ri );
 			}
 		}

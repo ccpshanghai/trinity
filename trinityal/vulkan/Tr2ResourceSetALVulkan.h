@@ -8,6 +8,8 @@
 
 namespace TrinityALImpl
 {
+	struct Tr2RegisterInputVulkan;
+
 	class Tr2ResourceSetAL: public Tr2DeviceResourceAL<Tr2ResourceSetAL>
 	{
 	public:
@@ -15,6 +17,11 @@ namespace TrinityALImpl
 		~Tr2ResourceSetAL();
 
 		ALResult Create( const Tr2ResourceSetDescriptionAL& description, const ::Tr2ShaderProgramAL& program, Tr2PrimaryRenderContextAL& renderContext );
+		// A set against a ray-tracing pipeline's global signature: the pipeline's set-1 layout,
+		// COMPUTE_SHADER register numbering (the engine binds ray tracing globals through the
+		// compute slots), and an acceleration structure descriptor where the pipeline's SPIR-V
+		// declares one.
+		ALResult Create( const Tr2ResourceSetDescriptionAL& description, const ::Tr2RtPipelineStateAL& pipeline, Tr2PrimaryRenderContextAL& renderContext );
 		void Destroy();
 
 		bool IsValid() const;
@@ -39,6 +46,14 @@ namespace TrinityALImpl
 		void TransitionImagesVulkan( VkCommandBuffer commandBuffer );
 
 	private:
+		static bool IsSetVulkan( const Tr2ResourceSetDescriptionAL& description, const Tr2RegisterInputVulkan& input );
+		ALResult WriteSetVulkan(
+			const Tr2ResourceSetDescriptionAL& description,
+			const std::vector<Tr2RegisterInputVulkan>& registers,
+			const std::vector<VkDescriptorPoolSize>& poolSizes,
+			VkDescriptorSetLayout layout,
+			Tr2PrimaryRenderContextAL& renderContext );
+
 		Tr2PrimaryRenderContextAL *m_owner;
 
 		VkDescriptorPool m_pool;

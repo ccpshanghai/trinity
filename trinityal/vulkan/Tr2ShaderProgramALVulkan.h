@@ -14,6 +14,32 @@ class Tr2RenderContextAL;
 
 namespace TrinityALImpl
 {
+	// One binding of a set-1 (resource) or set-0 (constant) layout, as the resource set writes
+	// it. Shared by Tr2ShaderProgramAL and Tr2RtPipelineStateAL so that one write loop
+	// (Tr2ResourceSetAL::WriteSetVulkan) serves both.
+	struct Tr2RegisterInputVulkan
+	{
+		uint32_t binding;
+		uint32_t stage;
+		uint32_t registerIndex;
+		// Descriptors behind the binding: 1 for a plain register, N for `T name[N]`.
+		uint32_t arrayCount;
+
+		Tr2ShaderRegisterAL::RegisterType type;
+
+		// What the layout declared. Derived from `type` (GetDescriptorTypeVulkan), except a ray
+		// tracing pipeline's acceleration structure, which reflects as SRV_BUFFER.
+		VkDescriptorType descriptorType;
+
+		// A binding the layout declares but no shader module of the pipeline reads (a ray
+		// tracing library's global input is a superset). Left unwritten when the caller set
+		// nothing there, which Vulkan allows for a descriptor that is not statically used.
+		bool optional;
+	};
+
+	// The descriptor type a register of `registerType` takes in this backend's layouts.
+	VkDescriptorType GetDescriptorTypeVulkan( Tr2ShaderRegisterAL::RegisterType registerType );
+
 	class Tr2ShaderProgramAL : public Tr2DeviceResourceAL<Tr2ShaderProgramAL>
 	{
 	public:
@@ -68,16 +94,7 @@ namespace TrinityALImpl
 		//std::vector<VkDescriptorSetLayout> m_layouts;
 		Tr2PrimaryRenderContextAL* m_owner;
 
-		struct RegisterInput
-		{
-			uint32_t binding;
-			uint32_t stage;
-			uint32_t registerIndex;
-			// Descriptors behind the binding: 1 for a plain register, N for `T name[N]`.
-			uint32_t arrayCount;
-
-			Tr2ShaderRegisterAL::RegisterType type;
-		};
+		typedef Tr2RegisterInputVulkan RegisterInput;
 		std::vector<RegisterInput> m_registerInput;
 		Tr2RegisterMapAL m_registerMap;
 

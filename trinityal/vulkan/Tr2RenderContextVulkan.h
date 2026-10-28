@@ -7,6 +7,7 @@
 
 #include <map>
 #include <memory>
+#include <set>
 
 #include "../Tr2HalHelperStructures.h"
 #include "../Tr2RenderContextEnum.h"
@@ -190,10 +191,12 @@ public:
 		return E_NOTIMPL;
 	}
 
-	ALResult DispatchRays( Tr2RtPipelineStateAL&, Tr2RtShaderTableAL&, const wchar_t*, uint32_t, uint32_t, uint32_t )
-	{
-		return E_FAIL;
-	}
+	// vkCmdTraceRaysKHR, with the global inputs the engine bound through the compute slots
+	// (SetConstants / SetResourceSet on COMPUTE_SHADER) bound at the ray tracing bind point
+	// against the pipeline's layout. Synchronized like RunComputeShader: any open rendering
+	// scope ends, the resource set's images move to their layouts, and one global barrier on
+	// each side orders the trace against everything else.
+	ALResult DispatchRays( Tr2RtPipelineStateAL& pipeline, Tr2RtShaderTableAL& shaderTable, const wchar_t* rayGenShader, uint32_t width, uint32_t height, uint32_t depth );
 
 	ALResult SetRenderState( Tr2RenderContextEnum::RenderState state, uint32_t value ) throw( );
 	ALResult SetRenderStates( const uint32_t* stateValuePairs, uint32_t count ) throw( );
@@ -464,6 +467,9 @@ private:
 	// places that must agree, so it is one function.
 	uint32_t SrgbWriteMaskVulkan() const;
 	ALResult BindConstantBuffers( VkPipelineBindPoint bindPoint );
+	// The work of the overload above against an explicit layout: the bound shader program's
+	// for draws and dispatches, a ray tracing pipeline's for DispatchRays.
+	ALResult BindConstantBuffers( VkPipelineBindPoint bindPoint, VkDescriptorSetLayout constantLayout, const std::set<uint32_t>& constantBindings, VkPipelineLayout pipelineLayout );
 
 	// Four, matching Tr2VertexLayoutAL::m_streamRates. The two arrays are indexed by the
 	// same stream number and CreatePipeline reads them together.
