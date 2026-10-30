@@ -3009,7 +3009,11 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 					arguments[2] = L"-Qstrip_debug";
 					arguments[3] = L"-Qstrip_reflect";
 					arguments[4] = DXC_ARG_WARNINGS_ARE_ERRORS; //-WX
-					if( g_generatePDB )
+					// Under spirv this DXIL is reflection only and never ships, so neither -Zi nor
+					// its PDB: a PDB would describe code that is not in the .sm_*. -Zi changes the
+					// object, so the argument list is the old one whenever !spirv.
+					const bool dxilPdb = g_generatePDB && !compileOptions.spirv;
+					if( dxilPdb )
 					{
 						arguments[argumentsSize++] = DXC_ARG_DEBUG; //-Zi
 					}
@@ -3065,7 +3069,7 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 					// EffectData.h declares PDB::pdbBlob under _WIN32, and wcstombs_s is
 					// the CRT's. Ray tracing is a DX12 feature; nothing reaches here on
 					// macOS, where /pdb would need a different container anyway.
-					if( g_generatePDB )
+					if( g_generatePDB && !compileOptions.spirv )
 					{
 						// Get debug info and it's name.
 						CComPtr<IDxcBlob> pdbBlob;
