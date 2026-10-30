@@ -569,18 +569,29 @@ private:
 	};
 	std::map<uint32_t, ConstantBinding> m_constantBuffers;
 	bool m_constantsDirty;
-	// How many distinct constant descriptor sets one frame may use before the pool is
-	// exhausted. Reset every BeginFrame.
-	// A frame's budget of constant descriptor sets: one per SetConstants (or per Lock of a
+	// One constant descriptor pool's budget of sets: one per SetConstants (or per Lock of a
 	// bound buffer) that changes something. 64 was enough while every object read the same
 	// constants; with each object bound at its own slot the EVE scene needs a few hundred.
 	static const uint32_t CONSTANT_SETS_PER_FRAME = 1024;
-	VkDescriptorPool m_constantPool;
 
-	// The newest frame that allocated a set from m_constantPool. The pool cannot be reset
-	// until that frame has retired -- a single pool is shared by every frame in flight, so
-	// "this slot's fence has signalled" is not enough on its own.
-	uint64_t m_constantPoolLastUse;
+	// Constant descriptor pools per frame slot (Tr2PrimaryRenderContextAL::VIRTUAL_FRAMES, which
+	// a static_assert there ties to this). A frame allocates only from its own slot's pools, and
+	// BeginFrame resets that slot's pools right after waiting on the slot's fence, the one moment
+	// nothing in flight can still name a set from them (VUID-vkResetDescriptorPool-descriptorPool-00313).
+	// A slot whose pools run out gets one more, reset with the others from then on. One shared
+	// pool, reset only once every frame that used it had rendered, was never reset with frames in
+	// flight, and only survived by being thrown away and recreated on every program change.
+public:
+	static const uint32_t CONSTANT_POOL_SLOTS_VULKAN = 3;
+private:
+	struct ConstantPoolSlotVulkan
+	{
+		std::vector<VkDescriptorPool> pools;
+		size_t current = 0; // the pool new sets come from; earlier ones are full
+	};
+	ConstantPoolSlotVulkan m_constantPools[CONSTANT_POOL_SLOTS_VULKAN];
+	// A set from the current slot's pools, against `layout`.
+	ALResult AllocateConstantSetVulkan( VkDescriptorSetLayout layout, VkDescriptorSet& set );
 	VkDescriptorSet m_constantSet;
 	VkDescriptorSetLayout m_boundConstantLayout;
 
@@ -613,9 +624,10 @@ protected:
 	bool m_renderingActive;
 
 public:
-	// Recycle the frame's constant descriptor sets. Only safe once the frame's fence has
-	// been waited on, which is why the primary render context calls it from BeginFrame and
-	// nothing else calls it at all.
+	// Recycle the current frame slot's constant descriptor sets, and drop the bound one (it came
+	// from another slot's pools, which a later BeginFrame resets while this frame may be in
+	// flight). Only safe once the slot's fence has been waited on, which is why the primary
+	// render context calls it from BeginFrame and nothing else calls it at all.
 	void ResetConstantPoolVulkan();
 
 	// Force the next draw to re-begin rendering. Needed when the images the attachments

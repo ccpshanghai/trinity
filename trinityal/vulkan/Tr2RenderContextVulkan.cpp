@@ -211,11 +211,9 @@ Tr2RenderContextAL::Tr2RenderContextAL() throw( )
 	m_srgbWrite( false ),
 	m_renderingActive( false ),
 	m_commandBuffer( VK_NULL_HANDLE ),
-	m_constantPool( VK_NULL_HANDLE ),
 	m_constantSet( VK_NULL_HANDLE ),
 	m_boundConstantLayout( VK_NULL_HANDLE ),
 	m_constantsDirty( false ),
-	m_constantPoolLastUse( 0 ),
 	m_computePipeline( VK_NULL_HANDLE ),
 	m_computePipelineLayout( VK_NULL_HANDLE ),
 	m_primitiveToVertexCount( 0, 0 ),
@@ -329,10 +327,13 @@ void Tr2RenderContextAL::Destroy() throw( )
 	}
 	m_boundIndices = BoundIndexBuffer();
 
-	if( m_constantPool != VK_NULL_HANDLE )
+	for( auto& slot : m_constantPools )
 	{
-		m_owner->DestroyLaterVulkan( m_constantPool, vkDestroyDescriptorPool );
-		m_constantPool = VK_NULL_HANDLE;
+		if( m_owner )
+		{
+			m_owner->DestroyLaterVulkan( slot.pools, vkDestroyDescriptorPool );
+		}
+		slot = ConstantPoolSlotVulkan();
 	}
 	m_constantSet = VK_NULL_HANDLE;
 	m_boundConstantLayout = VK_NULL_HANDLE;
@@ -676,15 +677,11 @@ ALResult Tr2RenderContextAL::SetShaderProgram( const Tr2ShaderProgramAL& shader 
 {
 	if( !( m_pipelineSource.m_shaderProgram == shader ) )
 	{
-		// The constant descriptor set/pool belong to the old program's layout, which
-		// is destroyed when the program is released (and the driver may reuse the
-		// handle). Invalidate them so the next SetPipeline reallocates against the
-		// new program's layout rather than comparing stale layout handles.
-		if( m_constantPool )
-		{
-			m_owner->DestroyLaterVulkan( m_constantPool, vkDestroyDescriptorPool );
-			m_constantPool = VK_NULL_HANDLE;
-		}
+		// The constant descriptor set belongs to the old program's layout, which is
+		// destroyed when the program is released (and the driver may reuse the handle).
+		// Invalidate it so the next SetPipeline allocates against the new program's layout
+		// rather than comparing stale layout handles. The pools are not per layout: every
+		// constant layout holds UNIFORM_BUFFER descriptors only.
 		m_constantSet = VK_NULL_HANDLE;
 		m_boundConstantLayout = VK_NULL_HANDLE;
 		m_constantsDirty = true;
@@ -1684,25 +1681,72 @@ void Tr2RenderContextAL::EndRenderPassVulkan()
 
 void Tr2RenderContextAL::ResetConstantPoolVulkan()
 {
-	if( m_constantPool == VK_NULL_HANDLE || !m_owner )
+	if( !m_owner )
 	{
 		return;
 	}
-
-	// Waiting on this frame slot's fence proves the work from VIRTUAL_FRAMES ago is done,
-	// not that the last two frames are -- and they allocated from this same pool.
-	// vkResetDescriptorPool on a pool a live command buffer still references is
-	// VUID-vkResetDescriptorPool-descriptorPool-00313. The frame numbers added for
-	// Tr2FenceAL answer exactly this question, so ask them rather than adding a second
-	// mechanism. If the answer is no, the sets simply survive another frame.
-	if( m_owner->GetRenderedFrameNumber() < m_constantPoolLastUse )
-	{
-		return;
-	}
-
-	vkResetDescriptorPool( m_owner->m_device, m_constantPool, 0 );
+	// The bound set, whichever slot it came from, is not carried into the new frame: a set from
+	// the previous slot's pools would still be bound when BeginFrame resets those pools, with
+	// this frame possibly in flight.
 	m_constantSet = VK_NULL_HANDLE;
 	m_constantsDirty = true;
+
+	// This slot's fence has been waited on, so the frame that last allocated from its pools is
+	// complete; no other frame allocates from them.
+	ConstantPoolSlotVulkan& slot = m_constantPools[m_owner->GetFrameSlotVulkan() % CONSTANT_POOL_SLOTS_VULKAN];
+	for( auto pool : slot.pools )
+	{
+		vkResetDescriptorPool( m_owner->m_device, pool, 0 );
+	}
+	slot.current = 0;
+}
+
+ALResult Tr2RenderContextAL::AllocateConstantSetVulkan( VkDescriptorSetLayout layout, VkDescriptorSet& set )
+{
+	set = VK_NULL_HANDLE;
+	ConstantPoolSlotVulkan& slot = m_constantPools[m_owner->GetFrameSlotVulkan() % CONSTANT_POOL_SLOTS_VULKAN];
+	for( ;; )
+	{
+		const bool created = slot.current == slot.pools.size();
+		if( created )
+		{
+			// One set per SetConstants that actually changes something, so maxSets is a
+			// frame's budget rather than 1; a frame that needs more gets another pool.
+			VkDescriptorPoolSize poolSize = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, CONSTANT_SETS_PER_FRAME * 4 };
+			VkDescriptorPoolCreateInfo poolInfo = {
+				VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+				nullptr,
+				0,
+				CONSTANT_SETS_PER_FRAME,
+				1,
+				&poolSize
+			};
+			VkDescriptorPool pool = VK_NULL_HANDLE;
+			CR_RETURN_HR( Vk2Al( vkCreateDescriptorPool( m_owner->m_device, &poolInfo, nullptr, &pool ) ) );
+			slot.pools.push_back( pool );
+			if( slot.pools.size() > 1 )
+			{
+				// Once per growth, and a slot only grows: says the per-pool budget is too small.
+				CCP_AL_LOG( "vulkan: constant descriptor pools for frame slot %u: %zu (a frame used more than %u sets)", m_owner->GetFrameSlotVulkan(), slot.pools.size(), CONSTANT_SETS_PER_FRAME * uint32_t( slot.pools.size() - 1 ) );
+			}
+		}
+		VkDescriptorSetAllocateInfo allocateInfo = {
+			VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+			nullptr,
+			slot.pools[slot.current],
+			1,
+			&layout
+		};
+		const VkResult allocated = vkAllocateDescriptorSets( m_owner->m_device, &allocateInfo, &set );
+		if( ( allocated != VK_ERROR_OUT_OF_POOL_MEMORY && allocated != VK_ERROR_FRAGMENTED_POOL ) || created )
+		{
+			// An empty pool that cannot hold one set never will; no endless chain of them.
+			return Vk2Al( allocated );
+		}
+		// This pool is full for the frame; the next one (or a new one) takes over.
+		set = VK_NULL_HANDLE;
+		++slot.current;
+	}
 }
 
 ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint )
@@ -1723,44 +1767,20 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint,
 	}
 	if( m_boundConstantLayout != constantLayout )
 	{
+		// A set is only legal with its own layout; the pools serve any constant layout.
 		m_boundConstantLayout = constantLayout;
-		if( m_constantPool )
-		{
-			m_owner->DestroyLaterVulkan( m_constantPool, vkDestroyDescriptorPool );
-			m_constantPool = VK_NULL_HANDLE;
-		}
 		m_constantSet = VK_NULL_HANDLE;
 	}
 
+	// A set allocated just now is bound nowhere yet, so it is written as it is; only a set some
+	// command already bound is replaced below. Allocating a second one here as well used to
+	// spend two sets of the frame's pools on every program or layout switch.
+	bool unbound = false;
 	if( !m_constantSet )
 	{
-		if( !m_constantPool )
-		{
-			// One set per SetConstants that actually changes something, for a whole
-			// frame, so maxSets is a frame's budget rather than 1. The pool is reset in
-			// BeginFrame, after the frame fence has been waited on -- which is the only
-			// moment nothing in flight can still reference a set from it.
-			VkDescriptorPoolSize poolSize = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, CONSTANT_SETS_PER_FRAME * 4 };
-			VkDescriptorPoolCreateInfo poolInfo = {
-				VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-				nullptr,
-				0,
-				CONSTANT_SETS_PER_FRAME,
-				1,
-				&poolSize
-			};
-			CR_RETURN_HR( Vk2Al( vkCreateDescriptorPool( m_owner->m_device, &poolInfo, nullptr, &m_constantPool ) ) );
-		}
-
-		VkDescriptorSetAllocateInfo allocateInfo = {
-			VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-			nullptr,
-			m_constantPool,
-			1,
-			&constantLayout
-		};
-		CR_RETURN_HR( Vk2Al( vkAllocateDescriptorSets( m_owner->m_device, &allocateInfo, &m_constantSet ) ) );
+		CR_RETURN_HR( AllocateConstantSetVulkan( constantLayout, m_constantSet ) );
 		m_constantsDirty = true;
+		unbound = true;
 	}
 
 	// A buffer that was locked since the set was written has moved to another slot, and the
@@ -1791,29 +1811,21 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint,
 		// "destroyed or updated without UPDATE_AFTER_BIND" -- and every command recorded
 		// afterwards is rejected. Nothing reached this before, because it needs two draws
 		// with different constants in one frame, which needed depth states to get to.
-		VkDescriptorSetAllocateInfo reallocateInfo = {
-			VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-			nullptr,
-			m_constantPool,
-			1,
-			&constantLayout
-		};
-		VkDescriptorSet fresh = VK_NULL_HANDLE;
-		if( SUCCEEDED( Vk2Al( vkAllocateDescriptorSets( m_owner->m_device, &reallocateInfo, &fresh ) ) ) )
+		VkDescriptorSet fresh = unbound ? m_constantSet : VK_NULL_HANDLE;
+		if( fresh || SUCCEEDED( AllocateConstantSetVulkan( constantLayout, fresh ) ) )
 		{
 			m_constantSet = fresh;
-			m_constantPoolLastUse = m_owner->GetRecordingFrameNumber();
 		}
 		else
 		{
-			// If the pool is exhausted the old set is rewritten, which is what used to happen
-			// always. Better a validation error than a dropped draw -- and better still a
-			// line that says the budget above is too small, once.
+			// A full pool gets a successor, so this is a failed vkCreateDescriptorPool (out of
+			// memory). The old set is rewritten, which is what used to happen always. Better a
+			// validation error than a dropped draw -- and better still a line that says so, once.
 			static bool logged = false;
 			if( !logged )
 			{
 				logged = true;
-				CCP_AL_LOGERR( "constant descriptor pool exhausted (%u sets a frame); rewriting a bound set, and draws after it may read the wrong constants", CONSTANT_SETS_PER_FRAME );
+				CCP_AL_LOGERR( "constant descriptor pool could not grow (%u sets each); rewriting a bound set, and draws after it may read the wrong constants", CONSTANT_SETS_PER_FRAME );
 			}
 		}
 

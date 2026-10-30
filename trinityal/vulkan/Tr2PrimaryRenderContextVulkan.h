@@ -137,6 +137,12 @@ public:
 	// needs no callback and cannot go stale. A FlushAndSyncVulkan also advances it,
 	// because after that vkQueueWaitIdle everything submitted so far is done.
 	uint64_t GetRecordingFrameNumber() const;
+	// Which of the VIRTUAL_FRAMES slots the frame being recorded uses: what is reset when
+	// BeginFrame has waited on that slot's fence (upload memory, constant descriptor pools).
+	uint32_t GetFrameSlotVulkan() const
+	{
+		return m_frameIndex;
+	}
 	uint64_t GetRenderedFrameNumber() const;
 
 	// The device's minUniformBufferOffsetAlignment, for a constant buffer that hands out
@@ -196,6 +202,7 @@ private:
 	static const VkPipelineStageFlags2 ACQUIRE_WAIT_STAGE = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
 
 	static const uint32_t VIRTUAL_FRAMES = 3;
+	static_assert( VIRTUAL_FRAMES == CONSTANT_POOL_SLOTS_VULKAN, "one constant descriptor pool slot per frame slot" );
 	FrameData m_frameData[VIRTUAL_FRAMES];
 	uint32_t m_frameIndex;
 
