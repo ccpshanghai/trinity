@@ -1242,6 +1242,12 @@ void Tr2PrimaryRenderContextAL::Destroy()
 	}
 	m_rtTableBuffers.clear();
 
+	for( auto& layout : m_rtResourceLayouts )
+	{
+		vkDestroyDescriptorSetLayout( m_device, layout.second, nullptr );
+	}
+	m_rtResourceLayouts.clear();
+
 	m_dummyTexture = Tr2TextureAL();
 	m_dummyTextureArray = Tr2TextureAL();
 	if( m_dummySampler != VK_NULL_HANDLE )
@@ -1808,6 +1814,35 @@ ALResult Tr2PrimaryRenderContextAL::FlushAndSyncVulkan()
 	CR_RETURN_HR( Vk2Al( vkBeginCommandBuffer( m_commandBuffer, &cmd_buffer_begin_info ) ) );
 	m_commandBufferRecording = true;
 
+	return S_OK;
+}
+
+ALResult Tr2PrimaryRenderContextAL::AcquireRtResourceLayoutVulkan( std::vector<VkDescriptorSetLayoutBinding> bindings, VkDescriptorSetLayout& layout )
+{
+	layout = VK_NULL_HANDLE;
+	std::sort( bindings.begin(), bindings.end(), []( const VkDescriptorSetLayoutBinding& a, const VkDescriptorSetLayoutBinding& b ) { return a.binding < b.binding; } );
+	std::vector<uint32_t> key;
+	key.reserve( bindings.size() * 4 );
+	for( auto& binding : bindings )
+	{
+		if( binding.pImmutableSamplers )
+		{
+			// Not part of the key, and nothing on this path uses them.
+			return E_INVALIDARG;
+		}
+		key.insert( key.end(), { binding.binding, uint32_t( binding.descriptorType ), binding.descriptorCount, uint32_t( binding.stageFlags ) } );
+	}
+	auto found = m_rtResourceLayouts.find( key );
+	if( found != m_rtResourceLayouts.end() )
+	{
+		layout = found->second;
+		return S_OK;
+	}
+	VkDescriptorSetLayoutCreateInfo layoutInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+	layoutInfo.bindingCount = uint32_t( bindings.size() );
+	layoutInfo.pBindings = bindings.data();
+	CR_RETURN_HR( Vk2Al( vkCreateDescriptorSetLayout( m_device, &layoutInfo, nullptr, &layout ) ) );
+	m_rtResourceLayouts[key] = layout;
 	return S_OK;
 }
 

@@ -6,8 +6,6 @@
 #include "Tr2ResourceSetALVulkan.h"
 #include <cstring>
 #include <map>
-#include <mutex>
-#include <set>
 #include <string>
 #include "Tr2PrimaryRenderContextVulkan.h"
 #include "Tr2SamplerStateALVulkan.h"
@@ -24,19 +22,16 @@ namespace
 {
 	// A black dummy standing in for an unset texture is legal and renders, so it is easy not to
 	// notice; one line per (layout, binding) says which register of which program got one. The
-	// layout handle is the program's identity here. Bounded, so a scene creating programs
-	// without end cannot grow this forever.
+	// layout handle is the program's identity here. Bounded by LogOnceAL, so a scene creating
+	// programs without end cannot grow this forever.
 	void LogDummyTextureOnceVulkan( VkDescriptorSetLayout layout, const TrinityALImpl::Tr2RegisterInputVulkan& input )
 	{
-		static const size_t MAX_LOGGED = 256;
-		static std::mutex mutex;
-		static std::set<std::pair<VkDescriptorSetLayout, uint32_t>> logged;
+		static const char s_site = 0;
+		// Multiplying by an odd constant is a bijection, so two layouts collide only if their
+		// handles differ by a binding number's worth after it; good enough for a diagnostic.
+		if( !CCP::LogOnceAL( &s_site, uint64_t( layout ) * 0x9e3779b97f4a7c15ull + input.binding ) )
 		{
-			std::lock_guard<std::mutex> lock( mutex );
-			if( logged.size() >= MAX_LOGGED || !logged.insert( { layout, input.binding } ).second )
-			{
-				return;
-			}
+			return;
 		}
 		CCP_AL_LOGWARN( "vulkan: resource set for layout %p: nothing set for %s t%u (stage %u, binding %u); bound the black dummy",
 						(void*)layout,
@@ -223,6 +218,7 @@ namespace TrinityALImpl
 			// ray tracing pipeline is the global input's superset; see Tr2RegisterInputVulkan).
 			if( it->optional && !IsSetVulkan( description, *it ) )
 			{
+				m_unwrittenBindings.push_back( it->binding );
 				continue;
 			}
 
@@ -448,6 +444,7 @@ namespace TrinityALImpl
 		// to the texture, which is deliberate -- a descriptor naming a destroyed image is
 		// worse than keeping it alive -- but it means the set has to let go explicitly.
 		m_boundImages.clear();
+		m_unwrittenBindings.clear();
 
 		if( m_owner )
 		{
@@ -463,6 +460,22 @@ namespace TrinityALImpl
 	bool Tr2ResourceSetAL::IsValid() const
 	{
 		return m_owner != nullptr;
+	}
+
+	bool Tr2ResourceSetAL::CoversVulkan( const std::vector<Tr2RegisterInputVulkan>& registers, uint32_t& unwritten ) const
+	{
+		for( uint32_t binding : m_unwrittenBindings )
+		{
+			for( auto& input : registers )
+			{
+				if( input.binding == binding && !input.optional && input.type != Tr2ShaderRegisterAL::CONSTANT_BUFFER )
+				{
+					unwritten = binding;
+					return false;
+				}
+			}
+		}
+		return true;
 	}
 
 	bool Tr2ResourceSetAL::NeedsTransitionVulkan() const

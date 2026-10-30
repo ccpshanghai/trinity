@@ -45,6 +45,13 @@ namespace TrinityALImpl
 		bool NeedsTransitionVulkan() const;
 		void TransitionImagesVulkan( VkCommandBuffer commandBuffer );
 
+		// Whether every binding of `registers` that a module reads (not `optional`) was written.
+		// A ray tracing pipeline rebuilt with the same global input shares its set-1 layout with
+		// the old one (Tr2PrimaryRenderContextAL::AcquireRtResourceLayoutVulkan), so a set the
+		// engine keeps passes the layout check; this is the part a new library could still break.
+		// On false, `unwritten` is the first such binding.
+		bool CoversVulkan( const std::vector<Tr2RegisterInputVulkan>& registers, uint32_t& unwritten ) const;
+
 	private:
 		static bool IsSetVulkan( const Tr2ResourceSetDescriptionAL& description, const Tr2RegisterInputVulkan& input );
 		// The description's entry for element `element` of `input`'s register, or null when the
@@ -70,6 +77,9 @@ namespace TrinityALImpl
 		// a bound set across a shader program change -- SetPipeline compares this against
 		// the current program's layout and falls back to the default set on mismatch.
 		VkDescriptorSetLayout m_layout;
+
+		// Bindings WriteSetVulkan skipped because they were optional and nothing was set there.
+		std::vector<uint32_t> m_unwrittenBindings;
 
 		friend class ::Tr2RenderContextAL;
 	};

@@ -1890,15 +1890,14 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 		// lost the device on the first froxel-fog frame, or binds a set against a layout it was
 		// not allocated for; skipping is the failure the caller can see. No default set: it has
 		// nothing for a UAV or buffer slot, which nearly every compute program has.
+		// Once per program and reason: the engine names the effect (Tr2Renderer::RunComputeShader).
 		const bool anySet = m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet;
-		static bool loggedNoSet = false;
-		static bool loggedOtherLayout = false;
-		bool& logged = anySet ? loggedOtherLayout : loggedNoSet;
-		if( !logged )
+		static const char s_noSetSite = 0, s_otherLayoutSite = 0;
+		if( CCP::LogOnceAL( anySet ? &s_otherLayoutSite : &s_noSetSite, uint64_t( uintptr_t( program ) ) ) )
 		{
-			logged = true;
-			CCP_AL_LOGERR( anySet ? "Tr2RenderContextAL::RunComputeShader: dispatch skipped, the bound resource set was built for another program's layout"
-								  : "Tr2RenderContextAL::RunComputeShader: dispatch skipped, the program has resources and no resource set is bound" );
+			CCP_AL_LOGERR( anySet ? "Tr2RenderContextAL::RunComputeShader: dispatch skipped for program %p, the bound resource set was built for another program's layout"
+								  : "Tr2RenderContextAL::RunComputeShader: dispatch skipped for program %p, the program has resources and no resource set is bound",
+						   (void*)program );
 		}
 		return E_FAIL;
 	}
@@ -2009,7 +2008,31 @@ ALResult Tr2RenderContextAL::DispatchRays( Tr2RtPipelineStateAL& pipeline, Tr2Rt
 	// Checked before anything is recorded, so a refused trace leaves the command buffer alone.
 	if( rt->m_resourceLayout && !IsBindableWithVulkan( rt->m_resourceLayout ) )
 	{
+		static const char s_site = 0;
+		if( CCP::LogOnceAL( &s_site, uint64_t( rt->m_pipeline ) ) )
+		{
+			const bool anySet = m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet;
+			CCP_AL_LOGERR( anySet ? "Tr2RenderContextAL::DispatchRays: trace skipped on pipeline %p, the bound resource set was built for another layout (its global input differs from the pipeline's)"
+								  : "Tr2RenderContextAL::DispatchRays: trace skipped on pipeline %p, no resource set is bound",
+						   (void*)rt->m_pipeline );
+		}
 		return E_INVALIDCALL;
+	}
+	// The layout matches, but a set skips a binding no module of the pipeline it was written for
+	// read (Tr2ResourceSetAL::WriteSetVulkan). A pipeline rebuilt since, with a library that does
+	// read it, would trace through an unwritten descriptor.
+	if( rt->m_resourceLayout )
+	{
+		uint32_t unwritten = 0;
+		if( !m_resourceSet.m_resourceSet->CoversVulkan( rt->m_registerInput, unwritten ) )
+		{
+			static const char s_site = 0;
+			if( CCP::LogOnceAL( &s_site, uint64_t( rt->m_pipeline ) ) )
+			{
+				CCP_AL_LOGERR( "Tr2RenderContextAL::DispatchRays: trace skipped on pipeline %p, binding %u is read by the pipeline and was left unwritten in the bound resource set", (void*)rt->m_pipeline, unwritten );
+			}
+			return E_INVALIDCALL;
+		}
 	}
 
 	// As RunComputeShader: no rendering scope, the set's images in the layouts its
@@ -2041,8 +2064,8 @@ ALResult Tr2RenderContextAL::DispatchRays( Tr2RtPipelineStateAL& pipeline, Tr2Rt
 	// Once per pipeline: the shadow pass and the froxel fog each build their own, so each says
 	// once that it traced, and with what record stride (a local constant buffer's bytes
 	// travel inside the raygen and miss records).
-	static std::set<VkPipeline> loggedPipelines;
-	if( loggedPipelines.insert( rt->m_pipeline ).second )
+	static const char s_firstTraceSite = 0;
+	if( CCP::LogOnceAL( &s_firstTraceSite, uint64_t( rt->m_pipeline ) ) )
 	{
 		CCP_AL_LOG( "vulkan: first DispatchRays on pipeline %p: %ux%ux%u, raygen record stride %u, %u miss (stride %u), %u hit group records",
 					(void*)rt->m_pipeline,

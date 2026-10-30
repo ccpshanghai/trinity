@@ -76,6 +76,8 @@ private:
 	Tr2PrimaryRenderContextAL* m_owner;
 	VkPipeline m_pipeline;
 	VkPipelineLayout m_pipelineLayout;
+	// Not owned: Tr2PrimaryRenderContextAL::AcquireRtResourceLayoutVulkan's, shared with every
+	// pipeline whose global input has the same bindings.
 	VkDescriptorSetLayout m_resourceLayout;
 	VkDescriptorSetLayout m_constantLayout;
 	VkDescriptorSetLayout m_emptyLayout;

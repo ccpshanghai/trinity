@@ -412,9 +412,9 @@ ALResult Tr2RtPipelineStateAL::CreateLayouts( const Tr2ShaderSignatureAL& global
 	VkDescriptorSetLayoutCreateInfo layoutInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
 	if( !resourceBindings.empty() )
 	{
-		layoutInfo.bindingCount = uint32_t( resourceBindings.size() );
-		layoutInfo.pBindings = resourceBindings.data();
-		CR_RETURN_HR( Vk2Al( vkCreateDescriptorSetLayout( renderContext.m_device, &layoutInfo, nullptr, &m_resourceLayout ) ) );
+		// Shared by every pipeline with this global input and owned by the primary context, so
+		// the resource set the engine keeps across a rebuild stays bindable.
+		FORWARD_HR( renderContext.AcquireRtResourceLayoutVulkan( resourceBindings, m_resourceLayout ) );
 	}
 	if( !constantBindings.empty() )
 	{
@@ -465,7 +465,6 @@ void Tr2RtPipelineStateAL::Destroy()
 	{
 		m_owner->DestroyLaterVulkan( m_pipeline, vkDestroyPipeline );
 		m_owner->DestroyLaterVulkan( m_pipelineLayout, vkDestroyPipelineLayout );
-		m_owner->DestroyLaterVulkan( m_resourceLayout, vkDestroyDescriptorSetLayout );
 		m_owner->DestroyLaterVulkan( m_constantLayout, vkDestroyDescriptorSetLayout );
 		m_owner->DestroyLaterVulkan( m_emptyLayout, vkDestroyDescriptorSetLayout );
 		m_owner = nullptr;

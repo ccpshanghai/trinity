@@ -377,6 +377,16 @@ public:
 	VkPhysicalDeviceRayTracingPipelinePropertiesKHR m_rayTracingPipelineProperties = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR };
 	VkPhysicalDeviceAccelerationStructurePropertiesKHR m_accelerationStructureProperties = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR };
 
+	// The set-1 (resource) layout for a ray tracing pipeline with these bindings: one per
+	// distinct binding list, kept until the device goes, so callers must not destroy it. The
+	// engine rebuilds a pipeline whenever a library or hit group is added
+	// (Tr2RaytracingPipelineStateManager) but keeps the global resource set it created against
+	// the old one until the set's description changes (Tr2Material::ApplyMaterialDataForRtState).
+	// A fresh layout per pipeline made that set unbindable, and every DispatchRays after the
+	// rebuild was refused. Same global input, same handle: the kept set stays legal. Order of
+	// `bindings` does not matter.
+	ALResult AcquireRtResourceLayoutVulkan( std::vector<VkDescriptorSetLayoutBinding> bindings, VkDescriptorSetLayout& layout );
+
 	// Host-visible shader binding table buffers between tables. The engine builds every table
 	// again every frame (Tr2RaytracingManager, and a stack-local one per froxel-fog dispatch),
 	// so a buffer per table was a vkAllocateMemory per table per frame. A table's buffer comes
@@ -393,6 +403,13 @@ public:
 		uint64_t lastUsedFrame = 0;
 	};
 	std::vector<RtTableBufferVulkan> m_rtTableBuffers;
+
+private:
+	// AcquireRtResourceLayoutVulkan's layouts, keyed by (binding, type, count, stages) per
+	// binding in binding order. Two today: the shadow pass's and the froxel fog's.
+	std::map<std::vector<uint32_t>, VkDescriptorSetLayout> m_rtResourceLayouts;
+
+public:
 
 	// True when the device was created with VK_KHR_swapchain_mutable_format, which is
 	// what lets the swapchain carry an sRGB view alongside its UNORM one -- the whole
