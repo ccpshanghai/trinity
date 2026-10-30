@@ -6,8 +6,8 @@
 
 #include "Tr2RtPipelineStateALVulkan.h"
 #include "Tr2PrimaryRenderContextVulkan.h"
-#include "Tr2ShaderALVulkan.h"
 #include "Tr2ShaderBindingABIVulkan.h"
+#include "SpirvReflectVulkan.h"
 #include "UtilitiesVulkan.h"
 #include "../ALLog.h"
 
@@ -168,10 +168,11 @@ ALResult Tr2RtPipelineStateAL::CreateRtPipelineState( const Tr2RtPipelineStateDe
 		VkShaderModuleCreateInfo moduleInfo = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
 		moduleInfo.codeSize = shader.bytecode.size;
 		moduleInfo.pCode = reinterpret_cast<const uint32_t*>( shader.bytecode.bytecode );
-		const auto entryPoints = EnumerateSpirvEntryPointsVulkan( shader.bytecode.bytecode, shader.bytecode.size );
-		if( entryPoints.empty() )
+		// One walk gives the export stages, the bindings the module reads and its record size.
+		SpirvReflectVulkan::SpirvReflection reflection;
+		if( !SpirvReflectVulkan::ReflectSpirv( shader.bytecode.bytecode, shader.bytecode.size, reflection ) || reflection.entryPoints.empty() )
 		{
-			CCP_AL_LOGERR( "Tr2RtPipelineStateAL: a library that is not SPIR-V (%u bytes)", uint32_t( shader.bytecode.size ) );
+			CCP_AL_LOGERR( "Tr2RtPipelineStateAL: a library that is not SPIR-V this AL can read (%u bytes)", uint32_t( shader.bytecode.size ) );
 			Destroy();
 			return E_INVALIDARG;
 		}
@@ -183,8 +184,7 @@ ALResult Tr2RtPipelineStateAL::CreateRtPipelineState( const Tr2RtPipelineStateDe
 		}
 		modules.push_back( module );
 
-		auto bindings = EnumerateSpirvBindingsVulkan( shader.bytecode.bytecode, shader.bytecode.size );
-		for( auto& b : bindings )
+		for( auto& b : reflection.bindings )
 		{
 			usedBindings.insert( std::make_pair( b.set, b.binding ) );
 			if( b.accelerationStructure )
@@ -199,13 +199,13 @@ ALResult Tr2RtPipelineStateAL::CreateRtPipelineState( const Tr2RtPipelineStateDe
 			Destroy();
 			return E_INVALIDARG;
 		}
-		const uint32_t recordSize = record == NO_RECORD ? 0 : SpirvShaderRecordSizeVulkan( shader.bytecode.bytecode, shader.bytecode.size );
+		const uint32_t recordSize = record == NO_RECORD ? 0 : reflection.ShaderRecordSize();
 
 		for( auto& name : shader.names )
 		{
 			entryNames.push_back( ToUtf8( name.name ) );
-			const SpirvEntryPointVulkan* entryPoint = nullptr;
-			for( auto& candidate : entryPoints )
+			const SpirvReflectVulkan::SpirvReflection::EntryPoint* entryPoint = nullptr;
+			for( auto& candidate : reflection.entryPoints )
 			{
 				if( candidate.name == entryNames.back() )
 				{

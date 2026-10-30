@@ -5,6 +5,7 @@
 #include "EffectCompilerVulkan.h"
 #include "StringTable.h"
 #include "trinityal/vulkan/Tr2ShaderBindingABIVulkan.h"
+#include "trinityal/vulkan/SpirvReflectVulkan.h"
 
 #include <algorithm>
 #include <map>
@@ -469,90 +470,57 @@ const uint32_t* ShaderWords( const StageInput& stage, size_t& wordCount )
 	return reinterpret_cast<const uint32_t*>( bytes );
 }
 
-struct Decoration
-{
-	uint32_t set = ~0u;
-	uint32_t binding = ~0u;
-};
+using SpirvReflectVulkan::SpirvReflection;
 
-std::map<uint32_t, Decoration> ScanDecorations( const uint32_t* words, size_t wordCount )
+// The module, through the reader the AL and the compiler's record check use.
+SpirvReflection Reflect( const void* bytes, size_t size )
 {
-	std::map<uint32_t, Decoration> byId;
-	size_t i = 5;
-	while( i < wordCount )
-	{
-		uint32_t opcode = words[i] & 0xFFFF;
-		uint32_t length = words[i] >> 16;
-		if( opcode == 71 && length == 4 )
-		{
-			if( words[i + 2] == 33 )
-			{
-				byId[words[i + 1]].binding = words[i + 3];
-			}
-			if( words[i + 2] == 34 )
-			{
-				byId[words[i + 1]].set = words[i + 3];
-			}
-		}
-		i += std::max<size_t>( length, 1u );
-	}
-	return byId;
+	SpirvReflection reflection;
+	EXPECT_TRUE( SpirvReflectVulkan::ReflectSpirv( bytes, size, reflection ) ) << "not a SPIR-V module the shared reader can read";
+	return reflection;
 }
 
-// What the ray tracing tests read from a library's SPIR-V module.
-struct SpirvLibraryInfo
+SpirvReflection ReflectStage( const StageInput& stage )
 {
-	std::map<std::string, uint32_t> entryPoints; // name -> execution model
-	std::set<uint32_t> capabilities;
-	std::map<uint32_t, std::string> names;
-	std::map<std::string, uint32_t> variableStorageClasses; // variable name -> storage class
-	std::map<uint32_t, Decoration> decorations;
-};
-
-std::string SpirvString( const uint32_t* words, size_t wordCount )
-{
-	const char* bytes = reinterpret_cast<const char*>( words );
-	return std::string( bytes, strnlen( bytes, wordCount * 4 ) );
+	return Reflect( g_stringTable.GetString( stage.shaderDataStr ), stage.shaderSize );
 }
 
-SpirvLibraryInfo ReadSpirvLibrary( const Library& library )
+SpirvReflection ReflectLibrary( const Library& library )
 {
-	SpirvLibraryInfo info;
-	auto words = reinterpret_cast<const uint32_t*>( g_stringTable.GetString( library.shaderDataStr ) );
-	size_t wordCount = library.shaderSize / 4;
-	info.decorations = ScanDecorations( words, wordCount );
-	std::vector<std::pair<uint32_t, uint32_t>> variables;
-	for( size_t i = 5; i < wordCount; )
+	return Reflect( g_stringTable.GetString( library.shaderDataStr ), library.shaderSize );
+}
+
+// Entry point name -> execution model.
+std::map<std::string, uint32_t> EntryPoints( const SpirvReflection& reflection )
+{
+	std::map<std::string, uint32_t> result;
+	for( auto& entryPoint : reflection.entryPoints )
 	{
-		uint32_t opcode = words[i] & 0xFFFF;
-		uint32_t length = words[i] >> 16;
-		if( length == 0 )
-		{
-			break;
-		}
-		if( opcode == 17 ) // OpCapability
-		{
-			info.capabilities.insert( words[i + 1] );
-		}
-		else if( opcode == 15 ) // OpEntryPoint
-		{
-			info.entryPoints[SpirvString( words + i + 3, length - 3 )] = words[i + 1];
-		}
-		else if( opcode == 5 ) // OpName
-		{
-			info.names[words[i + 1]] = SpirvString( words + i + 2, length - 2 );
-		}
-		else if( opcode == 59 ) // OpVariable
-		{
-			variables.push_back( { words[i + 2], words[i + 3] } );
-		}
-		i += length;
+		result[entryPoint.name] = entryPoint.executionModel;
 	}
-	for( auto& variable : variables )
+	return result;
+}
+
+// Variable name -> storage class.
+std::map<std::string, uint32_t> StorageClasses( const SpirvReflection& reflection )
+{
+	std::map<std::string, uint32_t> result;
+	for( auto& variable : reflection.variables )
 	{
-		info.variableStorageClasses[info.names[variable.first]] = variable.second;
+		result[reflection.NameOf( variable.id )] = variable.storageClass;
 	}
-	return info;
+	return result;
+}
+
+// Every (set, binding) a variable is decorated with.
+std::set<std::pair<uint32_t, uint32_t>> BoundSlots( const SpirvReflection& reflection )
+{
+	std::set<std::pair<uint32_t, uint32_t>> result;
+	for( auto& binding : reflection.bindings )
+	{
+		result.insert( { binding.set, binding.binding } );
+	}
+	return result;
 }
 
 const uint32_t SPIRV_EXECUTION_MODEL_RAY_GENERATION = 5313;
@@ -583,18 +551,7 @@ void ExpectStageObeysTheAbi( const StageInput& stage )
 	using namespace Tr2VulkanBindingABI;
 
 	uint32_t shaderType = uint32_t( stage.type );
-	size_t wordCount = 0;
-	const uint32_t* words = ShaderWords( stage, wordCount );
-	auto decorations = ScanDecorations( words, wordCount );
-
-	std::set<std::pair<uint32_t, uint32_t>> present;
-	for( auto& d : decorations )
-	{
-		if( d.second.set != ~0u && d.second.binding != ~0u )
-		{
-			present.insert( { d.second.set, d.second.binding } );
-		}
-	}
+	auto present = BoundSlots( ReflectStage( stage ) );
 
 	for( auto& ri : stage.registerInputs )
 	{
@@ -811,13 +768,14 @@ TEST( VulkanCompiler, ARayTracingLibraryIsOneSpirvModuleWithAnEntryPointPerExpor
 	auto words = reinterpret_cast<const uint32_t*>( g_stringTable.GetString( library.shaderDataStr ) );
 	EXPECT_EQ( words[0], 0x07230203u ) << "the library bytecode is not SPIR-V (DXIL starts with DXBC)";
 
-	auto info = ReadSpirvLibrary( library );
-	ASSERT_EQ( info.entryPoints.size(), 2u );
-	EXPECT_EQ( info.entryPoints["RayGen"], SPIRV_EXECUTION_MODEL_RAY_GENERATION );
-	EXPECT_EQ( info.entryPoints["Miss"], SPIRV_EXECUTION_MODEL_MISS );
-	EXPECT_TRUE( info.capabilities.count( SPIRV_CAPABILITY_RAY_TRACING ) );
+	auto reflection = ReflectLibrary( library );
+	auto entryPoints = EntryPoints( reflection );
+	ASSERT_EQ( entryPoints.size(), 2u );
+	EXPECT_EQ( entryPoints["RayGen"], SPIRV_EXECUTION_MODEL_RAY_GENERATION );
+	EXPECT_EQ( entryPoints["Miss"], SPIRV_EXECUTION_MODEL_MISS );
+	EXPECT_TRUE( reflection.capabilities.count( SPIRV_CAPABILITY_RAY_TRACING ) );
 	// A device with ray queries and no ray tracing pipeline must not be asked for them.
-	EXPECT_FALSE( info.capabilities.count( SPIRV_CAPABILITY_RAY_QUERY ) );
+	EXPECT_FALSE( reflection.capabilities.count( SPIRV_CAPABILITY_RAY_QUERY ) );
 
 	// The exports are the entry points, by their HLSL names; the reflection is the DXIL's.
 	ASSERT_EQ( library.exports.size(), 2u );
@@ -827,11 +785,7 @@ TEST( VulkanCompiler, ARayTracingLibraryIsOneSpirvModuleWithAnEntryPointPerExpor
 
 	// Global inputs are bound through the engine's COMPUTE_SHADER slots.
 	using namespace Tr2VulkanBindingABI;
-	std::set<std::pair<uint32_t, uint32_t>> present;
-	for( auto& d : info.decorations )
-	{
-		present.insert( { d.second.set, d.second.binding } );
-	}
+	auto present = BoundSlots( reflection );
 	ASSERT_FALSE( library.globalInputs.registerInputs.empty() );
 	for( auto& ri : library.globalInputs.registerInputs )
 	{
@@ -847,12 +801,12 @@ TEST( VulkanCompiler, ALocalCBufferIsTheShaderRecord )
 {
 	EffectData data = CompileSpirv( RT_LIBRARY_EFFECT );
 	auto& library = data.techniques[0].libraries[0];
-	auto info = ReadSpirvLibrary( library );
+	auto storageClasses = StorageClasses( ReflectLibrary( library ) );
 
-	ASSERT_TRUE( info.variableStorageClasses.count( "LocalData" ) );
-	EXPECT_EQ( info.variableStorageClasses["LocalData"], SPIRV_STORAGE_CLASS_SHADER_RECORD_BUFFER );
-	ASSERT_TRUE( info.variableStorageClasses.count( "PerFrame" ) );
-	EXPECT_NE( info.variableStorageClasses["PerFrame"], SPIRV_STORAGE_CLASS_SHADER_RECORD_BUFFER );
+	ASSERT_TRUE( storageClasses.count( "LocalData" ) );
+	EXPECT_EQ( storageClasses["LocalData"], SPIRV_STORAGE_CLASS_SHADER_RECORD_BUFFER );
+	ASSERT_TRUE( storageClasses.count( "PerFrame" ) );
+	EXPECT_NE( storageClasses["PerFrame"], SPIRV_STORAGE_CLASS_SHADER_RECORD_BUFFER );
 
 	// The reflection still describes it as the library's local input, as on DX12.
 	ASSERT_EQ( library.localInputs.registerInputs.size(), 1u );
@@ -899,9 +853,9 @@ TEST( VulkanCompiler, BothMatrixPackingsInALocalCBufferAreTheSameBytesAsARecord 
 	EffectData data = CompileSpirv( RT_MATRIX_LOCAL_CBUFFER_EFFECT );
 	ASSERT_EQ( data.techniques.size(), 1u );
 	ASSERT_EQ( data.techniques[0].libraries.size(), 1u );
-	auto info = ReadSpirvLibrary( data.techniques[0].libraries[0] );
-	ASSERT_TRUE( info.variableStorageClasses.count( "LocalData" ) );
-	EXPECT_EQ( info.variableStorageClasses["LocalData"], SPIRV_STORAGE_CLASS_SHADER_RECORD_BUFFER );
+	auto storageClasses = StorageClasses( ReflectLibrary( data.techniques[0].libraries[0] ) );
+	ASSERT_TRUE( storageClasses.count( "LocalData" ) );
+	EXPECT_EQ( storageClasses["LocalData"], SPIRV_STORAGE_CLASS_SHADER_RECORD_BUFFER );
 }
 
 TEST( VulkanCompiler, AMatrixWhosePaddingDiffersInARecordIsRefusedByName )
@@ -915,11 +869,11 @@ TEST( VulkanCompiler, ATbufferIsNeverTheShaderRecord )
 	EffectData data = CompileSpirv( RT_TBUFFER_EFFECT );
 	ASSERT_EQ( data.techniques[0].libraries.size(), 1u );
 	auto& library = data.techniques[0].libraries[0];
-	auto info = ReadSpirvLibrary( library );
+	auto storageClasses = StorageClasses( ReflectLibrary( library ) );
 
-	ASSERT_TRUE( info.variableStorageClasses.count( "LocalData" ) );
-	EXPECT_EQ( info.variableStorageClasses["LocalData"], SPIRV_STORAGE_CLASS_SHADER_RECORD_BUFFER );
-	for( auto& variable : info.variableStorageClasses )
+	ASSERT_TRUE( storageClasses.count( "LocalData" ) );
+	EXPECT_EQ( storageClasses["LocalData"], SPIRV_STORAGE_CLASS_SHADER_RECORD_BUFFER );
+	for( auto& variable : storageClasses )
 	{
 		if( variable.first != "LocalData" )
 		{
@@ -983,4 +937,224 @@ TEST( VulkanCompiler, ARayGenLibraryThatFailsStillFailsTheEffect )
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_FALSE( compiled );
 	EXPECT_EQ( output.find( "dropped" ), std::string::npos ) << output;
+}
+
+// SpirvReflectVulkan.h: the one SPIR-V reader the AL, the compiler's record check and these tests
+// share. Its modules come from DXC through the compiler, as the AL gets them.
+namespace
+{
+// A record with an array of float4s (ArrayStride 16 on both sides) and a float after it.
+const char* RT_ARRAY_LOCAL_CBUFFER_EFFECT = R"(
+RWTexture2D<float4> Output;
+cbuffer LocalData { float4 Rows[3]; float Last; };
+
+[shader( "raygeneration" )]
+[globalinput( "Output" )]
+void RayGen()
+{
+	Output[DispatchRaysIndex().xy] = Rows[DispatchRaysIndex().x % 3] * Last;
+}
+
+technique T0 { library L0 { RayGenShader = compile lib_6_3 RayGen(); payloadsize = 4; } }
+)";
+
+std::vector<uint32_t> ScalarOffsets( const SpirvReflection::ShaderRecordBlock& record )
+{
+	std::vector<uint32_t> offsets;
+	for( auto& slot : record.scalars )
+	{
+		offsets.push_back( slot.offset );
+	}
+	return offsets;
+}
+}
+
+TEST( SpirvReflectVulkan, ALibrarysEntryPointsAccelerationStructureAndRecord )
+{
+	EffectData data = CompileSpirv( RT_LIBRARY_EFFECT );
+	ASSERT_EQ( data.techniques[0].libraries.size(), 1u );
+	auto reflection = ReflectLibrary( data.techniques[0].libraries[0] );
+
+	ASSERT_EQ( reflection.entryPoints.size(), 2u );
+	auto entryPoints = EntryPoints( reflection );
+	EXPECT_EQ( entryPoints["RayGen"], SPIRV_EXECUTION_MODEL_RAY_GENERATION );
+	EXPECT_EQ( entryPoints["Miss"], SPIRV_EXECUTION_MODEL_MISS );
+
+	// Exactly one acceleration structure binding, and it is Scene: the reflection calls it an
+	// SRV_BUFFER, the module knows better.
+	std::vector<std::string> accelerationStructures;
+	for( auto& binding : reflection.bindings )
+	{
+		if( binding.accelerationStructure )
+		{
+			accelerationStructures.push_back( reflection.NameOf( binding.variable ) );
+			EXPECT_EQ( binding.set, uint32_t( Tr2VulkanBindingABI::DESCRIPTOR_SET_RESOURCES ) );
+		}
+	}
+	ASSERT_EQ( accelerationStructures.size(), 1u );
+	EXPECT_EQ( accelerationStructures[0], "Scene" );
+
+	// One record, LocalData { float4 Tint; float4x4 Transform; float4 Weights[2]; }: 112 bytes,
+	// 28 scalars. The column_major matrix is walked by HLSL row: its first row is one scalar from
+	// each of the four 16-byte columns.
+	ASSERT_EQ( reflection.shaderRecords.size(), 1u );
+	auto& record = reflection.shaderRecords[0];
+	EXPECT_EQ( reflection.NameOf( record.variable ), "LocalData" );
+	EXPECT_TRUE( record.laidOut );
+	EXPECT_EQ( record.size, 112u );
+	EXPECT_EQ( reflection.ShaderRecordSize(), 112u );
+	auto offsets = ScalarOffsets( record );
+	ASSERT_EQ( offsets.size(), 28u );
+	EXPECT_EQ( std::vector<uint32_t>( offsets.begin(), offsets.begin() + 9 ), ( std::vector<uint32_t>{ 0, 4, 8, 12, 16, 32, 48, 64, 20 } ) );
+	EXPECT_EQ( offsets[20], 80u ); // Weights[0]
+	EXPECT_EQ( offsets[24], 96u ); // Weights[1]: ArrayStride 16
+	for( auto& slot : record.scalars )
+	{
+		EXPECT_EQ( slot.size, 4u );
+	}
+	// Which entry point reads it: the interface lists the record's variable.
+	for( auto& entryPoint : reflection.entryPoints )
+	{
+		const bool readsRecord = std::find( entryPoint.interfaceIds.begin(), entryPoint.interfaceIds.end(), record.variable ) != entryPoint.interfaceIds.end();
+		EXPECT_EQ( readsRecord, entryPoint.name == "RayGen" ) << entryPoint.name;
+	}
+}
+
+TEST( SpirvReflectVulkan, BothMatrixPackingsAreWalkedByHlslRow )
+{
+	// float4x3 ColumnMajor (three 16-byte columns), row_major float3x4 RowMajor (three 16-byte
+	// rows) at 48, float4 Tail at 96.
+	EffectData data = CompileSpirv( RT_MATRIX_LOCAL_CBUFFER_EFFECT );
+	auto reflection = ReflectLibrary( data.techniques[0].libraries[0] );
+	ASSERT_EQ( reflection.shaderRecords.size(), 1u );
+	auto& record = reflection.shaderRecords[0];
+	EXPECT_TRUE( record.laidOut );
+	EXPECT_EQ( record.size, 112u );
+	auto offsets = ScalarOffsets( record );
+	ASSERT_EQ( offsets.size(), 28u );
+	EXPECT_EQ( std::vector<uint32_t>( offsets.begin(), offsets.begin() + 4 ), ( std::vector<uint32_t>{ 0, 16, 32, 4 } ) );
+	EXPECT_EQ( std::vector<uint32_t>( offsets.begin() + 12, offsets.begin() + 17 ), ( std::vector<uint32_t>{ 48, 52, 56, 60, 64 } ) );
+	EXPECT_EQ( offsets[24], 96u );
+}
+
+TEST( SpirvReflectVulkan, AnArrayInARecordUsesItsArrayStride )
+{
+	EffectData data = CompileSpirv( RT_ARRAY_LOCAL_CBUFFER_EFFECT );
+	auto reflection = ReflectLibrary( data.techniques[0].libraries[0] );
+	ASSERT_EQ( reflection.shaderRecords.size(), 1u );
+	auto& record = reflection.shaderRecords[0];
+	EXPECT_TRUE( record.laidOut );
+	EXPECT_EQ( record.size, 52u );
+	auto offsets = ScalarOffsets( record );
+	ASSERT_EQ( offsets.size(), 13u );
+	EXPECT_EQ( offsets[4], 16u );
+	EXPECT_EQ( offsets[8], 32u );
+	EXPECT_EQ( offsets[12], 48u );
+}
+
+TEST( SpirvReflectVulkan, APassShaderHasOneEntryPointPerStageAndNoRecord )
+{
+	EffectData data = CompileSpirv( SIMPLE_EFFECT );
+	auto& stages = data.techniques[0].passes[0].stages;
+	ASSERT_EQ( stages.size(), 2u );
+	auto vertex = ReflectStage( stages[0] );
+	auto pixel = ReflectStage( stages[1] );
+	ASSERT_EQ( vertex.entryPoints.size(), 1u );
+	ASSERT_EQ( pixel.entryPoints.size(), 1u );
+	EXPECT_EQ( vertex.entryPoints[0].executionModel, 0u ); // Vertex
+	EXPECT_EQ( pixel.entryPoints[0].executionModel, 4u ); // Fragment
+	// Named after the HLSL function as the compiler's patching left it (_new_symbol_NNNN), which
+	// is the name the AL hands vkCreateGraphicsPipelines.
+	EXPECT_FALSE( vertex.entryPoints[0].name.empty() );
+	EXPECT_FALSE( pixel.entryPoints[0].name.empty() );
+	EXPECT_TRUE( vertex.shaderRecords.empty() );
+	EXPECT_EQ( vertex.ShaderRecordSize(), 0u );
+	EXPECT_FALSE( pixel.bindings.empty() );
+	for( auto& binding : pixel.bindings )
+	{
+		EXPECT_FALSE( binding.accelerationStructure );
+	}
+}
+
+TEST( SpirvReflectVulkan, AModuleItCannotReadIsRefused )
+{
+	EffectData data = CompileSpirv( SIMPLE_EFFECT );
+	auto& stage = data.techniques[0].passes[0].stages[1];
+	const char* bytes = g_stringTable.GetString( stage.shaderDataStr );
+	std::vector<uint32_t> words( stage.shaderSize / 4 );
+	memcpy( words.data(), bytes, words.size() * 4 );
+	SpirvReflection reflection;
+
+	EXPECT_FALSE( SpirvReflectVulkan::ReflectSpirv( nullptr, 64, reflection ) );
+	EXPECT_FALSE( SpirvReflectVulkan::ReflectSpirv( words.data(), 5 * 4, reflection ) ) << "a header and nothing else";
+	EXPECT_FALSE( SpirvReflectVulkan::ReflectSpirv( words.data(), words.size() * 4 - 2, reflection ) ) << "not a whole number of words";
+
+	auto wrongMagic = words;
+	wrongMagic[0] = 0x03022307u; // byte-reversed
+	EXPECT_FALSE( SpirvReflectVulkan::ReflectSpirv( wrongMagic.data(), wrongMagic.size() * 4, reflection ) );
+
+	// An instruction that claims to run past the end: refused, with what came before kept.
+	ASSERT_GT( words.size(), 6u );
+	auto truncated = words;
+	const size_t last = truncated.size() - 1; // OpFunctionEnd, one word
+	truncated[last] = ( truncated[last] & 0xffffu ) | ( 0x7fffu << 16 );
+	EXPECT_FALSE( SpirvReflectVulkan::ReflectSpirv( truncated.data(), truncated.size() * 4, reflection ) );
+	auto zeroLength = words;
+	zeroLength[5] = 0;
+	EXPECT_FALSE( SpirvReflectVulkan::ReflectSpirv( zeroLength.data(), zeroLength.size() * 4, reflection ) );
+	EXPECT_TRUE( reflection.entryPoints.empty() );
+
+	EXPECT_TRUE( SpirvReflectVulkan::ReflectSpirv( words.data(), words.size() * 4, reflection ) );
+	EXPECT_EQ( reflection.entryPoints.size(), 1u );
+}
+
+// Shader records whose types a corrupt module could make cost without end: a vector of 2^32 - 1
+// floats, an array of 2^32 - 1 empty structs, and structs of 64 structs of 64 ... (64^6 visits).
+// Each is read, quickly, as a record that cannot be laid out.
+TEST( SpirvReflectVulkan, ARecordTypeTooLargeToWalkIsNotLaidOut )
+{
+	const uint32_t SHADER_RECORD_BUFFER = 5343;
+	auto op = []( uint32_t opcode, std::vector<uint32_t> operands ) {
+		operands.insert( operands.begin(), ( uint32_t( operands.size() + 1 ) << 16 ) | opcode );
+		return operands;
+	};
+	std::vector<uint32_t> words = { 0x07230203u, 0x00010600u, 0, 1000, 0 };
+	auto add = [&words]( const std::vector<uint32_t>& instruction ) { words.insert( words.end(), instruction.begin(), instruction.end() ); };
+	auto record = [&]( uint32_t pointer, uint32_t variable, uint32_t type ) {
+		add( op( 32, { pointer, SHADER_RECORD_BUFFER, type } ) ); // OpTypePointer
+		add( op( 59, { pointer, variable, SHADER_RECORD_BUFFER } ) ); // OpVariable
+	};
+
+	add( op( 22, { 1, 32 } ) ); // OpTypeFloat %1 32
+	add( op( 23, { 2, 1, 0xffffffffu } ) ); // OpTypeVector %2 %1 2^32-1
+	add( op( 30, { 3, 2 } ) ); // OpTypeStruct %3 { %2 }
+	record( 4, 5, 3 );
+
+	add( op( 21, { 10, 32, 0 } ) ); // OpTypeInt %10 32 unsigned
+	add( op( 43, { 10, 11, 0xffffffffu } ) ); // OpConstant %11 2^32-1
+	add( op( 30, { 12 } ) ); // OpTypeStruct %12 {}
+	add( op( 28, { 13, 12, 11 } ) ); // OpTypeArray %13 %12[%11]
+	add( op( 71, { 13, 6, 16 } ) ); // OpDecorate %13 ArrayStride 16
+	add( op( 30, { 14, 13 } ) ); // OpTypeStruct %14 { %13 }
+	record( 15, 16, 14 );
+
+	uint32_t inner = 12; // the empty struct
+	for( uint32_t level = 0; level < 6; ++level )
+	{
+		std::vector<uint32_t> operands( 65, inner ); // OpTypeStruct %id { inner x 64 }
+		operands[0] = 20 + level;
+		add( op( 30, operands ) );
+		inner = operands[0];
+	}
+	add( op( 30, { 30, inner } ) ); // OpTypeStruct %30 { the nest }
+	record( 31, 32, 30 );
+
+	SpirvReflection reflection;
+	EXPECT_TRUE( SpirvReflectVulkan::ReflectSpirv( words.data(), words.size() * 4, reflection ) );
+	ASSERT_EQ( reflection.shaderRecords.size(), 3u );
+	for( auto& block : reflection.shaderRecords )
+	{
+		EXPECT_FALSE( block.laidOut ) << reflection.NameOf( block.variable );
+		EXPECT_LE( block.scalars.size(), size_t( 1 ) << 16 );
+	}
 }
