@@ -53,7 +53,7 @@ extern bool IsUniformInputArgument( ASTNode* argument );
 
 extern void AssignRegisters( ASTNode* root, int32_t stage, const std::vector<GlobalInputElement>& globalInput = {} );
 
-// Names the declaration ForceVulkanRegisterSpaces had to refuse.
+// Names the declaration CheckVulkanRegisterSpaces had to refuse.
 struct VulkanRegisterSpaceReject
 {
 	InlineString name;
@@ -61,10 +61,14 @@ struct VulkanRegisterSpaceReject
 	char registerType = '\0';
 };
 
-// Puts every t/s/u declaration on the register space the Vulkan binding ABI reads as
-// its descriptor set. Returns false, filling in the reject, for a declaration whose
-// space cannot be reached; the caller reports it.
-extern bool ForceVulkanRegisterSpaces( ASTNode* root, VulkanRegisterSpaceReject& reject );
+// The declarations whose t/s/u registers go on the register space the Vulkan binding ABI reads
+// as its resource descriptor set (space1): every used top-level declaration -- what
+// MarkUsedSymbols left marked -- with a t, s or u register. The HLSL emitter writes their
+// registers there (HLSL::vulkanResourceSpace) and the reflection reports that space
+// (DxReflection::ProcessReflection); the tree itself is left as the parser and AssignRegisters
+// made it, for the next stage, pass or library. Returns false, filling in the reject, for a
+// declaration on a space the ABI cannot reach; the caller reports it.
+extern bool CheckVulkanRegisterSpaces( ASTNode* root, std::set<const Symbol*>& resourceSpace, VulkanRegisterSpaceReject& reject );
 
 extern void SortProgramNodes( ASTNode* root );
 

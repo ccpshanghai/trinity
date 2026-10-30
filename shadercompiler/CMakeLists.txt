@@ -47,6 +47,8 @@ set(_SOURCES
     ParserUtils.cpp
     ParserUtils.h
     Platforms.h
+    RtShaderRecordLayout.cpp
+    RtShaderRecordLayout.h
     ${GENERATED_SOURCES_DIR}/HLSLParser.c
     ${GENERATED_SOURCES_DIR}/HLSLParser.h
     ${GENERATED_SOURCES_DIR}/HLSLScanner.cpp
