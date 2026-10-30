@@ -1558,6 +1558,7 @@ ALResult Tr2RenderContextAL::SetPass()
 
 	m_owner->m_vkCmdBeginRendering( m_commandBuffer, &renderingInfo );
 	m_renderingActive = true;
+	m_asBatch.open = false;
 
 	// FlippedViewport applies the y flip; only the source of the rectangle differs. m_viewportSet
 	// is false both before any SetViewport and after one with a degenerate rectangle, and the
@@ -1672,6 +1673,7 @@ void Tr2RenderContextAL::InvalidateAttachmentsVulkan()
 
 void Tr2RenderContextAL::EndRenderPassVulkan()
 {
+	m_asBatch.open = false;
 	if( m_renderingActive )
 	{
 		m_owner->m_vkCmdEndRendering( m_commandBuffer );
@@ -2035,22 +2037,32 @@ ALResult Tr2RenderContextAL::DispatchRays( Tr2RtPipelineStateAL& pipeline, Tr2Rt
 		}
 	}
 
-	// As RunComputeShader: no rendering scope, the set's images in the layouts its
-	// descriptors claim, and memory ordered on both sides -- the target UAV cleared just before
-	// (ClearUav) and read by the denoiser's draws right after.
+	// As RunComputeShader: no rendering scope (which also closes an acceleration structure
+	// build batch) and the set's images in the layouts its descriptors claim.
 	EndRenderPassVulkan();
 	if( m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->NeedsTransitionVulkan() )
 	{
 		m_resourceSet.m_resourceSet->TransitionImagesVulkan( m_commandBuffer );
 	}
-	VkMemoryBarrier2 memoryBarrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
-	memoryBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-	memoryBarrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-	memoryBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-	memoryBarrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+	// Memory ordered on both sides, but only the trace waits, and only its readers wait on it.
+	// Before: every earlier write, whatever wrote it, is what the trace may read or overwrite --
+	// the builds of the batch just closed (they record no barrier after themselves), the UAV
+	// ClearUav cleared with no barrier after it, a transition into a read layout whose own
+	// destination scope has no ray tracing stage (GetLayoutStageAccessVulkan), constant uploads.
+	// The source stays ALL_COMMANDS for that reason (and for WAR on the UAV); the destination is
+	// the ray tracing stage alone, so draws recorded after the trace no longer wait on all of
+	// the above. AS_READ may only name the ray tracing stage without rayQuery
+	// (VUID-VkMemoryBarrier2-dstAccessMask-06256), and that stage only exists with
+	// rayTracingPipeline (-07946), which DispatchRays requires. The shader binding table is
+	// written by the host before submission, which needs no barrier.
+	VkMemoryBarrier2 before = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+	before.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	before.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+	before.dstStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+	before.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_UNIFORM_READ_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
 	VkDependencyInfo dependencyInfo = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
 	dependencyInfo.memoryBarrierCount = 1;
-	dependencyInfo.pMemoryBarriers = &memoryBarrier;
+	dependencyInfo.pMemoryBarriers = &before;
 	m_owner->m_vkCmdPipelineBarrier2( m_commandBuffer, &dependencyInfo );
 
 	vkCmdBindPipeline( m_commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt->m_pipeline );
@@ -2078,6 +2090,18 @@ ALResult Tr2RenderContextAL::DispatchRays( Tr2RtPipelineStateAL& pipeline, Tr2Rt
 					uint32_t( table->GetHitRegionVulkan().stride ? table->GetHitRegionVulkan().size / table->GetHitRegionVulkan().stride : 0 ) );
 	}
 
+	// After: what the trace wrote (its UAV) to the stages that read it next -- the denoiser's and
+	// the lighting pass's draws (any shader stage of a draw: PRE_RASTERIZATION_SHADERS names only
+	// the supported ones), the froxel filter and raymarch dispatches, a clear or copy of the
+	// target. An image leaving GENERAL for another layout is ordered by its own transition,
+	// whose source scope for GENERAL is ALL_COMMANDS; a later trace or build has its own
+	// "before" over ALL_COMMANDS.
+	VkMemoryBarrier2 after = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+	after.srcStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+	after.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+	after.dstStageMask = VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+	after.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+	dependencyInfo.pMemoryBarriers = &after;
 	m_owner->m_vkCmdPipelineBarrier2( m_commandBuffer, &dependencyInfo );
 	return S_OK;
 }

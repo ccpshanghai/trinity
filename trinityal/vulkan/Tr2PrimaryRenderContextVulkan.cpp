@@ -1266,6 +1266,7 @@ void Tr2PrimaryRenderContextAL::Destroy()
 		m_zeroBufferMemory = VK_NULL_HANDLE;
 	}
 	DestroyUploadVulkan();
+	DestroyRtScratchVulkan();
 	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
 	{
 		if( m_frameData[i].commandBuffer != VK_NULL_HANDLE )
@@ -1896,6 +1897,63 @@ ALResult Tr2PrimaryRenderContextAL::AllocateUploadVulkan( VkDeviceSize size, VkB
 	return S_OK;
 }
 
+ALResult Tr2PrimaryRenderContextAL::AllocateRtScratchVulkan( VkDeviceSize size, VkDeviceAddress& address )
+{
+	address = 0;
+	if( !m_caps.SupportsRaytracing() )
+	{
+		return E_INVALIDCALL;
+	}
+	// A refit may need no scratch (updateScratchSize 0 is legal); it still gets an address
+	// inside the arena rather than a failed build.
+	size = std::max<VkDeviceSize>( size, 1 );
+	const VkDeviceSize alignment = std::max<VkDeviceSize>( m_accelerationStructureProperties.minAccelerationStructureScratchOffsetAlignment, 1 );
+	RtScratchArena& arena = m_rtScratch[m_frameIndex];
+	// Aligned as an address, not as an offset: the buffer's own address is only as aligned as
+	// its memory requirements say, which need not cover the scratch alignment.
+	VkDeviceAddress start = ( arena.address + arena.used + alignment - 1 ) / alignment * alignment;
+	if( arena.buffer == VK_NULL_HANDLE || start + size > arena.address + arena.size )
+	{
+		// Builds recorded earlier this frame still use the old arena; it goes when this slot's
+		// fence has passed.
+		const VkDeviceSize retired = arena.size;
+		if( arena.buffer != VK_NULL_HANDLE )
+		{
+			DestroyLaterVulkan( arena.buffer, &vkDestroyBuffer );
+			DestroyLaterVulkan( arena.memory, &vkFreeMemory );
+			arena = RtScratchArena();
+		}
+		VkDeviceSize wanted = std::max<VkDeviceSize>( VkDeviceSize( 1 ) << 20, size + alignment );
+		wanted = std::max( wanted, retired * 2 );
+		FORWARD_HR( TrinityALImpl::CreateBuffer( arena.buffer, arena.memory, size_t( wanted ), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, *this ) );
+		VkBufferDeviceAddressInfo addressInfo = { VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO };
+		addressInfo.buffer = arena.buffer;
+		arena.address = m_raytracing.getBufferDeviceAddress( m_device, &addressInfo );
+		arena.size = wanted;
+		arena.used = 0;
+		start = ( arena.address + alignment - 1 ) / alignment * alignment;
+		// A handful of lines over a run: the arena only grows, and by doubling.
+		CCP_AL_LOG( "vulkan: ray tracing scratch arena for frame slot %u is now %llu KiB", m_frameIndex, (unsigned long long)( wanted >> 10 ) );
+	}
+	address = start;
+	arena.used = start + size - arena.address;
+	return S_OK;
+}
+
+void Tr2PrimaryRenderContextAL::DestroyRtScratchVulkan()
+{
+	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
+	{
+		RtScratchArena& arena = m_rtScratch[i];
+		if( arena.buffer != VK_NULL_HANDLE )
+		{
+			vkDestroyBuffer( m_device, arena.buffer, nullptr );
+			vkFreeMemory( m_device, arena.memory, nullptr );
+		}
+		arena = RtScratchArena();
+	}
+}
+
 void Tr2PrimaryRenderContextAL::DestroyUploadVulkan()
 {
 	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
@@ -2031,6 +2089,10 @@ ALResult Tr2PrimaryRenderContextAL::BeginFrame()
 	// flight and the sets it used can be handed out again -- and so can its upload memory.
 	ResetConstantPoolVulkan();
 	m_upload[m_frameIndex].used = 0;
+	m_rtScratch[m_frameIndex].used = 0;
+	// The open batch's "before" barrier, if any, is in the last frame's command buffer, and
+	// whatever that frame recorded after it is not ordered before this frame's first build.
+	m_asBatch.open = false;
 
 	m_defaultBackBuffer.m_texture->SetCurrentImageVulkan( m_currentImage );
 

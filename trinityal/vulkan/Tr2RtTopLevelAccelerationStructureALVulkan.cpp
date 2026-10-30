@@ -65,6 +65,8 @@ namespace TrinityALImpl
 {
 Tr2RtTopLevelAccelerationStructureAL::Tr2RtTopLevelAccelerationStructureAL() :
 	m_owner( nullptr ),
+	m_buildScratchSize( 0 ),
+	m_updateScratchSize( 0 ),
 	m_capacity( 0 ),
 	m_builtCount( 0 ),
 	m_buildFlags( Tr2RtBuildFlags::NONE )
@@ -132,12 +134,8 @@ ALResult Tr2RtTopLevelAccelerationStructureAL::Create( const size_t count, const
 	}
 	storage->SetAccelerationStructureVulkan( accelerationStructure );
 
-	const VkDeviceSize scratchSize = HasFlag( buildFlags, Tr2RtBuildFlags::ALLOW_UPDATE ) ? std::max( sizes.buildScratchSize, sizes.updateScratchSize ) : sizes.buildScratchSize;
-	if( FAILED( m_scratch.Create( scratchSize, renderContext.m_accelerationStructureProperties.minAccelerationStructureScratchOffsetAlignment, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false, renderContext ) ) )
-	{
-		Destroy();
-		return E_OUTOFMEMORY;
-	}
+	m_buildScratchSize = sizes.buildScratchSize;
+	m_updateScratchSize = sizes.updateScratchSize;
 
 	hr = Build( count, instances, renderContext );
 	if( FAILED( hr ) )
@@ -195,15 +193,19 @@ ALResult Tr2RtTopLevelAccelerationStructureAL::Build( size_t count, const Tr2RtI
 	const VkAccelerationStructureKHR accelerationStructure = m_buffer.TrinityALImpl_GetObject()->GetAccelerationStructureVulkan();
 	// A refit needs the same instance count as the build it refits; anything else is a full
 	// rebuild in place, which is what the engine's TLAS (PREFER_FAST_TRACE only) always gets.
+	VkDeviceSize scratchSize = m_buildScratchSize;
 	if( HasFlag( m_buildFlags, Tr2RtBuildFlags::ALLOW_UPDATE ) && m_builtCount == count )
 	{
 		info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
 		info.srcAccelerationStructure = accelerationStructure;
+		scratchSize = m_updateScratchSize;
 	}
+	VkDeviceAddress scratch = 0;
+	FORWARD_HR( m_owner->AllocateRtScratchVulkan( scratchSize, scratch ) );
 	info.dstAccelerationStructure = accelerationStructure;
-	info.scratchData.deviceAddress = m_scratch.address;
+	info.scratchData.deviceAddress = scratch;
 	VkAccelerationStructureBuildRangeInfoKHR range = { uint32_t( count ), 0, 0, 0 };
-	RecordAccelerationStructureBuildVulkan( renderContext, info, range );
+	RecordAccelerationStructureBuildVulkan( renderContext, info, range, scratchSize );
 	m_builtCount = count;
 	return S_OK;
 }
@@ -216,14 +218,11 @@ void Tr2RtTopLevelAccelerationStructureAL::Destroy()
 		{
 			it->buffer.Destroy( *m_owner );
 		}
-		if( m_scratch.buffer )
-		{
-			m_scratch.Destroy( *m_owner );
-		}
 		m_owner = nullptr;
 	}
 	m_instanceBuffers.clear();
-	m_scratch = RtBufferVulkan();
+	m_buildScratchSize = 0;
+	m_updateScratchSize = 0;
 	// The buffer's Destroy queues the structure built over it, then the storage.
 	m_buffer = ::Tr2BufferAL();
 	m_capacity = 0;

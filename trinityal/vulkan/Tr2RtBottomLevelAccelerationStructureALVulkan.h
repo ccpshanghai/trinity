@@ -8,12 +8,11 @@
 
 namespace TrinityALImpl
 {
-// A buffer the ray tracing classes own outright -- build scratch, TLAS instance descriptors,
-// shader binding tables -- with its device address aligned up to what the consumer needs
-// (scratch: minAccelerationStructureScratchOffsetAlignment, a table region:
-// shaderGroupBaseAlignment). Over-allocated by the alignment, because a VkBuffer's memory
-// alignment is the driver's choice and nothing promises it covers either. Host-visible ones
-// stay mapped for their life; vkFreeMemory unmaps.
+// A buffer the ray tracing classes own outright -- TLAS instance descriptors today -- with its
+// device address aligned up to what the consumer needs (instances: 16). Over-allocated by the
+// alignment, because a VkBuffer's memory alignment is the driver's choice and nothing promises
+// it covers it. Host-visible ones stay mapped for their life; vkFreeMemory unmaps. Build
+// scratch comes from Tr2PrimaryRenderContextAL::AllocateRtScratchVulkan.
 struct RtBufferVulkan
 {
 	VkBuffer buffer = VK_NULL_HANDLE;
@@ -29,12 +28,22 @@ struct RtBufferVulkan
 
 // One acceleration structure build on `renderContext`'s command buffer, with the
 // synchronization the engine leaves to the AL on this backend (it records barriers only for
-// DX12, Tr2RaytracingGeometry.cpp). Closes an open rendering scope first -- a build is an
-// outside-render-pass command -- then: everything before -> this build (the skinning
-// dispatch's writes to the vertex input, a previous frame's trace still reading a structure
-// rebuilt in place, the shared scratch), and this build -> later builds and ray tracing
-// shaders (BLAS -> TLAS, TLAS -> trace).
-void RecordAccelerationStructureBuildVulkan( Tr2RenderContextAL& renderContext, const VkAccelerationStructureBuildGeometryInfoKHR& info, const VkAccelerationStructureBuildRangeInfoKHR& range );
+// DX12, Tr2RaytracingGeometry.cpp). Builds recorded back to back are one batch
+// (Tr2RenderContextAL::m_asBatch):
+// - the first build of a batch closes an open rendering scope -- a build is an
+//   outside-render-pass command -- and records one barrier from everything before to the
+//   build stage: the skinning dispatch's writes to the vertex input, a previous trace still
+//   reading a structure rebuilt in place, an earlier batch's structures and scratch;
+// - a later build records a build -> build barrier only when it reads what the batch built (a
+//   TLAS over the batch's BLASes, a refit or rebuild of a structure built in the batch), when
+//   it follows a TLAS of the batch (which read BLASes it may rewrite), or when its scratch
+//   range overlaps one the batch wrote; BLASes over disjoint scratch from the frame's scratch
+//   arena need none;
+// - nothing after the last build: whatever reads a structure next records its own barrier
+//   from ALL_COMMANDS (DispatchRays, RunComputeShader, a later batch's first build), and
+//   every command that is not a build closes the batch.
+// `scratchSize` is the bytes of scratch at info.scratchData the build uses.
+void RecordAccelerationStructureBuildVulkan( Tr2RenderContextAL& renderContext, const VkAccelerationStructureBuildGeometryInfoKHR& info, const VkAccelerationStructureBuildRangeInfoKHR& range, VkDeviceSize scratchSize );
 
 class Tr2RtBottomLevelAccelerationStructureAL : public Tr2DeviceResourceAL<Tr2RtBottomLevelAccelerationStructureAL>
 {
@@ -84,8 +93,10 @@ private:
 	VkDeviceSize m_size;
 	VkAccelerationStructureKHR m_accelerationStructure;
 	VkDeviceAddress m_address;
-	// Kept only with ALLOW_UPDATE, as DX12 keeps its scratch.
-	RtBufferVulkan m_scratch;
+	// For the capacity Create was sized for. A build or refit takes its scratch from the frame's
+	// arena (Tr2PrimaryRenderContextAL::AllocateRtScratchVulkan); nothing is kept between builds.
+	VkDeviceSize m_buildScratchSize;
+	VkDeviceSize m_updateScratchSize;
 	GeometryKey m_key;
 	Tr2RtBlasGeometryFlags::Type m_geometryFlags;
 	Tr2RtBuildFlags::Type m_buildFlags;

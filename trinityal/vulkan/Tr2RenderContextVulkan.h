@@ -634,7 +634,33 @@ public:
 	//
 	// On a tiler this is a resolve and a reload, so it is not free; it is here because
 	// Vulkan 1.0 has no host-side vkResetQueryPool, which arrived in 1.2.
+	//
+	// Also closes an open acceleration structure build batch (m_asBatch): every command that is
+	// not a build and is recorded outside a rendering scope calls this first, so it is the one
+	// place that knows something other than a build came next.
 	void EndRenderPassVulkan();
+
+	// Acceleration structure builds recorded back to back share one "before" barrier
+	// (RecordAccelerationStructureBuildVulkan, Tr2RtBottomLevelAccelerationStructureALVulkan.cpp).
+	// Open from the first build of a run until another command is recorded:
+	// EndRenderPassVulkan, the start of a rendering scope and BeginFrame close it. Only ray
+	// tracing builds open it, so on a device without the capability it is never open.
+	struct AccelerationStructureBatchVulkan
+	{
+		bool open = false;
+		// The scratch range the batch's builds have written since its last barrier, as device
+		// addresses (one interval: the scratch arena hands out increasing ranges).
+		VkDeviceAddress scratchLow = 0;
+		VkDeviceAddress scratchHigh = 0;
+		// The structures built since the last barrier, which a later build must not read
+		// (a TLAS over them, or a refit of one) or write again without one.
+		std::vector<VkAccelerationStructureKHR> written;
+		// A TLAS was built since the last barrier. It read BLASes `written` does not name, so a
+		// later build, which may rewrite one of them in place, waits for it.
+		bool topLevelBuilt = false;
+	};
+	AccelerationStructureBatchVulkan m_asBatch;
+
 	// Whether a dynamic rendering instance is open right now -- what EndRenderPassVulkan
 	// would close. Tr2BufferAL asks, so the draw log can count the pass restarts its
 	// synchronized copies cause.

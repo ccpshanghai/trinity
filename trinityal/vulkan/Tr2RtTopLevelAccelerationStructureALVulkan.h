@@ -47,7 +47,10 @@ private:
 
 	Tr2PrimaryRenderContextAL* m_owner;
 	::Tr2BufferAL m_buffer;
-	RtBufferVulkan m_scratch;
+	// For the capacity; each build takes its scratch from the frame's arena
+	// (Tr2PrimaryRenderContextAL::AllocateRtScratchVulkan).
+	VkDeviceSize m_buildScratchSize;
+	VkDeviceSize m_updateScratchSize;
 	std::vector<InstanceBuffer> m_instanceBuffers;
 	size_t m_capacity;
 	size_t m_builtCount;
