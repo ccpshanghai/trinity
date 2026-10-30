@@ -5,6 +5,7 @@
 #if TRINITY_PLATFORM == TRINITY_VULKAN
 
 #include "Tr2PrimaryRenderContextVulkan.h"
+#include "Tr2RtUtilitiesVulkan.h"
 #include "Tr2VideoAdapterInfoALVulkan.h"
 #include "ALLog.h"
 #include "VkResult.h"
@@ -957,19 +958,29 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		{
 			raytracingEntryPoints.getBufferDeviceAddress = reinterpret_cast<PFN_vkGetBufferDeviceAddress>( vkGetDeviceProcAddr( device, "vkGetBufferDeviceAddressKHR" ) );
 		}
-		if( !raytracingEntryPoints.IsComplete() )
+		// The level wanted is PIPELINE, and nothing uses ACCELERATION_STRUCTURE alone (see
+		// RaytracingLevelVulkan), so either group missing turns ray tracing off.
+		if( !raytracingEntryPoints.HasAccelerationStructureEntryPoints() )
 		{
-			raytracingMissing = "a ray-tracing entry point did not resolve";
+			raytracingMissing = "an acceleration structure entry point did not resolve";
+		}
+		else if( !raytracingEntryPoints.HasPipelineEntryPoints() )
+		{
+			raytracingMissing = "a ray tracing pipeline entry point did not resolve";
+		}
+		if( raytracingMissing )
+		{
 			raytracingEntryPoints = RaytracingEntryPointsVulkan();
 		}
 	}
+	const RaytracingLevelVulkan raytracingLevel = raytracingMissing ? RaytracingLevelVulkan::NONE : RaytracingLevelVulkan::PIPELINE;
 	if( raytracingMissing )
 	{
 		CCP_AL_LOG( "vulkan: ray tracing off (%s)", raytracingMissing );
 	}
 	else
 	{
-		CCP_AL_LOG( "vulkan: ray tracing on (shaderGroupHandleSize=%u shaderGroupBaseAlignment=%u maxRayRecursionDepth=%u minAccelerationStructureScratchOffsetAlignment=%u)",
+		CCP_AL_LOG( "vulkan: ray tracing on (level=pipeline shaderGroupHandleSize=%u shaderGroupBaseAlignment=%u maxRayRecursionDepth=%u minAccelerationStructureScratchOffsetAlignment=%u)",
 					rayTracingPipelineProperties.shaderGroupHandleSize,
 					rayTracingPipelineProperties.shaderGroupBaseAlignment,
 					rayTracingPipelineProperties.maxRayRecursionDepth,
@@ -1059,7 +1070,7 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	m_vkQueueSubmit2 = queueSubmit2;
 	// Before anything below creates a buffer: Tr2BufferAL::Create reads the cap to decide its
 	// usage bits, and m_zeroBuffer / the dummy texture are created further down.
-	m_caps.m_supportsRaytracing = raytracingMissing == nullptr;
+	m_caps.m_raytracingLevel = raytracingLevel;
 	m_raytracing = raytracingEntryPoints;
 	m_rayTracingPipelineProperties = rayTracingPipelineProperties;
 	m_accelerationStructureProperties = accelerationStructureProperties;
@@ -1235,13 +1246,6 @@ void Tr2PrimaryRenderContextAL::Destroy()
 	}
 	m_pipelines.clear();
 
-	for( auto& table : m_rtTableBuffers )
-	{
-		vkDestroyBuffer( m_device, table.buffer, nullptr );
-		vkFreeMemory( m_device, table.memory, nullptr );
-	}
-	m_rtTableBuffers.clear();
-
 	for( auto& layout : m_rtResourceLayouts )
 	{
 		vkDestroyDescriptorSetLayout( m_device, layout.second, nullptr );
@@ -1356,7 +1360,7 @@ void Tr2PrimaryRenderContextAL::Destroy()
 	}
 	// After the device and everything destroyed with it: a pending destroy above may still
 	// call through one of these entry points.
-	m_caps.m_supportsRaytracing = false;
+	m_caps.m_raytracingLevel = RaytracingLevelVulkan::NONE;
 	m_raytracing = RaytracingEntryPointsVulkan();
 	m_graphicsQueue = VK_NULL_HANDLE;
 	m_presentQueue = VK_NULL_HANDLE;
@@ -1854,10 +1858,35 @@ uint64_t Tr2PrimaryRenderContextAL::GetRecordingFrameNumber() const
 
 ALResult Tr2PrimaryRenderContextAL::AllocateUploadVulkan( VkDeviceSize size, VkBuffer& buffer, VkDeviceSize& offset, void*& mapped )
 {
+	return AllocateUploadChunkVulkan( size, 0, buffer, offset, mapped );
+}
+
+ALResult Tr2PrimaryRenderContextAL::AllocateUploadVulkan( VkDeviceSize size, VkDeviceSize alignment, VkDeviceAddress& address, void*& mapped )
+{
+	address = 0;
+	mapped = nullptr;
+	if( !m_caps.SupportsAccelerationStructuresVulkan() )
+	{
+		return E_INVALIDCALL;
+	}
+	VkBuffer buffer = VK_NULL_HANDLE;
+	VkDeviceSize offset = 0;
+	FORWARD_HR( AllocateUploadChunkVulkan( size, std::max<VkDeviceSize>( alignment, 1 ), buffer, offset, mapped ) );
+	address = m_upload[m_frameIndex].address + offset;
+	return S_OK;
+}
+
+ALResult Tr2PrimaryRenderContextAL::AllocateUploadChunkVulkan( VkDeviceSize size, VkDeviceSize addressAlignment, VkBuffer& buffer, VkDeviceSize& offset, void*& mapped )
+{
 	UploadChunk& chunk = m_upload[m_frameIndex];
 	// 16-byte aligned starts: nothing a vkCmdCopyBuffer source needs, everything a caller
-	// writing vectors through the pointer is happier with.
-	VkDeviceSize start = ( chunk.used + 15 ) & ~VkDeviceSize( 15 );
+	// writing vectors through the pointer is happier with. An address the GPU reads is aligned
+	// as an address, not as an offset: the chunk's own address is only as aligned as its memory
+	// requirements say, which need not cover a shader binding table's base alignment.
+	auto startIn = [addressAlignment]( const UploadChunk& c ) -> VkDeviceSize {
+		return addressAlignment ? TrinityALImpl::AlignUpVulkan( c.address + c.used, addressAlignment ) - c.address : ( c.used + 15 ) & ~VkDeviceSize( 15 );
+	};
+	VkDeviceSize start = startIn( chunk );
 	if( chunk.buffer == VK_NULL_HANDLE || start + size > chunk.size )
 	{
 		// The chunk retires with this frame, not now: copies recorded earlier this frame
@@ -1872,9 +1901,21 @@ ALResult Tr2PrimaryRenderContextAL::AllocateUploadVulkan( VkDeviceSize size, VkB
 		// Doubling, from a megabyte: a frame's synchronized writes are a few screen quads and
 		// a light buffer, and a chunk that was too small once is replaced by one that will
 		// not be for that frame's shape again.
-		VkDeviceSize wanted = std::max<VkDeviceSize>( VkDeviceSize( 1 ) << 20, size * 2 );
+		VkDeviceSize wanted = std::max<VkDeviceSize>( VkDeviceSize( 1 ) << 20, ( size + addressAlignment ) * 2 );
 		wanted = std::max( wanted, chunk.size * 2 );
-		FORWARD_HR( TrinityALImpl::CreateBuffer( chunk.buffer, chunk.memory, size_t( wanted ), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		// Ray tracing reads its per-frame data from here too (shader binding tables, TLAS
+		// instance descriptors), by device address; a device without acceleration structures
+		// keeps the transfer-source chunk it always had.
+		VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+		if( m_caps.SupportsAccelerationStructuresVulkan() )
+		{
+			usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+		}
+		if( m_caps.SupportsRaytracing() )
+		{
+			usage |= VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR;
+		}
+		FORWARD_HR( TrinityALImpl::CreateBuffer( chunk.buffer, chunk.memory, size_t( wanted ), usage,
 			VkMemoryPropertyFlagBits( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ), *this ) );
 		void* base = nullptr;
 		const ALResult mappedResult = Vk2Al( vkMapMemory( m_device, chunk.memory, 0, VK_WHOLE_SIZE, 0, &base ) );
@@ -1885,10 +1926,16 @@ ALResult Tr2PrimaryRenderContextAL::AllocateUploadVulkan( VkDeviceSize size, VkB
 			chunk = UploadChunk();
 			return mappedResult;
 		}
+		if( usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT )
+		{
+			VkBufferDeviceAddressInfo addressInfo = { VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO };
+			addressInfo.buffer = chunk.buffer;
+			chunk.address = m_raytracing.getBufferDeviceAddress( m_device, &addressInfo );
+		}
 		chunk.mapped = static_cast<uint8_t*>( base );
 		chunk.size = wanted;
 		chunk.used = 0;
-		start = 0;
+		start = startIn( chunk );
 	}
 	buffer = chunk.buffer;
 	offset = start;
@@ -1900,7 +1947,7 @@ ALResult Tr2PrimaryRenderContextAL::AllocateUploadVulkan( VkDeviceSize size, VkB
 ALResult Tr2PrimaryRenderContextAL::AllocateRtScratchVulkan( VkDeviceSize size, VkDeviceAddress& address )
 {
 	address = 0;
-	if( !m_caps.SupportsRaytracing() )
+	if( !m_caps.SupportsAccelerationStructuresVulkan() )
 	{
 		return E_INVALIDCALL;
 	}

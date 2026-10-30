@@ -21,6 +21,25 @@
 #define TRINITY_PLATFORM_SUPPORTS_ASTC_TEXTURES 0
 
 
+// How much of Vulkan ray tracing the device was created with; Vulkan-internal, the public
+// question stays Tr2CapsAL::SupportsRaytracing(). Each level adds to the one below:
+// - ACCELERATION_STRUCTURE: VK_KHR_acceleration_structure and VK_KHR_deferred_host_operations,
+//   the accelerationStructure and bufferDeviceAddress features and their entry points --
+//   structures can be built, buffers carry device addresses (BLAS / TLAS creation, the build
+//   scratch arena, build-input buffer usage). Room for ray queries, which need structures and
+//   no pipeline; nothing in the engine uses them, so no device is created at this level today.
+// - PIPELINE: plus VK_KHR_ray_tracing_pipeline, rayTracingPipeline and its entry points --
+//   pipelines, shader binding tables, DispatchRays.
+// A device is created at PIPELINE or at NONE (Tr2PrimaryRenderContextAL::CreateDevice), so one
+// without the pipeline extension -- the S23, which has acceleration_structure and ray_query --
+// keeps the device creation it had before ray tracing existed in this backend.
+enum class RaytracingLevelVulkan : uint8_t
+{
+	NONE = 0,
+	ACCELERATION_STRUCTURE = 1,
+	PIPELINE = 2,
+};
+
 class Tr2CapsAL
 {
 public:
@@ -63,10 +82,22 @@ public:
 	// accelerationStructure, rayTracingPipeline and bufferDeviceAddress features, and every
 	// ray-tracing entry point resolved -- see Tr2PrimaryRenderContextAL::CreateDevice. When
 	// false the device, its buffers and its allocations are created exactly as before ray
-	// tracing existed in this backend.
+	// tracing existed in this backend. Its meaning on every backend: structures can be built
+	// and DispatchRays traces them; on Vulkan that is RaytracingLevelVulkan::PIPELINE.
 	bool SupportsRaytracing() const
 	{
-		return m_supportsRaytracing;
+		return m_raytracingLevel == RaytracingLevelVulkan::PIPELINE;
+	}
+	// Vulkan only: acceleration structures can be built (and buffers carry device addresses).
+	// Implied by SupportsRaytracing(); on its own it is a level no device is created with yet
+	// (see RaytracingLevelVulkan).
+	bool SupportsAccelerationStructuresVulkan() const
+	{
+		return m_raytracingLevel >= RaytracingLevelVulkan::ACCELERATION_STRUCTURE;
+	}
+	RaytracingLevelVulkan GetRaytracingLevelVulkan() const
+	{
+		return m_raytracingLevel;
 	}
 	// ASTC sampling, the one M3 asks about. A capability, not a platform (spec D7): the answer
 	// differs between two Metal devices, so a compile-time #if would be wrong even here.
@@ -81,22 +112,22 @@ public:
 
 private:
 	Tr2CapsAL() :
-		m_supportsRaytracing( false )
+		m_raytracingLevel( RaytracingLevelVulkan::NONE )
 	{
 	}
 
 	Tr2CapsAL( const Tr2CapsAL& other ) :
-		m_supportsRaytracing( other.m_supportsRaytracing )
+		m_raytracingLevel( other.m_raytracingLevel )
 	{
 	}
 
 	Tr2CapsAL& operator=( const Tr2CapsAL& other )
 	{
-		m_supportsRaytracing = other.m_supportsRaytracing;
+		m_raytracingLevel = other.m_raytracingLevel;
 		return *this;
 	}
 
-	bool m_supportsRaytracing;
+	RaytracingLevelVulkan m_raytracingLevel;
 
 	friend class Tr2PrimaryRenderContextAL;
 };

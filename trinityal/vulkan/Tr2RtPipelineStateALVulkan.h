@@ -75,22 +75,15 @@ public:
 private:
 	Tr2PrimaryRenderContextAL* m_owner;
 	VkPipeline m_pipeline;
-	VkPipelineLayout m_pipelineLayout;
-	// Not owned: Tr2PrimaryRenderContextAL::AcquireRtResourceLayoutVulkan's, shared with every
+	// Built by BuildDescriptorLayoutsVulkan, as a shader program's. The set-1 layout is not
+	// owned: Tr2PrimaryRenderContextAL::AcquireRtResourceLayoutVulkan's, shared with every
 	// pipeline whose global input has the same bindings.
-	VkDescriptorSetLayout m_resourceLayout;
-	VkDescriptorSetLayout m_constantLayout;
-	VkDescriptorSetLayout m_emptyLayout;
-	std::set<uint32_t> m_constantBindings;
-	std::vector<Tr2RegisterInputVulkan> m_registerInput;
-	std::vector<VkDescriptorPoolSize> m_poolSizes;
+	Tr2DescriptorLayoutsVulkan m_layouts;
 	Tr2RegisterMapAL m_registerMap;
 
 	std::map<std::wstring, GroupInfoVulkan> m_groups;
 	std::vector<uint8_t> m_handles;
 	uint32_t m_handleSize;
-
-	ALResult CreateLayouts( const Tr2ShaderSignatureAL& globalSignature, const std::set<std::pair<uint32_t, uint32_t>>& usedBindings, const std::set<std::pair<uint32_t, uint32_t>>& accelerationStructureBindings, Tr2PrimaryRenderContextAL& renderContext );
 
 	friend class ::Tr2RenderContextAL;
 	friend class TrinityALImpl::Tr2ResourceSetAL;

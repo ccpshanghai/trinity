@@ -81,10 +81,6 @@ namespace TrinityALImpl
 Tr2RtPipelineStateAL::Tr2RtPipelineStateAL() :
 	m_owner( nullptr ),
 	m_pipeline( VK_NULL_HANDLE ),
-	m_pipelineLayout( VK_NULL_HANDLE ),
-	m_resourceLayout( VK_NULL_HANDLE ),
-	m_constantLayout( VK_NULL_HANDLE ),
-	m_emptyLayout( VK_NULL_HANDLE ),
 	m_handleSize( 0 )
 {
 }
@@ -150,7 +146,7 @@ ALResult Tr2RtPipelineStateAL::CreateRtPipelineState( const Tr2RtPipelineStateDe
 	std::vector<uint32_t> stageRecordSizes; // per stage: its module's shader record size
 	std::vector<VkRayTracingShaderGroupCreateInfoKHR> groups;
 	std::map<std::wstring, uint32_t> stageForExport;
-	std::set<std::pair<uint32_t, uint32_t>> usedBindings, accelerationStructureBindings;
+	Tr2BindingSetVulkan usedBindings, accelerationStructureBindings;
 
 	auto generalGroup = [&groups]( uint32_t stage ) {
 		VkRayTracingShaderGroupCreateInfoKHR group = { VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR };
@@ -290,7 +286,16 @@ ALResult Tr2RtPipelineStateAL::CreateRtPipelineState( const Tr2RtPipelineStateDe
 		return E_INVALIDARG;
 	}
 
-	ALResult hr = CreateLayouts( desc.m_globalSignature, usedBindings, accelerationStructureBindings, renderContext );
+	// The global signature: set 0 (constant buffers) and set 1 (everything else) with
+	// COMPUTE_SHADER binding numbers, visible to every ray tracing stage. Set 1 comes from the
+	// primary context's cache, shared by every pipeline whose global input has the same
+	// bindings, so the resource set the engine keeps across a rebuild stays bindable.
+	std::vector<Tr2LayoutRegisterVulkan> registers;
+	for( auto& reg : desc.m_globalSignature.registers )
+	{
+		registers.push_back( { &reg, Tr2RenderContextEnum::COMPUTE_SHADER, k_rayTracingStages } );
+	}
+	ALResult hr = BuildDescriptorLayoutsVulkan( registers, &accelerationStructureBindings, &usedBindings, true, renderContext, m_layouts );
 	if( FAILED( hr ) )
 	{
 		Destroy();
@@ -304,7 +309,7 @@ ALResult Tr2RtPipelineStateAL::CreateRtPipelineState( const Tr2RtPipelineStateDe
 	pipelineInfo.pGroups = groups.data();
 	// DX12's MaxTraceRecursionDepth: the shaders trace from raygen only.
 	pipelineInfo.maxPipelineRayRecursionDepth = 1;
-	pipelineInfo.layout = m_pipelineLayout;
+	pipelineInfo.layout = m_layouts.pipelineLayout;
 	hr = Vk2Al( renderContext.m_raytracing.createRayTracingPipelines( renderContext.m_device, VK_NULL_HANDLE, renderContext.m_pipelineCache, 1, &pipelineInfo, nullptr, &m_pipeline ) );
 	if( FAILED( hr ) )
 	{
@@ -332,120 +337,15 @@ ALResult Tr2RtPipelineStateAL::CreateRtPipelineState( const Tr2RtPipelineStateDe
 	// Rare (the engine rebuilds only when a new hit group library appears) and the one
 	// positive sign in a log that the ray-traced path got this far.
 	uint32_t accelerationStructures = 0;
-	for( auto& input : m_registerInput )
+	for( auto& input : m_layouts.registerInput )
 	{
 		accelerationStructures += input.descriptorType == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR ? 1 : 0;
 	}
 	CCP_AL_LOG( "vulkan: ray tracing pipeline created: %u stages, %u groups, %u global bindings (%u acceleration structure)",
 				uint32_t( stages.size() ),
 				uint32_t( groups.size() ),
-				uint32_t( m_registerInput.size() ),
+				uint32_t( m_layouts.registerInput.size() ),
 				accelerationStructures );
-	return S_OK;
-}
-
-ALResult Tr2RtPipelineStateAL::CreateLayouts( const Tr2ShaderSignatureAL& globalSignature, const std::set<std::pair<uint32_t, uint32_t>>& usedBindings, const std::set<std::pair<uint32_t, uint32_t>>& accelerationStructureBindings, Tr2PrimaryRenderContextAL& renderContext )
-{
-	std::vector<VkDescriptorSetLayoutBinding> resourceBindings, constantBindings;
-	std::map<std::pair<uint32_t, uint32_t>, VkDescriptorType> declared;
-	std::map<VkDescriptorType, uint32_t> poolCounts;
-
-	for( auto& reg : globalSignature.registers )
-	{
-		const uint32_t set = Tr2VulkanBindingABI::DescriptorSetIndex( reg.registerType );
-		const uint32_t bindingNumber = Tr2VulkanBindingABI::BindingNumber( reg.registerType, reg.registerIndex, Tr2RenderContextEnum::COMPUTE_SHADER );
-		const auto key = std::make_pair( set, bindingNumber );
-		VkDescriptorType type = GetDescriptorTypeVulkan( reg.registerType );
-		if( accelerationStructureBindings.count( key ) )
-		{
-			type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-		}
-		const uint32_t arrayCount = reg.arrayCount ? reg.arrayCount : 1;
-
-		// The reflection reports an explicitly placed cbuffer twice (once from the DXIL
-		// reflection with space 0, once from the globalinput list with the unset space); a
-		// layout may not declare one binding twice.
-		auto existing = declared.find( key );
-		if( existing != declared.end() )
-		{
-			if( existing->second != type )
-			{
-				CCP_AL_LOGERR( "Tr2RtPipelineStateAL: set %u binding %u is declared as two descriptor types", set, bindingNumber );
-				return E_INVALIDARG;
-			}
-			continue;
-		}
-		declared[key] = type;
-
-		VkDescriptorSetLayoutBinding binding = { bindingNumber, type, arrayCount, k_rayTracingStages, nullptr };
-		if( set == Tr2VulkanBindingABI::DESCRIPTOR_SET_CONSTANTS )
-		{
-			constantBindings.push_back( binding );
-			m_constantBindings.insert( bindingNumber );
-		}
-		else
-		{
-			resourceBindings.push_back( binding );
-			poolCounts[type] += arrayCount;
-		}
-		Tr2RegisterInputVulkan input = { bindingNumber, uint32_t( Tr2RenderContextEnum::COMPUTE_SHADER ), reg.registerIndex, arrayCount, reg.registerType, type, usedBindings.count( key ) == 0 };
-		m_registerInput.push_back( input );
-	}
-
-	// A binding a module reads that the global input does not declare would fail pipeline
-	// creation with a VUID; name it instead.
-	for( auto& used : usedBindings )
-	{
-		if( !declared.count( used ) )
-		{
-			CCP_AL_LOGERR( "Tr2RtPipelineStateAL: a library reads set %u binding %u, which the global input does not declare", used.first, used.second );
-			return E_INVALIDARG;
-		}
-	}
-
-	for( auto& count : poolCounts )
-	{
-		VkDescriptorPoolSize poolSize = { count.first, count.second };
-		m_poolSizes.push_back( poolSize );
-	}
-
-	VkDescriptorSetLayoutCreateInfo layoutInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-	if( !resourceBindings.empty() )
-	{
-		// Shared by every pipeline with this global input and owned by the primary context, so
-		// the resource set the engine keeps across a rebuild stays bindable.
-		FORWARD_HR( renderContext.AcquireRtResourceLayoutVulkan( resourceBindings, m_resourceLayout ) );
-	}
-	if( !constantBindings.empty() )
-	{
-		layoutInfo.bindingCount = uint32_t( constantBindings.size() );
-		layoutInfo.pBindings = constantBindings.data();
-		CR_RETURN_HR( Vk2Al( vkCreateDescriptorSetLayout( renderContext.m_device, &layoutInfo, nullptr, &m_constantLayout ) ) );
-	}
-
-	VkDescriptorSetLayout layouts[2];
-	uint32_t layoutCount = 0;
-	if( m_constantLayout || m_resourceLayout )
-	{
-		if( m_constantLayout )
-		{
-			layouts[layoutCount++] = m_constantLayout;
-		}
-		else
-		{
-			VkDescriptorSetLayoutCreateInfo emptyInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-			CR_RETURN_HR( Vk2Al( vkCreateDescriptorSetLayout( renderContext.m_device, &emptyInfo, nullptr, &m_emptyLayout ) ) );
-			layouts[layoutCount++] = m_emptyLayout;
-		}
-		if( m_resourceLayout )
-		{
-			layouts[layoutCount++] = m_resourceLayout;
-		}
-	}
-	VkPipelineLayoutCreateInfo pipelineLayoutInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-	pipelineLayoutInfo.setLayoutCount = layoutCount;
-	pipelineLayoutInfo.pSetLayouts = layouts;
-	CR_RETURN_HR( Vk2Al( vkCreatePipelineLayout( renderContext.m_device, &pipelineLayoutInfo, nullptr, &m_pipelineLayout ) ) );
 	return S_OK;
 }
 
@@ -464,19 +364,12 @@ void Tr2RtPipelineStateAL::Destroy()
 	if( m_owner )
 	{
 		m_owner->DestroyLaterVulkan( m_pipeline, vkDestroyPipeline );
-		m_owner->DestroyLaterVulkan( m_pipelineLayout, vkDestroyPipelineLayout );
-		m_owner->DestroyLaterVulkan( m_constantLayout, vkDestroyDescriptorSetLayout );
-		m_owner->DestroyLaterVulkan( m_emptyLayout, vkDestroyDescriptorSetLayout );
+		// Not the set-1 layout: the primary context's (sharedResourceLayout).
+		m_layouts.Destroy( *m_owner );
 		m_owner = nullptr;
 	}
 	m_pipeline = VK_NULL_HANDLE;
-	m_pipelineLayout = VK_NULL_HANDLE;
-	m_resourceLayout = VK_NULL_HANDLE;
-	m_constantLayout = VK_NULL_HANDLE;
-	m_emptyLayout = VK_NULL_HANDLE;
-	m_constantBindings.clear();
-	m_registerInput.clear();
-	m_poolSizes.clear();
+	m_layouts = Tr2DescriptorLayoutsVulkan();
 	m_registerMap = Tr2RegisterMapAL();
 	m_groups.clear();
 	m_handles.clear();

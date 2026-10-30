@@ -26,7 +26,7 @@ namespace
 	// programs without end cannot grow this forever.
 	void LogDummyTextureOnceVulkan( VkDescriptorSetLayout layout, const TrinityALImpl::Tr2RegisterInputVulkan& input )
 	{
-		static const char s_site = 0;
+		static char s_site;
 		// Multiplying by an odd constant is a bijection, so two layouts collide only if their
 		// handles differ by a binding number's worth after it; good enough for a diagnostic.
 		if( !CCP::LogOnceAL( &s_site, uint64_t( layout ) * 0x9e3779b97f4a7c15ull + input.binding ) )
@@ -72,9 +72,9 @@ namespace TrinityALImpl
 		{
 			return E_INVALIDARG;
 		}
-		if( rt.m_resourceLayout )
+		if( rt.m_layouts.resourceLayout )
 		{
-			FORWARD_HR( WriteSetVulkan( description, rt.m_registerInput, rt.m_poolSizes, rt.m_resourceLayout, renderContext ) );
+			FORWARD_HR( WriteSetVulkan( description, rt.m_layouts.registerInput, rt.m_layouts.poolSizes, rt.m_layouts.resourceLayout, renderContext ) );
 		}
 		m_owner = &renderContext;
 		return S_OK;
@@ -186,7 +186,7 @@ namespace TrinityALImpl
 		{
 			if( it->type == Tr2ShaderRegisterAL::CONSTANT_BUFFER )
 			{
-				// Constant buffers bind at descriptor set 0 (m_constantLayout),
+				// Constant buffers bind at descriptor set 0 (m_layouts.constantLayout),
 				// written by SetConstants; they are not part of this resource set.
 				continue;
 			}
@@ -428,9 +428,9 @@ namespace TrinityALImpl
 			return E_INVALIDARG;
 		}
 
-		if( program.m_program->m_resourceLayout )
+		if( program.m_program->m_layouts.resourceLayout )
 		{
-			FORWARD_HR( WriteSetVulkan( description, program.m_program->m_registerInput, program.m_program->m_poolSizes, program.m_program->m_resourceLayout, renderContext ) );
+			FORWARD_HR( WriteSetVulkan( description, program.m_program->m_layouts.registerInput, program.m_program->m_layouts.poolSizes, program.m_program->m_layouts.resourceLayout, renderContext ) );
 		}
 
 		m_owner = &renderContext;

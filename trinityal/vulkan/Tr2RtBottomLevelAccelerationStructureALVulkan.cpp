@@ -5,6 +5,7 @@
 #if TRINITY_PLATFORM == TRINITY_VULKAN
 
 #include "Tr2RtBottomLevelAccelerationStructureALVulkan.h"
+#include "Tr2RtUtilitiesVulkan.h"
 #include "Tr2PrimaryRenderContextVulkan.h"
 #include "Tr2BufferALVulkan.h"
 #include "UtilitiesVulkan.h"
@@ -14,37 +15,41 @@
 
 namespace
 {
-VkDeviceSize AlignUp( VkDeviceSize value, VkDeviceSize alignment )
-{
-	return alignment ? ( value + alignment - 1 ) / alignment * alignment : value;
-}
-
 // The triangles of `geometry` as Vulkan describes them, addressed through the buffers'
 // device addresses. The vertex address adds the buffer's current offset: a renaming buffer
-// keeps its contents in a slot (Tr2BufferALVulkan.h). Fails when either buffer has no
-// address, which is a buffer created before the device had ray tracing or without a usage
-// that can be a build input.
-ALResult DescribeTriangles( const Tr2RtGeometryAL& geometry, Tr2RtBlasGeometryFlags::Type geometryFlags, VkAccelerationStructureGeometryKHR& result, uint32_t& primitiveCount )
+// keeps its contents in a slot (Tr2BufferALVulkan.h). E_INVALIDARG with `reason` saying why
+// when the geometry cannot be built from.
+ALResult DescribeTriangles( const Tr2RtGeometryAL& geometry, Tr2RtBlasGeometryFlags::Type geometryFlags, VkAccelerationStructureGeometryKHR& result, uint32_t& primitiveCount, const char*& reason )
 {
+	reason = nullptr;
 	auto vb = geometry.positions.m_vertexBuffer.TrinityALImpl_GetObject();
 	auto ib = geometry.indices.m_indexBuffer.TrinityALImpl_GetObject();
 	if( !vb || !ib )
 	{
+		reason = "no vertex or no index buffer";
 		return E_INVALIDARG;
 	}
 	const VkDeviceAddress vbAddress = vb->GetDeviceAddressVulkan();
 	const VkDeviceAddress ibAddress = ib->GetDeviceAddressVulkan();
 	if( !vbAddress || !ibAddress )
 	{
+		reason = "the vertex or index buffer has no device address (created without a build-input usage, or before the device could build acceleration structures)";
 		return E_INVALIDARG;
 	}
 	const VkFormat vertexFormat = TrinityALImpl::GetVulkanFormat( geometry.positions.m_positionFormat );
-	if( vertexFormat == VK_FORMAT_UNDEFINED || geometry.positions.m_stride == 0 || geometry.positions.m_vertexCount == 0 )
+	if( vertexFormat == VK_FORMAT_UNDEFINED )
 	{
+		reason = "the position format has no Vulkan format";
+		return E_INVALIDARG;
+	}
+	if( geometry.positions.m_stride == 0 || geometry.positions.m_vertexCount == 0 )
+	{
+		reason = "a zero vertex stride or vertex count";
 		return E_INVALIDARG;
 	}
 	if( geometry.indices.m_stride != 2 && geometry.indices.m_stride != 4 )
 	{
+		reason = "an index stride other than 2 or 4";
 		return E_INVALIDARG;
 	}
 
@@ -62,7 +67,26 @@ ALResult DescribeTriangles( const Tr2RtGeometryAL& geometry, Tr2RtBlasGeometryFl
 	triangles.indexData.deviceAddress = ibAddress + ib->GetOffsetVulkan() + VkDeviceSize( geometry.indices.m_indexOffset ) * geometry.indices.m_stride;
 	triangles.transformData.deviceAddress = 0;
 	primitiveCount = geometry.indices.m_indexCount / 3;
-	return primitiveCount ? S_OK : E_INVALIDARG;
+	if( !primitiveCount )
+	{
+		reason = "fewer than three indices";
+		return E_INVALIDARG;
+	}
+	return S_OK;
+}
+
+// Create's DescribeTriangles failures, once per reason: the engine logs a generic line for a
+// skinned BLAS only and ignores a static one's result (Tr2RaytracingGeometry.cpp).
+ALResult DescribeTrianglesForCreate( const Tr2RtGeometryAL& geometry, Tr2RtBlasGeometryFlags::Type geometryFlags, VkAccelerationStructureGeometryKHR& result, uint32_t& primitiveCount, const char* which )
+{
+	const char* reason = nullptr;
+	const ALResult hr = DescribeTriangles( geometry, geometryFlags, result, primitiveCount, reason );
+	static char s_site;
+	if( FAILED( hr ) && reason && CCP::LogOnceAL( &s_site, uint64_t( uintptr_t( reason ) ) ) )
+	{
+		CCP_AL_LOGERR( "Tr2RtBottomLevelAccelerationStructureAL::Create: no BLAS from the %s geometry: %s", which, reason );
+	}
+	return hr;
 }
 
 VkAccelerationStructureBuildGeometryInfoKHR BuildInfo( const VkAccelerationStructureGeometryKHR* geometry, Tr2RtBuildFlags::Type buildFlags )
@@ -82,112 +106,8 @@ VkAccelerationStructureBuildGeometryInfoKHR BuildInfo( const VkAccelerationStruc
 
 namespace TrinityALImpl
 {
-ALResult RtBufferVulkan::Create( VkDeviceSize requestedSize, VkDeviceSize alignment, VkBufferUsageFlags usage, bool hostVisible, Tr2PrimaryRenderContextAL& renderContext )
-{
-	const VkDeviceSize slack = alignment > 1 ? alignment - 1 : 0;
-	const VkMemoryPropertyFlagBits memoryProperty = hostVisible ? VkMemoryPropertyFlagBits( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ) : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-	FORWARD_HR( CreateBuffer( buffer, memory, size_t( requestedSize + slack ), usage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, memoryProperty, renderContext ) );
-
-	VkBufferDeviceAddressInfo addressInfo = { VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO };
-	addressInfo.buffer = buffer;
-	const VkDeviceAddress raw = renderContext.m_raytracing.getBufferDeviceAddress( renderContext.m_device, &addressInfo );
-	address = AlignUp( raw, alignment );
-	size = requestedSize;
-	if( hostVisible )
-	{
-		void* base = nullptr;
-		if( FAILED( Vk2Al( vkMapMemory( renderContext.m_device, memory, 0, VK_WHOLE_SIZE, 0, &base ) ) ) )
-		{
-			Destroy( renderContext );
-			return E_FAIL;
-		}
-		mapped = static_cast<uint8_t*>( base ) + ( address - raw );
-	}
-	return S_OK;
-}
-
-void RtBufferVulkan::Destroy( Tr2PrimaryRenderContextAL& renderContext )
-{
-	renderContext.DestroyLaterVulkan( buffer, &vkDestroyBuffer );
-	renderContext.DestroyLaterVulkan( memory, &vkFreeMemory );
-	buffer = VK_NULL_HANDLE;
-	memory = VK_NULL_HANDLE;
-	address = 0;
-	size = 0;
-	mapped = nullptr;
-}
-
-void RecordAccelerationStructureBuildVulkan( Tr2RenderContextAL& renderContext, const VkAccelerationStructureBuildGeometryInfoKHR& info, const VkAccelerationStructureBuildRangeInfoKHR& range, VkDeviceSize scratchSize )
-{
-	auto& owner = renderContext.GetPrimaryRenderContext();
-	auto& batch = renderContext.m_asBatch;
-	VkDependencyInfo dependency = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
-	dependency.memoryBarrierCount = 1;
-
-	const VkDeviceAddress scratchLow = info.scratchData.deviceAddress;
-	const VkDeviceAddress scratchHigh = scratchLow + scratchSize;
-	if( !batch.open )
-	{
-		// Closes the batch too, which is already closed; nothing between this and the build
-		// below records a command, so it opens right after.
-		renderContext.EndRenderPassVulkan();
-
-		VkMemoryBarrier2 before = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
-		before.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-		before.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-		before.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-		before.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_2_SHADER_READ_BIT;
-		dependency.pMemoryBarriers = &before;
-		owner.m_vkCmdPipelineBarrier2( renderContext.m_commandBuffer, &dependency );
-
-		batch.open = true;
-		batch.scratchLow = batch.scratchHigh = 0;
-		batch.written.clear();
-		batch.topLevelBuilt = false;
-	}
-	else
-	{
-		auto builtInBatch = [&batch]( VkAccelerationStructureKHR structure ) {
-			return structure != VK_NULL_HANDLE && std::find( batch.written.begin(), batch.written.end(), structure ) != batch.written.end();
-		};
-		// A TLAS reads every BLAS its instances name, and those were built in this batch or an
-		// earlier one; telling which costs more than the one barrier. For the same reason any
-		// build after a TLAS of the batch waits for it: it may rewrite a BLAS the TLAS read.
-		const bool readsBatch = info.type == VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR || batch.topLevelBuilt || builtInBatch( info.dstAccelerationStructure ) || builtInBatch( info.srcAccelerationStructure );
-		const bool scratchOverlaps = batch.scratchLow < batch.scratchHigh && scratchLow < batch.scratchHigh && batch.scratchLow < scratchHigh;
-		if( readsBatch || scratchOverlaps )
-		{
-			VkMemoryBarrier2 between = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
-			between.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-			between.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-			between.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-			between.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-			dependency.pMemoryBarriers = &between;
-			owner.m_vkCmdPipelineBarrier2( renderContext.m_commandBuffer, &dependency );
-			batch.scratchLow = batch.scratchHigh = 0;
-			batch.written.clear();
-			batch.topLevelBuilt = false;
-		}
-	}
-
-	const VkAccelerationStructureBuildRangeInfoKHR* ranges = &range;
-	owner.m_raytracing.cmdBuildAccelerationStructures( renderContext.m_commandBuffer, 1, &info, &ranges );
-
-	if( scratchSize )
-	{
-		batch.scratchLow = batch.scratchLow < batch.scratchHigh ? std::min( batch.scratchLow, scratchLow ) : scratchLow;
-		batch.scratchHigh = std::max( batch.scratchHigh, scratchHigh );
-	}
-	batch.written.push_back( info.dstAccelerationStructure );
-	batch.topLevelBuilt = batch.topLevelBuilt || info.type == VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
-}
-
-
 Tr2RtBottomLevelAccelerationStructureAL::Tr2RtBottomLevelAccelerationStructureAL() :
 	m_owner( nullptr ),
-	m_buffer( VK_NULL_HANDLE ),
-	m_memory( VK_NULL_HANDLE ),
-	m_size( 0 ),
 	m_accelerationStructure( VK_NULL_HANDLE ),
 	m_address( 0 ),
 	m_buildScratchSize( 0 ),
@@ -206,7 +126,7 @@ Tr2RtBottomLevelAccelerationStructureAL::~Tr2RtBottomLevelAccelerationStructureA
 ALResult Tr2RtBottomLevelAccelerationStructureAL::Create( const Tr2RtGeometryAL& geometry, const Tr2RtGeometryAL& capacity, Tr2RtBlasGeometryFlags::Type geometryFlags, Tr2RtBuildFlags::Type buildFlags, Tr2PrimaryRenderContextAL& renderContext )
 {
 	Destroy();
-	if( !renderContext.IsValid() || !renderContext.GetCaps().SupportsRaytracing() )
+	if( !renderContext.IsValid() || !renderContext.GetCaps().SupportsAccelerationStructuresVulkan() )
 	{
 		return E_INVALIDCALL;
 	}
@@ -217,10 +137,10 @@ ALResult Tr2RtBottomLevelAccelerationStructureAL::Create( const Tr2RtGeometryAL&
 
 	VkAccelerationStructureGeometryKHR capacityGeometry;
 	uint32_t capacityPrimitives = 0;
-	FORWARD_HR( DescribeTriangles( capacity, geometryFlags, capacityGeometry, capacityPrimitives ) );
+	FORWARD_HR( DescribeTrianglesForCreate( capacity, geometryFlags, capacityGeometry, capacityPrimitives, "capacity" ) );
 	VkAccelerationStructureGeometryKHR buildGeometry;
 	uint32_t buildPrimitives = 0;
-	FORWARD_HR( DescribeTriangles( geometry, geometryFlags, buildGeometry, buildPrimitives ) );
+	FORWARD_HR( DescribeTrianglesForCreate( geometry, geometryFlags, buildGeometry, buildPrimitives, "build" ) );
 	if( buildPrimitives > capacityPrimitives || buildGeometry.geometry.triangles.maxVertex > capacityGeometry.geometry.triangles.maxVertex )
 	{
 		return E_INVALIDARG;
@@ -235,17 +155,12 @@ ALResult Tr2RtBottomLevelAccelerationStructureAL::Create( const Tr2RtGeometryAL&
 		return E_INVALIDCALL;
 	}
 
-	VkBuffer buffer = VK_NULL_HANDLE;
-	VkDeviceMemory memory = VK_NULL_HANDLE;
-	FORWARD_HR( CreateBuffer( buffer, memory, size_t( sizes.accelerationStructureSize ), VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, renderContext ) );
+	FORWARD_HR( m_storage.Create( sizes.accelerationStructureSize, 1, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, false, renderContext ) );
 	m_owner = &renderContext;
-	m_buffer = buffer;
-	m_memory = memory;
-	m_size = sizes.accelerationStructureSize;
 
 	VkAccelerationStructureCreateInfoKHR createInfo = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
-	createInfo.buffer = m_buffer;
-	createInfo.size = m_size;
+	createInfo.buffer = m_storage.buffer;
+	createInfo.size = m_storage.size;
 	createInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
 	if( FAILED( Vk2Al( rt.createAccelerationStructure( renderContext.m_device, &createInfo, nullptr, &m_accelerationStructure ) ) ) )
 	{
@@ -293,9 +208,11 @@ ALResult Tr2RtBottomLevelAccelerationStructureAL::Update( const Tr2RtGeometryAL&
 		return E_INVALIDARG;
 	}
 
+	// No log here: a failed Update is the engine's signal to create a new structure.
 	VkAccelerationStructureGeometryKHR buildGeometry;
 	uint32_t buildPrimitives = 0;
-	FORWARD_HR( DescribeTriangles( geometry, m_geometryFlags, buildGeometry, buildPrimitives ) );
+	const char* reason = nullptr;
+	FORWARD_HR( DescribeTriangles( geometry, m_geometryFlags, buildGeometry, buildPrimitives, reason ) );
 	const auto& triangles = buildGeometry.geometry.triangles;
 	const GeometryKey key = { uint32_t( triangles.vertexStride ), triangles.maxVertex + 1, triangles.vertexFormat, triangles.indexType, geometry.indices.m_indexCount };
 
@@ -307,7 +224,7 @@ ALResult Tr2RtBottomLevelAccelerationStructureAL::Update( const Tr2RtGeometryAL&
 		// A different LOD: rebuild into the same structure if it fits, as DX12 does.
 		VkAccelerationStructureBuildSizesInfoKHR sizes = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
 		m_owner->m_raytracing.getAccelerationStructureBuildSizes( m_owner->m_device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &info, &buildPrimitives, &sizes );
-		if( !sizes.accelerationStructureSize || sizes.accelerationStructureSize > m_size )
+		if( !sizes.accelerationStructureSize || sizes.accelerationStructureSize > m_storage.size )
 		{
 			return E_INVALIDARG;
 		}
@@ -341,14 +258,11 @@ void Tr2RtBottomLevelAccelerationStructureAL::Destroy()
 	{
 		// The structure ahead of its storage: the pending list drains in order.
 		m_owner->DestroyLaterVulkan( m_accelerationStructure, m_owner->m_raytracing.destroyAccelerationStructure );
-		m_owner->DestroyLaterVulkan( m_buffer, &vkDestroyBuffer );
-		m_owner->DestroyLaterVulkan( m_memory, &vkFreeMemory );
+		m_storage.Destroy( *m_owner );
 		m_owner = nullptr;
 	}
 	m_accelerationStructure = VK_NULL_HANDLE;
-	m_buffer = VK_NULL_HANDLE;
-	m_memory = VK_NULL_HANDLE;
-	m_size = 0;
+	m_storage = RtBufferVulkan();
 	m_address = 0;
 	m_buildScratchSize = 0;
 	m_updateScratchSize = 0;

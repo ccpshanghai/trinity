@@ -8,6 +8,7 @@
 #include "Tr2PrimaryRenderContextVulkan.h"
 #include "Tr2BufferALVulkan.h"
 #include "UtilitiesVulkan.h"
+#include "Tr2RtUtilitiesVulkan.h"
 
 namespace
 {
@@ -81,7 +82,7 @@ Tr2RtTopLevelAccelerationStructureAL::~Tr2RtTopLevelAccelerationStructureAL()
 ALResult Tr2RtTopLevelAccelerationStructureAL::Create( const size_t count, const Tr2RtInstanceAL* instances, Tr2RtBuildFlags::Type buildFlags, Tr2PrimaryRenderContextAL& renderContext )
 {
 	Destroy();
-	if( !renderContext.IsValid() || !renderContext.GetCaps().SupportsRaytracing() )
+	if( !renderContext.IsValid() || !renderContext.GetCaps().SupportsAccelerationStructuresVulkan() )
 	{
 		return E_INVALIDCALL;
 	}
@@ -158,37 +159,18 @@ ALResult Tr2RtTopLevelAccelerationStructureAL::Update( const size_t count, const
 	return Build( count, instances, renderContext );
 }
 
-ALResult Tr2RtTopLevelAccelerationStructureAL::AcquireInstanceBuffer( RtBufferVulkan*& buffer )
-{
-	const uint64_t rendered = m_owner->GetRenderedFrameNumber();
-	const uint64_t recording = m_owner->GetRecordingFrameNumber();
-	for( auto it = begin( m_instanceBuffers ); it != end( m_instanceBuffers ); ++it )
-	{
-		if( it->frame <= rendered )
-		{
-			it->frame = recording;
-			buffer = &it->buffer;
-			return S_OK;
-		}
-	}
-	InstanceBuffer instanceBuffer;
-	instanceBuffer.frame = recording;
-	// 16: the instance array's address alignment (VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03715).
-	FORWARD_HR( instanceBuffer.buffer.Create( m_capacity * sizeof( VkAccelerationStructureInstanceKHR ), 16, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR, true, *m_owner ) );
-	m_instanceBuffers.push_back( instanceBuffer );
-	buffer = &m_instanceBuffers.back().buffer;
-	return S_OK;
-}
-
 ALResult Tr2RtTopLevelAccelerationStructureAL::Build( size_t count, const Tr2RtInstanceAL* instances, Tr2RenderContextAL& renderContext )
 {
-	RtBufferVulkan* instanceBuffer = nullptr;
-	FORWARD_HR( AcquireInstanceBuffer( instanceBuffer ) );
-	// Host-coherent and written before the frame is submitted, so no barrier is needed for
-	// the build to see it.
-	FORWARD_HR( FillInstances( instanceBuffer->mapped, count, instances ) );
+	// The instance descriptors in this frame's upload memory: read by the build recorded below,
+	// in this frame, and valid until this frame slot's fence. 16: the instance array's address
+	// alignment (VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03715). Host-coherent and written
+	// before the frame is submitted, so no barrier is needed for the build to see it.
+	VkDeviceAddress instanceAddress = 0;
+	void* instanceData = nullptr;
+	FORWARD_HR( m_owner->AllocateUploadVulkan( count * sizeof( VkAccelerationStructureInstanceKHR ), 16, instanceAddress, instanceData ) );
+	FORWARD_HR( FillInstances( static_cast<uint8_t*>( instanceData ), count, instances ) );
 
-	VkAccelerationStructureGeometryKHR geometry = InstancesGeometry( instanceBuffer->address );
+	VkAccelerationStructureGeometryKHR geometry = InstancesGeometry( instanceAddress );
 	VkAccelerationStructureBuildGeometryInfoKHR info = BuildInfo( &geometry, m_buildFlags );
 	const VkAccelerationStructureKHR accelerationStructure = m_buffer.TrinityALImpl_GetObject()->GetAccelerationStructureVulkan();
 	// A refit needs the same instance count as the build it refits; anything else is a full
@@ -212,15 +194,7 @@ ALResult Tr2RtTopLevelAccelerationStructureAL::Build( size_t count, const Tr2RtI
 
 void Tr2RtTopLevelAccelerationStructureAL::Destroy()
 {
-	if( m_owner )
-	{
-		for( auto it = begin( m_instanceBuffers ); it != end( m_instanceBuffers ); ++it )
-		{
-			it->buffer.Destroy( *m_owner );
-		}
-		m_owner = nullptr;
-	}
-	m_instanceBuffers.clear();
+	m_owner = nullptr;
 	m_buildScratchSize = 0;
 	m_updateScratchSize = 0;
 	// The buffer's Destroy queues the structure built over it, then the storage.

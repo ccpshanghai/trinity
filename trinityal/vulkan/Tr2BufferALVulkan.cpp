@@ -139,14 +139,15 @@ namespace TrinityALImpl
 			usage |= isTypedBuffer ? VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT : VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 		}
 
-		// Ray tracing, and only on a device that has it -- elsewhere neither branch runs and the
-		// usage is what it always was (Tr2GpuUsage::ACCELERATION_STRUCTURE included: ignored).
+		// Acceleration structures, and only on a device that can build them -- elsewhere neither
+		// branch runs and the usage is what it always was (Tr2GpuUsage::ACCELERATION_STRUCTURE
+		// included: ignored).
 		//
 		// BLAS input is whatever vertex and index storage the engine already has: the pooled
 		// g_sharedBuffer every TriGeometryRes allocates from, and the skinned-vertex UAV buffer.
 		// Both exist long before any BLAS is asked for and a VkBuffer's usage cannot be added
 		// later, so every buffer that can be a BLAS input gets the bits at creation.
-		if( renderContext.GetCaps().SupportsRaytracing() )
+		if( renderContext.GetCaps().SupportsAccelerationStructuresVulkan() )
 		{
 			if( HasFlag( desc.gpuUsage, Tr2GpuUsage::VERTEX_BUFFER ) || HasFlag( desc.gpuUsage, Tr2GpuUsage::INDEX_BUFFER ) || HasFlag( desc.gpuUsage, Tr2GpuUsage::SHADER_RESOURCE ) || HasFlag( desc.gpuUsage, Tr2GpuUsage::UNORDERED_ACCESS ) )
 			{

@@ -26,7 +26,9 @@ inline CcpLogChannel_t& GetTrinityALChannel()
 namespace CCP
 {
 // True the first time `key` is seen for `category`, false every time after. A category is an
-// address that belongs to one call site (a function-local static); a key is whatever the site
+// address that belongs to one call site: a function-local `static char`, not const -- a linker
+// folding identical constants (MSVC /OPT:ICF, gold --icf) may give two const sites one address,
+// and the two would then share their keys. A key is whatever the site
 // wants one line per -- a pipeline, a program, a (layout, binding) pair. At most
 // LOG_ONCE_KEYS_AL keys are remembered per category, and a full category answers false for any
 // new key, so a scene that creates objects without end costs a bounded amount of memory and

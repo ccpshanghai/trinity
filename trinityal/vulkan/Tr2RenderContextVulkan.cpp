@@ -1629,17 +1629,17 @@ ALResult Tr2RenderContextAL::SetPipeline()
 	// resource set across shader program changes, and a set is only legal with the
 	// layout it was allocated against. Drawing CanSampleVolumeTexture's set with
 	// CanSampleUnassignedTexture's 2D-sampling program was this suite's one flaky test.
-	if( program && IsBindableWithVulkan( program->m_resourceLayout ) )
+	if( program && IsBindableWithVulkan( program->m_layouts.resourceLayout ) )
 	{
 		vkCmdBindDescriptorSets( 
 			m_commandBuffer, 
 			VK_PIPELINE_BIND_POINT_GRAPHICS, 
-			program->m_pipelineLayout, 
+			program->m_layouts.pipelineLayout,
 			1, 
 			1,
 			&m_resourceSet.m_resourceSet->m_descriptorSet, 0, nullptr );
 	}
-	else if( program && program->m_resourceLayout )
+	else if( program && program->m_layouts.resourceLayout )
 	{
 		// The program statically uses set 1 and the caller bound nothing. Without this
 		// the draw consumed whatever the recycled pool last held -- a stale set from an
@@ -1652,7 +1652,7 @@ ALResult Tr2RenderContextAL::SetPipeline()
 			vkCmdBindDescriptorSets(
 				m_commandBuffer,
 				VK_PIPELINE_BIND_POINT_GRAPHICS,
-				program->m_pipelineLayout,
+				program->m_layouts.pipelineLayout,
 				1,
 				1,
 				&defaultSet, 0, nullptr );
@@ -1756,7 +1756,7 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 	{
 		return S_OK;
 	}
-	return BindConstantBuffers( bindPoint, program->m_constantLayout, program->m_constantBindings, program->m_pipelineLayout );
+	return BindConstantBuffers( bindPoint, program->m_layouts.constantLayout, program->m_layouts.constantBindings, program->m_layouts.pipelineLayout );
 }
 
 ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint, VkDescriptorSetLayout constantLayout, const std::set<uint32_t>& constantBindings, VkPipelineLayout pipelineLayout )
@@ -1890,13 +1890,13 @@ bool Tr2RenderContextAL::IsBindableWithVulkan( VkDescriptorSetLayout layout ) co
 ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned groupDimY, unsigned groupDimZ ) throw( )
 {
 	auto* program = m_pipelineSource.m_shaderProgram.m_program.get();
-	if( !program || !program->m_pipelineLayout || program->m_shaderInfo.empty() )
+	if( !program || !program->m_layouts.pipelineLayout || program->m_shaderInfo.empty() )
 	{
 		return E_INVALIDCALL;
 	}
 
-	const bool resourceSetBound = IsBindableWithVulkan( program->m_resourceLayout );
-	if( program->m_resourceLayout && !resourceSetBound )
+	const bool resourceSetBound = IsBindableWithVulkan( program->m_layouts.resourceLayout );
+	if( program->m_layouts.resourceLayout && !resourceSetBound )
 	{
 		// The program reads set-1 resources and the caller's resource set failed to build, was
 		// never set, or was built for another program (the AL's state machine keeps the last set
@@ -1906,7 +1906,7 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 		// nothing for a UAV or buffer slot, which nearly every compute program has.
 		// Once per program and reason: the engine names the effect (Tr2Renderer::RunComputeShader).
 		const bool anySet = m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet;
-		static const char s_noSetSite = 0, s_otherLayoutSite = 0;
+		static char s_noSetSite, s_otherLayoutSite;
 		if( CCP::LogOnceAL( anySet ? &s_otherLayoutSite : &s_noSetSite, uint64_t( uintptr_t( program ) ) ) )
 		{
 			CCP_AL_LOGERR( anySet ? "Tr2RenderContextAL::RunComputeShader: dispatch skipped for program %p, the bound resource set was built for another program's layout"
@@ -1919,9 +1919,9 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 	// The compute pipeline is determined by the shader module and pipeline layout,
 	// both owned by the program. Cache it keyed by the layout, invalidating on
 	// program change (the same handle-reuse concern as the constant descriptor set).
-	if( m_computePipelineLayout != program->m_pipelineLayout )
+	if( m_computePipelineLayout != program->m_layouts.pipelineLayout )
 	{
-		m_computePipelineLayout = program->m_pipelineLayout;
+		m_computePipelineLayout = program->m_layouts.pipelineLayout;
 		if( m_computePipeline )
 		{
 			m_owner->DestroyLaterVulkan( m_computePipeline, vkDestroyPipeline );
@@ -1936,7 +1936,7 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 			nullptr,
 			0,
 			program->m_shaderInfo[0],
-			program->m_pipelineLayout,
+			program->m_layouts.pipelineLayout,
 			VK_NULL_HANDLE,
 			0
 		};
@@ -1977,12 +1977,12 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 
 	vkCmdBindPipeline( m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_computePipeline );
 
-	if( resourceSetBound && program->m_resourceLayout )
+	if( resourceSetBound && program->m_layouts.resourceLayout )
 	{
 		vkCmdBindDescriptorSets(
 			m_commandBuffer,
 			VK_PIPELINE_BIND_POINT_COMPUTE,
-			program->m_pipelineLayout,
+			program->m_layouts.pipelineLayout,
 			1,
 			1,
 			&m_resourceSet.m_resourceSet->m_descriptorSet, 0, nullptr );
@@ -2011,6 +2011,20 @@ ALResult Tr2RenderContextAL::DispatchRays( Tr2RtPipelineStateAL& pipeline, Tr2Rt
 	{
 		return E_INVALIDARG;
 	}
+	// A table's records are in the upload memory of the frame that created it, which another
+	// frame reuses once that one has rendered: only that frame may trace with it.
+	if( table->GetFrameVulkan() != m_owner->GetRecordingFrameNumber() )
+	{
+		static char s_staleTableSite;
+		if( CCP::LogOnceAL( &s_staleTableSite, uint64_t( rt->m_pipeline ) ) )
+		{
+			CCP_AL_LOGERR( "Tr2RenderContextAL::DispatchRays: trace skipped on pipeline %p, the shader table was created in frame %llu and this is frame %llu; a table is good for the frame that created it",
+						   (void*)rt->m_pipeline,
+						   (unsigned long long)table->GetFrameVulkan(),
+						   (unsigned long long)m_owner->GetRecordingFrameNumber() );
+		}
+		return E_INVALIDCALL;
+	}
 	VkStridedDeviceAddressRegionKHR rayGen;
 	if( !table->GetRayGenRegionVulkan( rayGenShader, rayGen ) )
 	{
@@ -2020,9 +2034,9 @@ ALResult Tr2RenderContextAL::DispatchRays( Tr2RtPipelineStateAL& pipeline, Tr2Rt
 	// The set ApplyMaterialDataForRtState created against this pipeline. Any other set (one left
 	// bound by an earlier draw) was allocated against another layout and is not legal here.
 	// Checked before anything is recorded, so a refused trace leaves the command buffer alone.
-	if( rt->m_resourceLayout && !IsBindableWithVulkan( rt->m_resourceLayout ) )
+	if( rt->m_layouts.resourceLayout && !IsBindableWithVulkan( rt->m_layouts.resourceLayout ) )
 	{
-		static const char s_site = 0;
+		static char s_site;
 		if( CCP::LogOnceAL( &s_site, uint64_t( rt->m_pipeline ) ) )
 		{
 			const bool anySet = m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet;
@@ -2035,12 +2049,12 @@ ALResult Tr2RenderContextAL::DispatchRays( Tr2RtPipelineStateAL& pipeline, Tr2Rt
 	// The layout matches, but a set skips a binding no module of the pipeline it was written for
 	// read (Tr2ResourceSetAL::WriteSetVulkan). A pipeline rebuilt since, with a library that does
 	// read it, would trace through an unwritten descriptor.
-	if( rt->m_resourceLayout )
+	if( rt->m_layouts.resourceLayout )
 	{
 		uint32_t unwritten = 0;
-		if( !m_resourceSet.m_resourceSet->CoversVulkan( rt->m_registerInput, unwritten ) )
+		if( !m_resourceSet.m_resourceSet->CoversVulkan( rt->m_layouts.registerInput, unwritten ) )
 		{
-			static const char s_site = 0;
+			static char s_site;
 			if( CCP::LogOnceAL( &s_site, uint64_t( rt->m_pipeline ) ) )
 			{
 				CCP_AL_LOGERR( "Tr2RenderContextAL::DispatchRays: trace skipped on pipeline %p, binding %u is read by the pipeline and was left unwritten in the bound resource set", (void*)rt->m_pipeline, unwritten );
@@ -2078,17 +2092,17 @@ ALResult Tr2RenderContextAL::DispatchRays( Tr2RtPipelineStateAL& pipeline, Tr2Rt
 	m_owner->m_vkCmdPipelineBarrier2( m_commandBuffer, &dependencyInfo );
 
 	vkCmdBindPipeline( m_commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt->m_pipeline );
-	if( rt->m_resourceLayout )
+	if( rt->m_layouts.resourceLayout )
 	{
-		vkCmdBindDescriptorSets( m_commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt->m_pipelineLayout, 1, 1, &m_resourceSet.m_resourceSet->m_descriptorSet, 0, nullptr );
+		vkCmdBindDescriptorSets( m_commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt->m_layouts.pipelineLayout, 1, 1, &m_resourceSet.m_resourceSet->m_descriptorSet, 0, nullptr );
 	}
-	FORWARD_HR( BindConstantBuffers( VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt->m_constantLayout, rt->m_constantBindings, rt->m_pipelineLayout ) );
+	FORWARD_HR( BindConstantBuffers( VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt->m_layouts.constantLayout, rt->m_layouts.constantBindings, rt->m_layouts.pipelineLayout ) );
 
 	m_owner->m_raytracing.cmdTraceRays( m_commandBuffer, &rayGen, &table->GetMissRegionVulkan(), &table->GetHitRegionVulkan(), &callable, width, height, depth );
 	// Once per pipeline: the shadow pass and the froxel fog each build their own, so each says
 	// once that it traced, and with what record stride (a local constant buffer's bytes
 	// travel inside the raygen and miss records).
-	static const char s_firstTraceSite = 0;
+	static char s_firstTraceSite;
 	if( CCP::LogOnceAL( &s_firstTraceSite, uint64_t( rt->m_pipeline ) ) )
 	{
 		CCP_AL_LOG( "vulkan: first DispatchRays on pipeline %p: %ux%ux%u, raygen record stride %u, %u miss (stride %u), %u hit group records",
@@ -2265,7 +2279,7 @@ ALResult Tr2RenderContextAL::CreatePipeline( VkPipeline& pipeline )
 		m_renderPassSource.m_rt[0].format != VK_FORMAT_UNDEFINED ? &m_pipelineSource.m_depthStencilState : nullptr,
 		&colorBlendState,
 		&dynamicInfo,
-		m_pipelineSource.m_shaderProgram.m_program->m_pipelineLayout,
+		m_pipelineSource.m_shaderProgram.m_program->m_layouts.pipelineLayout,
 		VK_NULL_HANDLE,
 		0,
 		VK_NULL_HANDLE,

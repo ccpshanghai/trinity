@@ -22,8 +22,8 @@ public:
 
 	// Capacity Align( count, 128 ), as DX12; built on the primary context's command buffer.
 	ALResult Create( const size_t count, const Tr2RtInstanceAL* instances, Tr2RtBuildFlags::Type buildFlags, Tr2PrimaryRenderContextAL& renderContext );
-	// Up to the capacity: new instance data from a per-frame ring, then a refit (ALLOW_UPDATE
-	// and the same count as the last build) or a rebuild into the same structure.
+	// Up to the capacity: new instance data in the frame's upload memory, then a refit
+	// (ALLOW_UPDATE and the same count as the last build) or a rebuild into the same structure.
 	ALResult Update( const size_t count, const Tr2RtInstanceAL* instances, Tr2RenderContextAL& renderContext );
 	void Destroy() override;
 	bool IsValid() const;
@@ -35,14 +35,6 @@ public:
 	size_t GetCapacity() const;
 
 private:
-	// The instance descriptors for one build, host-visible, reused once the frame that read
-	// them has rendered.
-	struct InstanceBuffer
-	{
-		RtBufferVulkan buffer;
-		uint64_t frame;
-	};
-	ALResult AcquireInstanceBuffer( RtBufferVulkan*& buffer );
 	ALResult Build( size_t count, const Tr2RtInstanceAL* instances, Tr2RenderContextAL& renderContext );
 
 	Tr2PrimaryRenderContextAL* m_owner;
@@ -51,7 +43,6 @@ private:
 	// (Tr2PrimaryRenderContextAL::AllocateRtScratchVulkan).
 	VkDeviceSize m_buildScratchSize;
 	VkDeviceSize m_updateScratchSize;
-	std::vector<InstanceBuffer> m_instanceBuffers;
 	size_t m_capacity;
 	size_t m_builtCount;
 	Tr2RtBuildFlags::Type m_buildFlags;

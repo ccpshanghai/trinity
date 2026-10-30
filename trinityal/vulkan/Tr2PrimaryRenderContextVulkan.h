@@ -87,6 +87,14 @@ public:
 	// HOST_COHERENT, so the caller neither flushes nor unmaps.
 	ALResult AllocateUploadVulkan( VkDeviceSize size, VkBuffer& buffer, VkDeviceSize& offset, void*& mapped );
 
+	// The same memory read by the GPU through its device address, at an address aligned to
+	// `alignment`: a shader binding table (shaderGroupBaseAlignment) or a TLAS build's instance
+	// descriptors (16). Valid, like every upload, only in the frame that allocated it -- what a
+	// table records and DispatchRays checks (Tr2RtShaderTableALVulkan). The chunks carry the
+	// address and build-input usage only on a device that can build acceleration structures, and
+	// the shader binding table usage only with the ray tracing pipeline; E_INVALIDCALL without.
+	ALResult AllocateUploadVulkan( VkDeviceSize size, VkDeviceSize alignment, VkDeviceAddress& address, void*& mapped );
+
 	// `size` bytes of device-local scratch for one acceleration structure build, at an address
 	// aligned to minAccelerationStructureScratchOffsetAlignment
 	// (VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03710), inside one buffer (-03671 and
@@ -211,10 +219,13 @@ private:
 		VkBuffer buffer = VK_NULL_HANDLE;
 		VkDeviceMemory memory = VK_NULL_HANDLE;
 		uint8_t* mapped = nullptr;
+		VkDeviceAddress address = 0; // of byte 0; 0 without acceleration structures
 		VkDeviceSize size = 0;
 		VkDeviceSize used = 0;
 	};
 	UploadChunk m_upload[VIRTUAL_FRAMES];
+	// Both AllocateUploadVulkan: `addressAlignment` 0 aligns the offset to 16 and needs no address.
+	ALResult AllocateUploadChunkVulkan( VkDeviceSize size, VkDeviceSize addressAlignment, VkBuffer& buffer, VkDeviceSize& offset, void*& mapped );
 	void DestroyUploadVulkan();
 
 	// AllocateRtScratchVulkan's arenas. `address` is the buffer's device address, unaligned;
@@ -383,23 +394,30 @@ public:
 	PFN_vkQueueSubmit2 m_vkQueueSubmit2;
 
 	// The ray-tracing entry points, fetched with vkGetDeviceProcAddr at device creation for the
-	// same reason as the two pairs above. All null unless GetCaps().SupportsRaytracing(), and
-	// the cap is only true when every one of them resolved.
+	// same reason as the two pairs above, in the two groups of RaytracingLevelVulkan. All null
+	// unless the device has a ray tracing level, and a level is only enabled when every entry
+	// point of it and of the levels below resolved.
 	struct RaytracingEntryPointsVulkan
 	{
+		// VK_KHR_acceleration_structure, and the buffer addresses its builds read.
 		PFN_vkGetAccelerationStructureBuildSizesKHR getAccelerationStructureBuildSizes = nullptr;
 		PFN_vkCreateAccelerationStructureKHR createAccelerationStructure = nullptr;
 		PFN_vkDestroyAccelerationStructureKHR destroyAccelerationStructure = nullptr;
 		PFN_vkCmdBuildAccelerationStructuresKHR cmdBuildAccelerationStructures = nullptr;
 		PFN_vkGetAccelerationStructureDeviceAddressKHR getAccelerationStructureDeviceAddress = nullptr;
+		PFN_vkGetBufferDeviceAddress getBufferDeviceAddress = nullptr;
+		// VK_KHR_ray_tracing_pipeline.
 		PFN_vkCreateRayTracingPipelinesKHR createRayTracingPipelines = nullptr;
 		PFN_vkGetRayTracingShaderGroupHandlesKHR getRayTracingShaderGroupHandles = nullptr;
 		PFN_vkCmdTraceRaysKHR cmdTraceRays = nullptr;
-		PFN_vkGetBufferDeviceAddress getBufferDeviceAddress = nullptr;
 
-		bool IsComplete() const
+		bool HasAccelerationStructureEntryPoints() const
 		{
-			return getAccelerationStructureBuildSizes && createAccelerationStructure && destroyAccelerationStructure && cmdBuildAccelerationStructures && getAccelerationStructureDeviceAddress && createRayTracingPipelines && getRayTracingShaderGroupHandles && cmdTraceRays && getBufferDeviceAddress;
+			return getAccelerationStructureBuildSizes && createAccelerationStructure && destroyAccelerationStructure && cmdBuildAccelerationStructures && getAccelerationStructureDeviceAddress && getBufferDeviceAddress;
+		}
+		bool HasPipelineEntryPoints() const
+		{
+			return createRayTracingPipelines && getRayTracingShaderGroupHandles && cmdTraceRays;
 		}
 	};
 	RaytracingEntryPointsVulkan m_raytracing;
@@ -419,23 +437,6 @@ public:
 	// rebuild was refused. Same global input, same handle: the kept set stays legal. Order of
 	// `bindings` does not matter.
 	ALResult AcquireRtResourceLayoutVulkan( std::vector<VkDescriptorSetLayoutBinding> bindings, VkDescriptorSetLayout& layout );
-
-	// Host-visible shader binding table buffers between tables. The engine builds every table
-	// again every frame (Tr2RaytracingManager, and a stack-local one per froxel-fog dispatch),
-	// so a buffer per table was a vkAllocateMemory per table per frame. A table's buffer comes
-	// back here when the table is destroyed, stamped with the recording frame, and is handed
-	// out again once GetRenderedFrameNumber has passed that frame
-	// (Tr2RtShaderTableALVulkan.cpp). Freed in Destroy, after the device is idle.
-	struct RtTableBufferVulkan
-	{
-		VkBuffer buffer = VK_NULL_HANDLE;
-		VkDeviceMemory memory = VK_NULL_HANDLE;
-		VkDeviceSize size = 0; // bytes the buffer holds
-		VkDeviceAddress address = 0; // of byte 0, unaligned
-		uint8_t* mapped = nullptr; // byte 0; mapped for the buffer's life
-		uint64_t lastUsedFrame = 0;
-	};
-	std::vector<RtTableBufferVulkan> m_rtTableBuffers;
 
 private:
 	// AcquireRtResourceLayoutVulkan's layouts, keyed by (binding, type, count, stages) per

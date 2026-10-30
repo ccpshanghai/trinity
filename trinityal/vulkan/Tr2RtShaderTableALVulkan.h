@@ -8,7 +8,6 @@
 
 #include "../include/Tr2RtShaderTableAL.h"
 #include "../include/Tr2RtPipelineStateAL.h"
-#include "Tr2RtBottomLevelAccelerationStructureALVulkan.h"
 
 namespace TrinityALImpl
 {
@@ -24,8 +23,9 @@ namespace TrinityALImpl
 // of shaderGroupBaseAlignment; a region's stride is handle + its largest record, rounded up to
 // shaderGroupHandleAlignment. Ray generation records each start on a base-aligned boundary,
 // because DispatchRays picks one by name and the raygen region's size must equal its stride.
-// One host-visible buffer from the primary context's table buffer pool
-// (Tr2PrimaryRenderContextAL::m_rtTableBuffers), returned to it on Destroy.
+// The records are in the frame's upload memory (Tr2PrimaryRenderContextAL::AllocateUploadVulkan),
+// so a table is good for the frame that created it and no other: DispatchRays refuses a table
+// from an earlier frame, whose memory may already hold another frame's data.
 class Tr2RtShaderTableAL : public Tr2DeviceResourceAL<Tr2RtShaderTableAL>
 {
 public:
@@ -49,15 +49,16 @@ public:
 	{
 		return m_hitRegion;
 	}
+	// The recording frame the table was created in, the only one it may be traced in.
+	uint64_t GetFrameVulkan() const
+	{
+		return m_frame;
+	}
 
 private:
 	Tr2PrimaryRenderContextAL* m_owner;
-	// The pooled buffer (see the .cpp), and the base-aligned address the regions start from.
-	VkBuffer m_buffer;
-	VkDeviceMemory m_memory;
-	VkDeviceSize m_bufferSize;
-	VkDeviceAddress m_bufferAddress;
-	uint8_t* m_bufferMapped;
+	uint64_t m_frame;
+	// The base-aligned address the regions start from, in that frame's upload memory.
 	VkDeviceAddress m_address;
 	std::vector<std::wstring> m_rayGenNames;
 	VkDeviceSize m_rayGenSpacing;

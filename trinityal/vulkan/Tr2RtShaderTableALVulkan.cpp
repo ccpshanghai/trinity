@@ -11,96 +11,17 @@
 #include "UtilitiesVulkan.h"
 #include "../ALLog.h"
 #include "VkResult.h"
+#include "Tr2RtUtilitiesVulkan.h"
 
 #include <algorithm>
 #include <atomic>
-
-namespace
-{
-VkDeviceSize AlignUp( VkDeviceSize value, VkDeviceSize alignment )
-{
-	return alignment ? ( value + alignment - 1 ) / alignment * alignment : value;
-}
-
-typedef Tr2PrimaryRenderContextAL::RtTableBufferVulkan TableBuffer;
-
-// The smallest allocation, and the growth step: tables differ in size from frame to frame (a
-// hull's hit groups come and go), and a buffer sized to the byte would rarely fit the next one.
-const VkDeviceSize TABLE_BUFFER_GRANULE = 64 * 1024;
-// Free buffers kept beyond this are released: each table in flight needs one, and a frame
-// builds two or three tables with VIRTUAL_FRAMES frames in flight.
-const size_t TABLE_BUFFER_POOL_LIMIT = 16;
-
-// A free buffer of at least `size` bytes whose last table has finished rendering -- the
-// smallest such -- or a new one.
-ALResult AcquireTableBuffer( VkDeviceSize size, Tr2PrimaryRenderContextAL& renderContext, TableBuffer& result )
-{
-	auto& pool = renderContext.m_rtTableBuffers;
-	const uint64_t rendered = renderContext.GetRenderedFrameNumber();
-	auto best = pool.end();
-	for( auto it = pool.begin(); it != pool.end(); ++it )
-	{
-		if( it->size >= size && it->lastUsedFrame <= rendered && ( best == pool.end() || it->size < best->size ) )
-		{
-			best = it;
-		}
-	}
-	if( best != pool.end() )
-	{
-		result = *best;
-		pool.erase( best );
-		return S_OK;
-	}
-
-	TableBuffer created;
-	created.size = AlignUp( size, TABLE_BUFFER_GRANULE );
-	FORWARD_HR( TrinityALImpl::CreateBuffer( created.buffer, created.memory, size_t( created.size ), VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, VkMemoryPropertyFlagBits( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ), renderContext ) );
-	VkBufferDeviceAddressInfo addressInfo = { VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO };
-	addressInfo.buffer = created.buffer;
-	created.address = renderContext.m_raytracing.getBufferDeviceAddress( renderContext.m_device, &addressInfo );
-	void* mapped = nullptr;
-	if( FAILED( Vk2Al( vkMapMemory( renderContext.m_device, created.memory, 0, VK_WHOLE_SIZE, 0, &mapped ) ) ) )
-	{
-		renderContext.DestroyLaterVulkan( created.buffer, &vkDestroyBuffer );
-		renderContext.DestroyLaterVulkan( created.memory, &vkFreeMemory );
-		return E_FAIL;
-	}
-	created.mapped = static_cast<uint8_t*>( mapped );
-	result = created;
-	return S_OK;
-}
-
-// Back to the pool, not to be handed out before the frame recording now has rendered: the
-// table may have been used by a dispatch recorded in it.
-void ReleaseTableBuffer( const TableBuffer& buffer, Tr2PrimaryRenderContextAL& renderContext )
-{
-	auto& pool = renderContext.m_rtTableBuffers;
-	TableBuffer released = buffer;
-	released.lastUsedFrame = renderContext.GetRecordingFrameNumber();
-	pool.push_back( released );
-	if( pool.size() > TABLE_BUFFER_POOL_LIMIT )
-	{
-		// The least recently used goes, through the deferred path because it may be in flight.
-		auto oldest = std::min_element( pool.begin(), pool.end(), []( const TableBuffer& a, const TableBuffer& b ) {
-			return a.lastUsedFrame < b.lastUsedFrame;
-		} );
-		renderContext.DestroyLaterVulkan( oldest->buffer, &vkDestroyBuffer );
-		renderContext.DestroyLaterVulkan( oldest->memory, &vkFreeMemory );
-		pool.erase( oldest );
-	}
-}
-}
-
+#include <iterator>
 
 namespace TrinityALImpl
 {
 Tr2RtShaderTableAL::Tr2RtShaderTableAL() :
 	m_owner( nullptr ),
-	m_buffer( VK_NULL_HANDLE ),
-	m_memory( VK_NULL_HANDLE ),
-	m_bufferSize( 0 ),
-	m_bufferAddress( 0 ),
-	m_bufferMapped( nullptr ),
+	m_frame( 0 ),
 	m_address( 0 ),
 	m_rayGenSpacing( 0 ),
 	m_rayGenStride( 0 ),
@@ -149,7 +70,7 @@ ALResult Tr2RtShaderTableAL::Create( const Tr2RtShaderTableDescriptionAL& desc, 
 			return S_OK;
 		}
 		const uint32_t reg = record.group->recordRegister;
-		const ::Tr2ConstantBufferAL* cb = reg < 8 ? shaderRecord.material.m_constants[reg] : nullptr;
+		const ::Tr2ConstantBufferAL* cb = reg < uint32_t( std::size( shaderRecord.material.m_constants ) ) ? shaderRecord.material.m_constants[reg] : nullptr;
 		if( !cb || !cb->IsValid() )
 		{
 			// DX12 points the record at its null constant buffer, which reads as zeros. The
@@ -192,24 +113,26 @@ ALResult Tr2RtShaderTableAL::Create( const Tr2RtShaderTableDescriptionAL& desc, 
 
 	const VkDeviceSize baseAlignment = properties.shaderGroupBaseAlignment;
 	const VkDeviceSize handleAlignment = properties.shaderGroupHandleAlignment;
-	const VkDeviceSize rayGenStride = AlignUp( handleSize + rayGenData, handleAlignment );
-	const VkDeviceSize rayGenSpacing = AlignUp( rayGenStride, baseAlignment );
-	const VkDeviceSize missStride = AlignUp( handleSize + missData, handleAlignment );
-	const VkDeviceSize hitStride = AlignUp( handleSize + hitData, handleAlignment );
+	const VkDeviceSize rayGenStride = AlignUpVulkan( handleSize + rayGenData, handleAlignment );
+	const VkDeviceSize rayGenSpacing = AlignUpVulkan( rayGenStride, baseAlignment );
+	const VkDeviceSize missStride = AlignUpVulkan( handleSize + missData, handleAlignment );
+	const VkDeviceSize hitStride = AlignUpVulkan( handleSize + hitData, handleAlignment );
 	if( rayGenStride > properties.maxShaderGroupStride || missStride > properties.maxShaderGroupStride || hitStride > properties.maxShaderGroupStride )
 	{
 		CCP_AL_LOGERR( "Tr2RtShaderTableAL: a shader record is larger than maxShaderGroupStride (%u)", properties.maxShaderGroupStride );
 		return E_INVALIDARG;
 	}
-	const VkDeviceSize missOffset = AlignUp( rayGenSpacing * rayGen.size(), baseAlignment );
-	const VkDeviceSize hitOffset = AlignUp( missOffset + missStride * miss.size(), baseAlignment );
+	const VkDeviceSize missOffset = AlignUpVulkan( rayGenSpacing * rayGen.size(), baseAlignment );
+	const VkDeviceSize hitOffset = AlignUpVulkan( missOffset + missStride * miss.size(), baseAlignment );
 	const VkDeviceSize total = hitOffset + hitStride * hit.size();
 
-	// Over-asked by the alignment: nothing promises the buffer's address is base-aligned.
-	TableBuffer buffer;
-	FORWARD_HR( AcquireTableBuffer( total + ( baseAlignment > 1 ? baseAlignment - 1 : 0 ), renderContext, buffer ) );
-	const VkDeviceAddress address = AlignUp( buffer.address, baseAlignment );
-	uint8_t* const mapped = buffer.mapped + ( address - buffer.address );
+	// This frame's upload memory: the engine builds every table in the frame it traces with it
+	// (Tr2RaytracingManager, Tr2LightManager, a stack-local one per froxel-fog dispatch), and the
+	// memory stays valid until this frame slot's fence has passed.
+	VkDeviceAddress address = 0;
+	void* upload = nullptr;
+	FORWARD_HR( renderContext.AllocateUploadVulkan( total, baseAlignment, address, upload ) );
+	uint8_t* const mapped = static_cast<uint8_t*>( upload );
 	memset( mapped, 0, size_t( total ) );
 
 	auto write = [&]( uint8_t* destination, const Record& record ) -> ALResult {
@@ -235,16 +158,11 @@ ALResult Tr2RtShaderTableAL::Create( const Tr2RtShaderTableDescriptionAL& desc, 
 	}
 	if( FAILED( hr ) )
 	{
-		ReleaseTableBuffer( buffer, renderContext );
-		return hr;
+		return hr; // the upload memory goes back with the frame
 	}
 
 	m_owner = &renderContext;
-	m_buffer = buffer.buffer;
-	m_memory = buffer.memory;
-	m_bufferSize = buffer.size;
-	m_bufferAddress = buffer.address;
-	m_bufferMapped = buffer.mapped;
+	m_frame = renderContext.GetRecordingFrameNumber();
 	m_address = address;
 	m_rayGenNames.clear();
 	for( auto& record : desc.m_rayGenNames )
@@ -285,22 +203,9 @@ bool Tr2RtShaderTableAL::GetRayGenRegionVulkan( const wchar_t* name, VkStridedDe
 
 void Tr2RtShaderTableAL::Destroy()
 {
-	if( m_owner && m_buffer != VK_NULL_HANDLE )
-	{
-		TableBuffer buffer;
-		buffer.buffer = m_buffer;
-		buffer.memory = m_memory;
-		buffer.size = m_bufferSize;
-		buffer.address = m_bufferAddress;
-		buffer.mapped = m_bufferMapped;
-		ReleaseTableBuffer( buffer, *m_owner );
-	}
+	// Nothing to free: the records live in the frame's upload memory.
 	m_owner = nullptr;
-	m_buffer = VK_NULL_HANDLE;
-	m_memory = VK_NULL_HANDLE;
-	m_bufferSize = 0;
-	m_bufferAddress = 0;
-	m_bufferMapped = nullptr;
+	m_frame = 0;
 	m_address = 0;
 	m_rayGenNames.clear();
 	m_rayGenSpacing = 0;
@@ -311,7 +216,7 @@ void Tr2RtShaderTableAL::Destroy()
 
 bool Tr2RtShaderTableAL::IsValid() const
 {
-	return m_owner != nullptr && m_buffer != VK_NULL_HANDLE;
+	return m_owner != nullptr && m_address != 0;
 }
 
 Tr2ALMemoryType Tr2RtShaderTableAL::GetMemoryClass() const

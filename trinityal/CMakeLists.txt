@@ -347,6 +347,8 @@ set(_SOURCES
     vulkan/Tr2RtShaderTableALVulkan.h
     vulkan/Tr2RtTopLevelAccelerationStructureALVulkan.cpp
     vulkan/Tr2RtTopLevelAccelerationStructureALVulkan.h
+    vulkan/Tr2RtUtilitiesVulkan.cpp
+    vulkan/Tr2RtUtilitiesVulkan.h
     vulkan/Tr2SamplerStateALVulkan.cpp
     vulkan/Tr2SamplerStateALVulkan.h
     vulkan/Tr2ShaderALVulkan.cpp

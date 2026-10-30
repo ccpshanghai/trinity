@@ -1,6 +1,7 @@
 // Copyright © 2023 CCP ehf.
 
 #include "StdAfx.h"
+#include <mutex>
 #include <set>
 #include "Tr2Renderer.h"
 #include "Shader/Tr2Effect.h"
@@ -834,6 +835,63 @@ bool Tr2Renderer::DrawTexture( Tr2RenderContext& renderContext, Tr2Material* eff
 	return false;
 }
 
+namespace
+{
+// Why Tr2Renderer::RunComputeShader dispatched nothing.
+enum class ComputeSkip
+{
+	NO_SHADER_STATE,
+	DISPATCH_FAILED,
+	NO_COMPUTE_PASS,
+	COUNT
+};
+
+// One line per (reason, material), the first time, as Tr2Blitter does: a compute pass that is
+// skipped leaves its output texture holding whatever the pool last put there, and the pass that
+// samples it next has no way of knowing. Bounded: past MAX_LOGGED materials for a reason it says
+// so once and records no more. Keyed by address, so a material freed and another allocated at the
+// same address is not named again -- acceptable for a diagnostic. Thread-safe; the state is never
+// destroyed (a static destructor may log at exit after another module's finalizers ran).
+void LogComputeSkipOnce( ComputeSkip reason, const Tr2Material* material )
+{
+	static const size_t MAX_LOGGED = 256;
+	struct State
+	{
+		std::mutex mutex;
+		std::set<const Tr2Material*> logged[size_t( ComputeSkip::COUNT )];
+	};
+	static State* s_state = new State();
+	{
+		std::lock_guard<std::mutex> lock( s_state->mutex );
+		auto& logged = s_state->logged[size_t( reason )];
+		if( logged.size() >= MAX_LOGGED || !logged.insert( material ).second )
+		{
+			return;
+		}
+		if( logged.size() == MAX_LOGGED )
+		{
+			CCP_LOGERR( "Tr2Renderer::RunComputeShader: %u materials logged for one reason; further ones are not", unsigned( MAX_LOGGED ) );
+		}
+	}
+	const Tr2Effect* asEffect = dynamic_cast<const Tr2Effect*>( material );
+	const char* path = asEffect && asEffect->GetEffectPathName() ? asEffect->GetEffectPathName() : "(not a Tr2Effect)";
+	switch( reason )
+	{
+	case ComputeSkip::NO_SHADER_STATE:
+		CCP_LOGERR( "Tr2Renderer::RunComputeShader: dispatch skipped, the material has no shader state: %s (%s)", path, asEffect ? asEffect->DescribeShaderResolution() : "-" );
+		break;
+	case ComputeSkip::DISPATCH_FAILED:
+		CCP_LOGERR( "Tr2Renderer::RunComputeShader: the dispatch failed: %s", path );
+		break;
+	case ComputeSkip::NO_COMPUTE_PASS:
+		CCP_LOGERR( "Tr2Renderer::RunComputeShader: nothing dispatched, technique 0 has no compute pass: %s", path );
+		break;
+	default:
+		break;
+	}
+}
+}
+
 // --------------------------------------------------------------------------------------
 // Description:
 //   Execute compute shaders in all passes of the specified effect. The function will
@@ -859,17 +917,7 @@ bool Tr2Renderer::RunComputeShader( Tr2Material* effect,
 	auto shader = effect->GetShaderStateInterface();
 	if( !shader )
 	{
-		// Once per material, as Tr2Blitter does: a compute pass that is skipped here leaves
-		// its output texture holding whatever the pool last put there, and the pass that
-		// samples it next has no way of knowing.
-		static std::set<const Tr2Material*> logged;
-		if( logged.insert( effect ).second )
-		{
-			const Tr2Effect* asEffect = dynamic_cast<const Tr2Effect*>( effect );
-			CCP_LOGERR( "Tr2Renderer::RunComputeShader: dispatch skipped, the material has no shader state: %s (%s)",
-						asEffect && asEffect->GetEffectPathName() ? asEffect->GetEffectPathName() : "(not a Tr2Effect)",
-						asEffect ? asEffect->DescribeShaderResolution() : "-" );
-		}
+		LogComputeSkipOnce( ComputeSkip::NO_SHADER_STATE, effect );
 		return false;
 	}
 	bool result = false;
@@ -889,15 +937,9 @@ bool Tr2Renderer::RunComputeShader( Tr2Material* effect,
 			if( FAILED( renderContext.RunComputeShader( groupDimX, groupDimY, groupDimZ ) ) )
 			{
 				// The AL refused the dispatch (on Vulkan: the material's resource set did not
-				// build, so a parameter the shader reads is unset). Named once per material,
-				// because the AL cannot say which effect it was.
-				static std::set<const Tr2Material*> logged;
-				if( logged.insert( effect ).second )
-				{
-					const Tr2Effect* asEffect = dynamic_cast<const Tr2Effect*>( effect );
-					CCP_LOGERR( "Tr2Renderer::RunComputeShader: the dispatch failed: %s",
-								asEffect && asEffect->GetEffectPathName() ? asEffect->GetEffectPathName() : "(not a Tr2Effect)" );
-				}
+				// build, so a parameter the shader reads is unset). Named here, because the AL
+				// cannot say which effect it was.
+				LogComputeSkipOnce( ComputeSkip::DISPATCH_FAILED, effect );
 				return false;
 			}
 			result = true;
@@ -911,14 +953,8 @@ bool Tr2Renderer::RunComputeShader( Tr2Material* effect,
 		// all fall back to a Clear or a `_no_effect_ps` technique -- and the output texture
 		// the caller hands on is then never written. Silent until 2026-09-11, when it was the
 		// EVE scene's whole frame on Vulkan: the tonemapper read an unwritten sharpening
-		// output and painted black. Once per material.
-		static std::set<const Tr2Material*> logged;
-		if( logged.insert( effect ).second )
-		{
-			const Tr2Effect* asEffect = dynamic_cast<const Tr2Effect*>( effect );
-			CCP_LOGERR( "Tr2Renderer::RunComputeShader: nothing dispatched, technique 0 has no compute pass: %s",
-						asEffect && asEffect->GetEffectPathName() ? asEffect->GetEffectPathName() : "(not a Tr2Effect)" );
-		}
+		// output and painted black.
+		LogComputeSkipOnce( ComputeSkip::NO_COMPUTE_PASS, effect );
 	}
 	return result;
 }

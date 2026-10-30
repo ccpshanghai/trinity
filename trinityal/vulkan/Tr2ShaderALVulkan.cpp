@@ -141,7 +141,6 @@ namespace TrinityALImpl
 			m_bytecode.clear();
 			m_type = Tr2RenderContextEnum::INVALID_SHADER;
 			m_signature = Tr2ShaderSignatureAL();
-			m_type = Tr2RenderContextEnum::INVALID_SHADER;
 			m_entryPoint.clear();
 		}
 	}
@@ -156,11 +155,11 @@ namespace TrinityALImpl
 		return this == &shader;
 	}
 
-	Tr2RenderContextEnum::ShaderType Tr2ShaderAL::GetType() const 
-	{ 
+	Tr2RenderContextEnum::ShaderType Tr2ShaderAL::GetType() const
+	{
 		return m_type;
 	}
-	
+
 	ALResult Tr2ShaderAL::GetBytecode( Tr2ShaderBytecodeAL& bytecode ) const
 	{
 		if( !IsValid() )
@@ -178,9 +177,9 @@ namespace TrinityALImpl
 		return m_signature;
 	}
 
-	Tr2ALMemoryType Tr2ShaderAL::GetMemoryClass() const 
-	{ 
-		return AL_MEMORY_MANAGED; 
+	Tr2ALMemoryType Tr2ShaderAL::GetMemoryClass() const
+	{
+		return AL_MEMORY_MANAGED;
 	}
 
 	void Tr2ShaderAL::SetNullShaderType( Tr2RenderContextEnum::ShaderType type )
