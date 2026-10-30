@@ -8,6 +8,8 @@
 // d3dcommon type, both of which macOS has through the directx-dxc port.
 #include "EffectCompilerBase.h"
 
+#include <functional>
+
 class ParserState;
 struct GlobalInputElement;
 struct Library;
@@ -41,6 +43,16 @@ private:
 		CComPtr<IDxcBlob> passSpirvReflection; // DXC_OUT_REFLECTION from the DXIL sibling compile
 		CComPtr<IDxcBlob> librarySpirv; // -spirv object of a ray tracing library
 	};
+
+	// The cache entry for `key`, compiled exactly once across threads: the first caller runs
+	// `compile` on the new entry, every other caller waits (telling the work queue it is
+	// blocked) until that has finished. The entry is marked compiled and its waiters woken on
+	// every way out of `compile`, so a failed compile leaves null outputs behind and never a
+	// waiter that sleeps for ever. The caller reads raw pointers out of the entry, which the
+	// cache keeps alive for the compiler's life, then hands its reference back with
+	// ReleaseCacheEntry.
+	std::shared_ptr<SyncData> CompileOnce( const std::string& key, class IWorkQueue* workQueue, const std::function<void( SyncData& )>& compile );
+	void ReleaseCacheEntry( std::shared_ptr<SyncData>& entry );
 
 	bool CompileLibrarySpirv( ParserState& state, const std::vector<GlobalInputElement>& globalInputs, ID3D12LibraryReflection* reflection, const std::string& libraryName, Library& library, class IWorkQueue* workQueue );
 

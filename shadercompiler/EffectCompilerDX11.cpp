@@ -23,7 +23,7 @@
 
 #include "DxReflection.h"
 #include "trinityal/vulkan/Tr2ShaderBindingABIVulkan.h"
-#include "trinityal/vulkan/SpirvReflectVulkan.h"
+#include "RtShaderRecordLayout.h"
 #include <WorkQueue.h>
 
 #define DXIL_FOURCC( ch0, ch1, ch2, ch3 ) (                        \
@@ -109,109 +109,181 @@ bool TryGetVulkanBindingShiftArguments( VulkanBindingShiftArguments& shifts, Inp
 	return true;
 }
 
-// One DXC compile. Fails on a failed call and on a failed status alike -- IDxcCompiler3 reports
-// a source error as S_OK with a failed status -- and forwards DXC's messages either way.
-bool CompileWithDxc( IDxcCompiler3* compiler, const DxcBuffer& sourceBuffer, std::vector<LPCWSTR>& arguments, bool reportSpirvBackendMissing, IDxcBlob** objectOutput, IDxcBlob** reflectionOutput )
+// One DXC compile. Null on a failed call and on a failed status alike -- IDxcCompiler3 reports a
+// source error as S_OK with a failed status -- after forwarding DXC's messages, or saying that
+// `subject` failed when DXC gave none; otherwise the result, for whichever outputs the caller
+// wants (DXC_OUT_OBJECT, DXC_OUT_REFLECTION, DXC_OUT_PDB).
+CComPtr<IDxcResult> CompileWithDxc( IDxcCompiler3* compiler, const DxcBuffer& sourceBuffer, std::vector<LPCWSTR>& arguments, bool reportSpirvBackendMissing, const std::string& subject )
 {
-	CComPtr<IDxcResult> pCompileResult;
-	HRESULT hrCompilation = compiler->Compile( &sourceBuffer, arguments.data(), UINT32( arguments.size() ), nullptr, IID_PPV_ARGS( &pCompileResult ) );
-	HRESULT hrStatus = hrCompilation;
-	if( SUCCEEDED( hrCompilation ) && pCompileResult )
+	CComPtr<IDxcResult> compileResult;
+	HRESULT hr = compiler->Compile( &sourceBuffer, arguments.data(), UINT32( arguments.size() ), nullptr, IID_PPV_ARGS( &compileResult ) );
+	if( SUCCEEDED( hr ) && !compileResult )
 	{
-		pCompileResult->GetStatus( &hrStatus );
+		hr = E_FAIL;
+	}
+	if( SUCCEEDED( hr ) )
+	{
+		compileResult->GetStatus( &hr );
+	}
+	if( SUCCEEDED( hr ) )
+	{
+		return compileResult;
 	}
 
-	if( FAILED( hrCompilation ) || FAILED( hrStatus ) )
+	CComPtr<IDxcBlobUtf8> compileErrors;
+	if( compileResult )
 	{
-		if( objectOutput )
-		{
-			*objectOutput = nullptr;
-		}
-		if( reflectionOutput )
-		{
-			*reflectionOutput = nullptr;
-		}
-
-		CComPtr<IDxcBlobUtf8> compileErrors;
-		if( pCompileResult )
-		{
-			pCompileResult->GetOutput( DXC_OUT_ERRORS, IID_PPV_ARGS( &compileErrors ), nullptr );
-		}
-		if( compileErrors && compileErrors->GetStringLength() > 0 )
-		{
-			g_messages.AddMessages( compileErrors );
-			if( reportSpirvBackendMissing && strstr( compileErrors->GetStringPointer(), "spirv" ) )
-			{
-				g_messages.AddMessage( "\\memory(0): error X0000: dxc rejected -spirv: this dxcompiler.dll was built without the SPIR-V backend (Windows SDK copy?) -- the vcpkg directx-dxc port's DLL is required" );
-			}
-		}
-		return false;
+		compileResult->GetOutput( DXC_OUT_ERRORS, IID_PPV_ARGS( &compileErrors ), nullptr );
 	}
+	if( compileErrors && compileErrors->GetStringLength() > 0 )
+	{
+		g_messages.AddMessages( compileErrors );
+		if( reportSpirvBackendMissing && strstr( compileErrors->GetStringPointer(), "spirv" ) )
+		{
+			g_messages.AddMessage( "\\memory(0): error X0000: dxc rejected -spirv: this dxcompiler.dll was built without the SPIR-V backend (Windows SDK copy?) -- the vcpkg directx-dxc port's DLL is required" );
+		}
+	}
+	else
+	{
+		g_messages.AddMessage( "\\memory(0): error X0000: %s: DXC failed (0x%08x) and gave no message", subject.c_str(), unsigned( hr ) );
+	}
+	return nullptr;
+}
 
+// The same, handing out the object and the reflection blob (either may be null: not wanted).
+// Both outputs are null after a failure.
+bool CompileWithDxc( IDxcCompiler3* compiler, const DxcBuffer& sourceBuffer, std::vector<LPCWSTR>& arguments, bool reportSpirvBackendMissing, const std::string& subject, IDxcBlob** objectOutput, IDxcBlob** reflectionOutput )
+{
+	CComPtr<IDxcResult> compileResult = CompileWithDxc( compiler, sourceBuffer, arguments, reportSpirvBackendMissing, subject );
 	if( objectOutput )
 	{
 		CComPtr<IDxcBlob> compiled;
-		pCompileResult->GetOutput( DXC_OUT_OBJECT, IID_PPV_ARGS( &compiled ), nullptr );
+		if( compileResult )
+		{
+			compileResult->GetOutput( DXC_OUT_OBJECT, IID_PPV_ARGS( &compiled ), nullptr );
+		}
 		*objectOutput = compiled.Detach();
 	}
 	if( reflectionOutput )
 	{
 		CComPtr<IDxcBlob> reflectionData;
-		pCompileResult->GetOutput( DXC_OUT_REFLECTION, IID_PPV_ARGS( &reflectionData ), nullptr );
+		if( compileResult )
+		{
+			compileResult->GetOutput( DXC_OUT_REFLECTION, IID_PPV_ARGS( &reflectionData ), nullptr );
+		}
 		*reflectionOutput = reflectionData.Detach();
 	}
+	return compileResult != nullptr;
+}
+
+// What every DXC compile starts with: the source blob over `code` and a compiler. False after
+// saying which of the two failed, for `subject` ("entry point 'X'", "ray tracing library 'T/L'").
+bool PrepareDxcCompile( IDxcUtils* utils, const std::string& code, const std::string& subject, CComPtr<IDxcBlobEncoding>& source, DxcBuffer& sourceBuffer, CComPtr<IDxcCompiler3>& compiler )
+{
+	HRESULT hr = utils->CreateBlobFromPinned( code.c_str(), UINT32( code.size() ), CP_UTF8, &source );
+	if( FAILED( hr ) )
+	{
+		g_messages.AddMessage( "\\memory(0): error X0000: %s: IDxcUtils::CreateBlobFromPinned failed (0x%08x)", subject.c_str(), unsigned( hr ) );
+		return false;
+	}
+	hr = DxcCreateInstance( CLSID_DxcCompiler, IID_PPV_ARGS( &compiler ) );
+	if( FAILED( hr ) )
+	{
+		g_messages.AddMessage( "\\memory(0): error X0000: %s: DxcCreateInstance(CLSID_DxcCompiler) failed (0x%08x)", subject.c_str(), unsigned( hr ) );
+		return false;
+	}
+	sourceBuffer.Ptr = source->GetBufferPointer();
+	sourceBuffer.Size = source->GetBufferSize();
+	sourceBuffer.Encoding = 0;
 	return true;
 }
 
-// The register specifiers ForceVulkanRegisterSpaces may rewrite, so a ray tracing library can
-// emit its SPIR-V source with the Vulkan spaces and then hand the tree back exactly as the DXIL
-// reflection compile and AddGlobalInputs saw it.
-class RegisterSpecifierSnapshot
+// The DXC arguments of the Vulkan back end's three compiles, in the one order each has always
+// had. `arguments` points into the strings beside it, so the object is built in place and never
+// copied.
+enum class VulkanDxcCompile
 {
-public:
-	explicit RegisterSpecifierSnapshot( ASTNode* root )
-	{
-		Collect( root );
-	}
-
-	void Restore()
-	{
-		for( auto& saved : m_saved )
-		{
-			saved.first->registerSpecifier = saved.second;
-		}
-	}
-
-private:
-	void Collect( ASTNode* node )
-	{
-		if( !node )
-		{
-			return;
-		}
-		switch( node->GetNodeType() )
-		{
-		case NT_CBUFFER:
-		case NT_NAME_DECLARATION:
-			if( node->GetSymbol() )
-			{
-				m_saved.emplace_back( node->GetSymbol(), node->GetSymbol()->registerSpecifier );
-			}
-			break;
-		case NT_PROGRAM:
-		case NT_VAR_DECLARATION_LIST:
-			for( size_t i = 0; i < node->GetChildrenCount(); ++i )
-			{
-				Collect( node->GetChild( i ) );
-			}
-			break;
-		default:
-			break;
-		}
-	}
-
-	std::vector<std::pair<Symbol*, std::map<InlineString, RegisterSpecifier>>> m_saved;
+	SPIRV_PASS, // a pass shader's module
+	DXIL_PASS_REFLECTION, // the same source as DXIL, for the pass's reflection
+	SPIRV_LIBRARY, // a ray tracing library's module
 };
+struct VulkanDxcArguments
+{
+	std::wstring profile;
+	std::wstring entry;
+	VulkanBindingShiftArguments shifts;
+	std::vector<LPCWSTR> arguments;
+
+	VulkanDxcArguments() = default;
+	VulkanDxcArguments( const VulkanDxcArguments& ) = delete;
+	VulkanDxcArguments& operator=( const VulkanDxcArguments& ) = delete;
+};
+
+// False, after TryGetVulkanBindingShiftArguments' message, for a stage the binding ABI cannot
+// place. `entry` is ignored for a library; `bindingStage` for the DXIL reflection compile, which
+// has no bindings of its own.
+bool BuildVulkanDxcArguments( VulkanDxcArguments& out, VulkanDxcCompile compile, const std::string& profile, const std::string& entry, InputStageType bindingStage )
+{
+	out.profile.assign( profile.begin(), profile.end() );
+	out.entry.assign( entry.begin(), entry.end() );
+	out.arguments = { L"-T", out.profile.c_str() };
+	if( compile != VulkanDxcCompile::SPIRV_LIBRARY )
+	{
+		out.arguments.insert( end( out.arguments ), { L"-E", out.entry.c_str() } );
+	}
+	if( compile != VulkanDxcCompile::DXIL_PASS_REFLECTION )
+	{
+		out.arguments.insert( end( out.arguments ), { L"-spirv", L"-fspv-target-env=vulkan1.3" } );
+	}
+	out.arguments.push_back( L"-Zpc" );
+	if( compile == VulkanDxcCompile::SPIRV_LIBRARY )
+	{
+		// No -HV: DXC's default grammar (HLSL 2021), the one the DXIL lib_6_3 compile of this
+		// library uses, here for its reflection and on DX12 for the bytes that ship. A library
+		// has only ever been compiled by DXC, so it needs none of the FXC-era 2018 grammar the
+		// pass path keeps, and both compiles of one source then read it alike (2021
+		// short-circuits scalar && || ?:, as DX12 always has).
+		//
+		// An allow-list, and the whole of it. Without one DXC declares the RayQueryKHR
+		// capability in every module that names a RaytracingAccelerationStructure, used for
+		// TraceRay or not -- and a device with ray_query but no ray tracing pipeline (the S23)
+		// would then be asked for a capability the module does not use. With one, an extension
+		// the source really needs and this list lacks is a DXC error naming it, not a silent
+		// difference.
+		out.arguments.push_back( L"-fspv-extension=SPV_KHR_ray_tracing" );
+	}
+	else
+	{
+		// The language the effects were written in, on both compiles of a pass: the reflection
+		// compile parses the same source and has to accept what the module's compile did, or an
+		// effect fails its reflection pass one line later. DXC defaults to HLSL 2021, where `||`
+		// and `&&` on vectors are errors ("operands for short-circuiting logical binary operator
+		// must be scalar"); FXC-era EVE effects use them -- VolumetricBooster.fxh's
+		// `any( ( coord < 0 ) || ( coord > 1 ) )` kept boostervolumetric out of the S23's Vulkan
+		// closure on 2026-09-10. 2018 is the last version that reads them as the element-wise
+		// operators they were. DX12's pass shaders are FXC's and never see these arguments.
+		out.arguments.insert( end( out.arguments ), { L"-HV", L"2018" } );
+	}
+	if( compile != VulkanDxcCompile::DXIL_PASS_REFLECTION )
+	{
+		if( !TryGetVulkanBindingShiftArguments( out.shifts, bindingStage ) )
+		{
+			return false;
+		}
+		out.arguments.insert( end( out.arguments ),
+			{
+				L"-fvk-b-shift", out.shifts.b.c_str(), L"0",
+				L"-fvk-t-shift", out.shifts.t.c_str(), L"1",
+				L"-fvk-s-shift", out.shifts.s.c_str(), L"1",
+				L"-fvk-u-shift", out.shifts.u.c_str(), L"1",
+			} );
+	}
+	if( g_skipOptimization )
+	{
+		out.arguments.push_back( DXC_ARG_SKIP_OPTIMIZATIONS );
+	}
+	return true;
+}
 
 // A library's local cbuffers: those the globalinput list does not name. The same rule, by the
 // same name, as DxReflection's LOCAL_INPUT target, so the cbuffers that become shader records
@@ -252,318 +324,6 @@ void CollectLocalCBuffers( ASTNode* node, const std::vector<GlobalInputElement>&
 	}
 }
 
-using SpirvReflectVulkan::SpirvReflection;
-using SpirvReflectVulkan::SpirvScalarSlot;
-
-uint32_t AlignTo16( uint32_t size )
-{
-	return ( size + 15 ) & ~15u;
-}
-
-// D3D constant buffer packing, from the DXIL reflection. 64-bit integers are not modelled: a
-// cbuffer holding one fails the layout comparison below and is reported, never mis-copied.
-uint32_t D3DComponentSize( const D3D12_SHADER_TYPE_DESC& desc )
-{
-	return desc.Type == D3D_SVT_DOUBLE ? 8 : 4;
-}
-
-uint32_t D3DTotalSize( ID3D12ShaderReflectionType* type );
-
-uint32_t D3DElementSize( ID3D12ShaderReflectionType* type )
-{
-	D3D12_SHADER_TYPE_DESC desc;
-	type->GetDesc( &desc );
-	uint32_t componentSize = D3DComponentSize( desc );
-	switch( desc.Class )
-	{
-	case D3D_SVC_SCALAR:
-	case D3D_SVC_VECTOR:
-		return desc.Columns * componentSize;
-	case D3D_SVC_MATRIX_COLUMNS:
-		return ( desc.Columns - 1 ) * 16 + desc.Rows * componentSize;
-	case D3D_SVC_MATRIX_ROWS:
-		return ( desc.Rows - 1 ) * 16 + desc.Columns * componentSize;
-	case D3D_SVC_STRUCT: {
-		uint32_t end = 0;
-		for( UINT i = 0; i < desc.Members; ++i )
-		{
-			auto member = type->GetMemberTypeByIndex( i );
-			D3D12_SHADER_TYPE_DESC memberDesc;
-			member->GetDesc( &memberDesc );
-			end = std::max( end, memberDesc.Offset + D3DTotalSize( member ) );
-		}
-		return end;
-	}
-	default:
-		return 0;
-	}
-}
-
-uint32_t D3DTotalSize( ID3D12ShaderReflectionType* type )
-{
-	D3D12_SHADER_TYPE_DESC desc;
-	type->GetDesc( &desc );
-	uint32_t elementSize = D3DElementSize( type );
-	return desc.Elements ? ( desc.Elements - 1 ) * AlignTo16( elementSize ) + elementSize : elementSize;
-}
-
-// Every array element starts a new 16-byte row; so does every struct and every matrix column
-// (row, for row_major). Scalars come out in SpirvReflection's record order -- declaration order,
-// array elements outer, a matrix by row then column whatever its packing -- so the two lists
-// compare index by index.
-void D3DFlatten( ID3D12ShaderReflectionType* type, uint32_t base, std::vector<SpirvScalarSlot>& offsets )
-{
-	D3D12_SHADER_TYPE_DESC desc;
-	type->GetDesc( &desc );
-	uint32_t componentSize = D3DComponentSize( desc );
-	uint32_t stride = AlignTo16( D3DElementSize( type ) );
-	for( uint32_t element = 0; element < std::max( 1u, uint32_t( desc.Elements ) ); ++element )
-	{
-		uint32_t elementBase = base + element * stride;
-		switch( desc.Class )
-		{
-		case D3D_SVC_SCALAR:
-		case D3D_SVC_VECTOR:
-			for( UINT c = 0; c < desc.Columns; ++c )
-			{
-				offsets.push_back( { elementBase + c * componentSize, componentSize } );
-			}
-			break;
-		case D3D_SVC_MATRIX_COLUMNS:
-			// Stored column by column, visited row by row (see above).
-			for( UINT r = 0; r < desc.Rows; ++r )
-			{
-				for( UINT c = 0; c < desc.Columns; ++c )
-				{
-					offsets.push_back( { elementBase + c * 16 + r * componentSize, componentSize } );
-				}
-			}
-			break;
-		case D3D_SVC_MATRIX_ROWS:
-			for( UINT r = 0; r < desc.Rows; ++r )
-			{
-				for( UINT c = 0; c < desc.Columns; ++c )
-				{
-					offsets.push_back( { elementBase + r * 16 + c * componentSize, componentSize } );
-				}
-			}
-			break;
-		case D3D_SVC_STRUCT:
-			for( UINT i = 0; i < desc.Members; ++i )
-			{
-				auto member = type->GetMemberTypeByIndex( i );
-				D3D12_SHADER_TYPE_DESC memberDesc;
-				member->GetDesc( &memberDesc );
-				D3DFlatten( member, elementBase + memberDesc.Offset, offsets );
-			}
-			break;
-		default:
-			break;
-		}
-	}
-}
-
-// The DXIL reflection of the cbuffer of that name in any of the library's functions, or null.
-ID3D12ShaderReflectionConstantBuffer* FindLibraryCBuffer( ID3D12LibraryReflection* reflection, const std::string& name )
-{
-	D3D12_LIBRARY_DESC libraryDesc;
-	if( FAILED( reflection->GetDesc( &libraryDesc ) ) )
-	{
-		return nullptr;
-	}
-	for( UINT f = 0; f < libraryDesc.FunctionCount; ++f )
-	{
-		auto function = reflection->GetFunctionByIndex( INT( f ) );
-		D3D12_FUNCTION_DESC functionDesc;
-		if( !function || FAILED( function->GetDesc( &functionDesc ) ) )
-		{
-			continue;
-		}
-		for( UINT c = 0; c < functionDesc.ConstantBuffers; ++c )
-		{
-			auto cbuffer = function->GetConstantBufferByIndex( c );
-			D3D12_SHADER_BUFFER_DESC bufferDesc;
-			if( cbuffer && SUCCEEDED( cbuffer->GetDesc( &bufferDesc ) ) && name == bufferDesc.Name )
-			{
-				return cbuffer;
-			}
-		}
-	}
-	return nullptr;
-}
-
-// Vulkan's guaranteed minimum for maxShaderGroupStride, and its required shaderGroupHandleSize:
-// the largest shader binding table record any conformant device takes is a 32-byte group handle
-// followed by 4064 bytes of record data.
-constexpr uint32_t VULKAN_SHADER_GROUP_HANDLE_SIZE = 32;
-constexpr uint32_t VULKAN_MIN_MAX_SHADER_GROUP_STRIDE = 4096;
-
-// The contract a Vulkan ray tracing library's local cbuffers keep with the AL: the shader record
-// after a group's handle is a byte copy of the library's one local constant buffer, as the
-// engine filled it in D3D packing. Checked on the compiled module, because that is where
-// "referenced by an entry point" and "laid out as" are decided:
-//
-// - One local cbuffer per library, not per entry point. The engine hands the AL one local
-//   signature for the whole library (Library::localInputs, shared by every export the library
-//   adds), and the AL lays out one inline record per group from it: the record is the bytes of
-//   the one constant buffer that signature names, so Tr2RtPipelineStateAL refuses a signature
-//   with two. A library whose entry points each read a different local cbuffer would compile
-//   and then switch ray tracing off at run time. (Within one entry point DXC would accept two
-//   as well, every ShaderRecordBufferKHR block starting at record offset 0, aliasing the same
-//   bytes.)
-// - Group handle + cbuffer fits VULKAN_MIN_MAX_SHADER_GROUP_STRIDE.
-// - Same layout. DXC lays a shader record out as a storage buffer (std430: an array of floats has
-//   a 4-byte stride), not as a constant buffer (16), and no -fvk-use-*-layout switch gives the
-//   D3D cbuffer rule to a shader record. So the scalars' offsets are compared, and a cbuffer
-//   whose two layouts differ is refused by name.
-//
-// Messages start with \memory(0), which CompileMessageQueue replaces with the effect's path.
-bool CheckShaderRecords( const SpirvReflection& module, ID3D12LibraryReflection* reflection, const Library& library, const std::string& libraryName )
-{
-	bool ok = true;
-
-	// Each record variable any entry point reads, with the entry points that read it, in the
-	// order the module lists them.
-	std::vector<std::pair<uint32_t, std::vector<std::string>>> records;
-	for( auto& entryPoint : module.entryPoints )
-	{
-		for( auto id : entryPoint.interfaceIds )
-		{
-			if( !module.FindShaderRecord( id ) )
-			{
-				continue;
-			}
-			auto found = std::find_if( begin( records ), end( records ), [id]( const auto& r ) { return r.first == id; } );
-			if( found == end( records ) )
-			{
-				records.push_back( { id, {} } );
-				found = end( records ) - 1;
-			}
-			found->second.push_back( entryPoint.name );
-		}
-	}
-	auto readers = []( const std::vector<std::string>& entryPoints ) {
-		std::string list;
-		for( auto& name : entryPoints )
-		{
-			list += ( list.empty() ? "'" : ", '" ) + name + "'";
-		}
-		return ( entryPoints.size() > 1 ? "entry points " : "entry point " ) + list;
-	};
-
-	if( records.size() > 1 )
-	{
-		std::string list;
-		for( auto& record : records )
-		{
-			list += ( list.empty() ? "'" : ", '" ) + module.NameOf( record.first ) + "' (" + readers( record.second ) + ")";
-		}
-		g_messages.AddMessage(
-			"\\memory(0): error X0000: ray tracing library '%s' reads the local cbuffers %s. On Vulkan a library has one local signature and every group's shader record is the bytes of its one constant buffer, so a library can read at most one cbuffer that is not in its globalinput list.",
-			libraryName.c_str(),
-			list.c_str() );
-		ok = false;
-	}
-	else
-	{
-		// The same rule on what the AL is actually handed: the reflection's local input.
-		std::set<uint32_t> localCBuffers;
-		for( auto& input : library.localInputs.registerInputs )
-		{
-			if( input.registerType == RT_CONSTANT_BUFFER )
-			{
-				localCBuffers.insert( input.registerIndex );
-			}
-		}
-		if( localCBuffers.size() > 1 )
-		{
-			std::string list;
-			for( auto reg : localCBuffers )
-			{
-				list += ( list.empty() ? "b" : ", b" ) + std::to_string( reg );
-			}
-			g_messages.AddMessage(
-				"\\memory(0): error X0000: ray tracing library '%s' has local constant buffers %s. On Vulkan a library has one local signature and every group's shader record is the bytes of its one constant buffer, so a library can read at most one cbuffer that is not in its globalinput list.",
-				libraryName.c_str(),
-				list.c_str() );
-			ok = false;
-		}
-	}
-
-	for( auto& record : records )
-	{
-		const uint32_t id = record.first;
-		const std::string entryPoints = readers( record.second );
-		std::string name = module.NameOf( id );
-		auto cbuffer = FindLibraryCBuffer( reflection, name );
-		D3D12_SHADER_BUFFER_DESC bufferDesc;
-		if( !cbuffer || FAILED( cbuffer->GetDesc( &bufferDesc ) ) )
-		{
-			g_messages.AddMessage( "\\memory(0): error X0000: ray tracing library '%s', %s: the shader record '%s' has no cbuffer of that name in the DXIL reflection", libraryName.c_str(), entryPoints.c_str(), name.c_str() );
-			ok = false;
-			continue;
-		}
-		if( VULKAN_SHADER_GROUP_HANDLE_SIZE + bufferDesc.Size > VULKAN_MIN_MAX_SHADER_GROUP_STRIDE )
-		{
-			g_messages.AddMessage(
-				"\\memory(0): error X0000: ray tracing library '%s', %s: local cbuffer '%s' is %u bytes; after the %u-byte group handle its shader record would be %u bytes, over the %u bytes Vulkan guarantees for maxShaderGroupStride.",
-				libraryName.c_str(),
-				entryPoints.c_str(),
-				name.c_str(),
-				bufferDesc.Size,
-				VULKAN_SHADER_GROUP_HANDLE_SIZE,
-				VULKAN_SHADER_GROUP_HANDLE_SIZE + bufferDesc.Size,
-				VULKAN_MIN_MAX_SHADER_GROUP_STRIDE );
-			ok = false;
-		}
-		// Scalar for scalar, in one order on both sides: equal offset sets are not enough, two
-		// members swapping places would pass a sorted comparison and copy each into the other.
-		std::vector<SpirvScalarSlot> d3dSlots;
-		std::vector<std::string> d3dVariables; // the top-level variable each slot belongs to
-		for( UINT v = 0; v < bufferDesc.Variables; ++v )
-		{
-			auto variable = cbuffer->GetVariableByIndex( v );
-			D3D12_SHADER_VARIABLE_DESC variableDesc;
-			if( variable && SUCCEEDED( variable->GetDesc( &variableDesc ) ) )
-			{
-				D3DFlatten( variable->GetType(), variableDesc.StartOffset, d3dSlots );
-				d3dVariables.resize( d3dSlots.size(), variableDesc.Name ? variableDesc.Name : "?" );
-			}
-		}
-		const auto& recordSlots = module.FindShaderRecord( id )->scalars;
-		const bool flattened = module.FindShaderRecord( id )->laidOut;
-		size_t first = 0;
-		while( first < d3dSlots.size() && first < recordSlots.size() && d3dSlots[first] == recordSlots[first] )
-		{
-			++first;
-		}
-		if( !flattened || first < d3dSlots.size() || first < recordSlots.size() )
-		{
-			std::string detail;
-			if( !flattened )
-			{
-				detail = "The record's SPIR-V type could not be laid out.";
-			}
-			else if( first < d3dSlots.size() && first < recordSlots.size() )
-			{
-				detail = "First difference: scalar " + std::to_string( first ) + " ('" + d3dVariables[first] + "') is at byte " + std::to_string( d3dSlots[first].offset ) + " (" + std::to_string( d3dSlots[first].size ) +
-					" bytes) in the constant buffer and at byte " + std::to_string( recordSlots[first].offset ) + " (" + std::to_string( recordSlots[first].size ) + " bytes) in the shader record.";
-			}
-			else
-			{
-				detail = "The constant buffer has " + std::to_string( d3dSlots.size() ) + " scalars and the shader record " + std::to_string( recordSlots.size() ) + ".";
-			}
-			g_messages.AddMessage(
-				"\\memory(0): error X0000: ray tracing library '%s', %s: local cbuffer '%s' is laid out differently as a Vulkan shader record (storage buffer rules: arrays of scalars and small vectors are packed) than as a D3D constant buffer, and the record is a byte copy of the constant buffer. Make every array element a 16-byte multiple (float4, uint4, a padded struct). %s",
-				libraryName.c_str(),
-				entryPoints.c_str(),
-				name.c_str(),
-				detail.c_str() );
-			ok = false;
-		}
-	}
-	return ok;
-}
 }
 
 
@@ -1753,61 +1513,23 @@ bool AddGlobalInputs( StageData& globalsData, std::map<StringReference, Paramete
 	return true;
 }
 
-// Vulkan: a ray tracing library is one SPIR-V module with an entry point per export. The DXIL
-// compile in CompileEffect stays the source of the library's reflection (globalInputs,
-// localInputs) exactly as on DX12; this is the module that ships instead of its DXIL.
-bool EffectCompilerDX11::CompileLibrarySpirv( ParserState& state, const std::vector<GlobalInputElement>& globalInputs, ID3D12LibraryReflection* reflection, const std::string& libraryName, Library& library, IWorkQueue* workQueue )
+std::shared_ptr<EffectCompilerDX11::SyncData> EffectCompilerDX11::CompileOnce( const std::string& key, IWorkQueue* workQueue, const std::function<void( SyncData& )>& compile )
 {
-	ZoneScoped;
-
-	// The same tree, emitted again with two Vulkan differences: t/s/u on the resource
-	// descriptor set's space (the pass path's ForceVulkanRegisterSpaces), and every local cbuffer
-	// as [[vk::shader_record_ext]]. Only into this source: the DXIL compile is -WX and refuses
-	// the attribute as ignored. The register spaces are put back afterwards so that the next
-	// library's DXIL compile sees the tree the DX12 path would.
-	std::string code;
-	{
-		RegisterSpecifierSnapshot snapshot( state.GetTree() );
-		VulkanRegisterSpaceReject reject;
-		if( !ForceVulkanRegisterSpaces( state.GetTree(), reject ) )
-		{
-			snapshot.Restore();
-			g_messages.AddMessage(
-				"\\memory(0): error X0000: '%.*s' was assigned register space %d, which the SPIR-V binding ABI cannot place: it has one descriptor set for constant buffers and one for every '%c' register. A ray tracing library may declare at most one resource array per register class in its globalinput, because each array declaration takes a register space of its own.",
-				int( reject.name.end - reject.name.start ),
-				reject.name.start,
-				reject.space,
-				reject.registerType );
-			return false;
-		}
-		std::set<const Symbol*> localCBuffers;
-		CollectLocalCBuffers( state.GetTree(), globalInputs, localCBuffers );
-
-		// The DXIL emission just consumed the pragmas; this source should carry them as well.
-		state.ResetPragmaUsage();
-		CompilerInputStream os( state, ShadingLanguage::HLSL );
-		os << HLSL{ state.GetTree(), &state.GetSymbolTable(), &localCBuffers };
-		code = os.str();
-		snapshot.Restore();
-	}
-	library.source = code;
-
-	// The cache key is the source this compile reads, marked so it can never meet a pass's or a
-	// DXIL library's entry for the same text.
-	std::string cacheKey = "spirv library\n" + code;
 	bool needsToCompile = false;
 	std::shared_ptr<SyncData> syncData;
 	{
 		std::lock_guard scope( m_compiledCS );
-		auto found = m_compiled.find( cacheKey );
+		auto found = m_compiled.find( key );
 		if( found == end( m_compiled ) )
 		{
+			// This thread compiles: make the entry the others will wait on.
 			syncData = std::make_shared<SyncData>();
-			m_compiled[cacheKey] = syncData;
+			m_compiled[key] = syncData;
 			needsToCompile = true;
 		}
 		else
 		{
+			// Another thread compiles, or has, for us.
 			syncData = found->second;
 		}
 	}
@@ -1826,102 +1548,110 @@ bool EffectCompilerDX11::CompileLibrarySpirv( ParserState& state, const std::vec
 		{
 			workQueue->OnUnblocked();
 		}
+		return syncData;
 	}
-	else
+
+	struct WakeWaiters
 	{
+		SyncData& entry;
+		~WakeWaiters()
+		{
+			{
+				std::lock_guard scope( entry.mutex );
+				entry.compiled = true;
+			}
+			entry.conditionVariable.notify_all();
+		}
+	} wake{ *syncData };
+	compile( *syncData );
+	return syncData;
+}
+
+void EffectCompilerDX11::ReleaseCacheEntry( std::shared_ptr<SyncData>& entry )
+{
+	// Under the cache's lock, as every reference to an entry is taken.
+	std::lock_guard scope( m_compiledCS );
+	entry.reset();
+}
+
+// Vulkan: a ray tracing library is one SPIR-V module with an entry point per export. The DXIL
+// compile in CompileEffect stays the source of the library's reflection (globalInputs,
+// localInputs) exactly as on DX12; this is the module that ships instead of its DXIL.
+bool EffectCompilerDX11::CompileLibrarySpirv( ParserState& state, const std::vector<GlobalInputElement>& globalInputs, ID3D12LibraryReflection* reflection, const std::string& libraryName, Library& library, IWorkQueue* workQueue )
+{
+	ZoneScoped;
+
+	// The same tree, emitted again with two Vulkan differences: t/s/u on the resource
+	// descriptor set's space (as the pass path writes them), and every local cbuffer as
+	// [[vk::shader_record_ext]]. Only into this source: the DXIL compile is -WX and refuses the
+	// attribute as ignored. Both are options of the emitter, not edits of the tree, so the next
+	// library's DXIL compile sees the tree the DX12 path would.
+	std::string code;
+	{
+		std::set<const Symbol*> resourceSpace;
+		VulkanRegisterSpaceReject reject;
+		if( !CheckVulkanRegisterSpaces( state.GetTree(), resourceSpace, reject ) )
+		{
+			g_messages.AddMessage(
+				"\\memory(0): error X0000: '%.*s' was assigned register space %d, which the SPIR-V binding ABI cannot place: it has one descriptor set for constant buffers and one for every '%c' register. A ray tracing library may declare at most one resource array per register class in its globalinput, because each array declaration takes a register space of its own.",
+				int( reject.name.end - reject.name.start ),
+				reject.name.start,
+				reject.space,
+				reject.registerType );
+			return false;
+		}
+		std::set<const Symbol*> localCBuffers;
+		CollectLocalCBuffers( state.GetTree(), globalInputs, localCBuffers );
+
+		// The DXIL emission just consumed the pragmas; this source should carry them as well.
+		state.ResetPragmaUsage();
+		CompilerInputStream os( state, ShadingLanguage::HLSL );
+		os << HLSL{ state.GetTree(), &state.GetSymbolTable(), &localCBuffers, &resourceSpace };
+		code = os.str();
+	}
+	library.source = code;
+
+	// The cache key is the source this compile reads, marked so it can never meet a pass's or a
+	// DXIL library's entry for the same text.
+	const std::string subject = "ray tracing library '" + libraryName + "'";
+	auto syncData = CompileOnce( "spirv library\n" + code, workQueue, [&]( SyncData& entry ) {
 		ZoneScopedN( "DxcCompileSpirvLibrary" );
 
 		CComPtr<IDxcBlobEncoding> src;
+		DxcBuffer sourceBuffer;
 		CComPtr<IDxcCompiler3> compiler;
-		VulkanBindingShiftArguments shiftValues;
+		if( !PrepareDxcCompile( m_dxilUtils, code, subject, src, sourceBuffer, compiler ) )
+		{
+			return;
+		}
 		// The engine binds a ray tracing library's global inputs through the COMPUTE_SHADER
 		// slots (Tr2Material::ApplyMaterialDataForRtState, DX12's compute root signature), so its
 		// bindings are numbered as a compute shader's. AssignRegisters' pseudo-stage 8 is not a
 		// stage the ABI knows.
-		HRESULT hrBlob = m_dxilUtils->CreateBlobFromPinned( code.c_str(), UINT32( code.size() ), CP_UTF8, &src );
-		HRESULT hrCompiler = SUCCEEDED( hrBlob ) ? DxcCreateInstance( CLSID_DxcCompiler, IID_PPV_ARGS( &compiler ) ) : E_FAIL;
-		if( FAILED( hrBlob ) )
-		{
-			g_messages.AddMessage( "\\memory(0): error X0000: ray tracing library '%s': IDxcUtils::CreateBlobFromPinned failed (0x%08x)", libraryName.c_str(), unsigned( hrBlob ) );
-		}
-		else if( FAILED( hrCompiler ) )
-		{
-			g_messages.AddMessage( "\\memory(0): error X0000: ray tracing library '%s': DxcCreateInstance(CLSID_DxcCompiler) failed (0x%08x)", libraryName.c_str(), unsigned( hrCompiler ) );
-		}
-		else if( !TryGetVulkanBindingShiftArguments( shiftValues, COMPUTE_STAGE ) )
+		VulkanDxcArguments arguments;
+		if( !BuildVulkanDxcArguments( arguments, VulkanDxcCompile::SPIRV_LIBRARY, "lib_6_3", "", COMPUTE_STAGE ) )
 		{
 			g_messages.AddMessage( "\\memory(0): error X0000: ray tracing library '%s': no SPIR-V binding shifts for its global inputs", libraryName.c_str() );
+			return;
 		}
-		else
-		{
-			DxcBuffer sourceBuffer;
-			sourceBuffer.Ptr = src->GetBufferPointer();
-			sourceBuffer.Size = src->GetBufferSize();
-			sourceBuffer.Encoding = 0;
-
-			std::vector<LPCWSTR> arguments = {
-				L"-T",
-				L"lib_6_3",
-				L"-spirv",
-				L"-fspv-target-env=vulkan1.3",
-				L"-Zpc",
-				// No -HV: DXC's default grammar (HLSL 2021), the one the DXIL lib_6_3 compile of
-				// this library uses, here for its reflection and on DX12 for the bytes that ship.
-				// A library has only ever been compiled by DXC, so it needs none of the FXC-era
-				// 2018 grammar the pass path keeps, and both compiles of one source then read it
-				// alike (2021 short-circuits scalar && || ?:, as DX12 always has).
-				// An allow-list, and the whole of it. Without one DXC declares the RayQueryKHR
-				// capability in every module that names a RaytracingAccelerationStructure, used
-				// for TraceRay or not -- and a device with ray_query but no ray tracing pipeline
-				// (the S23) would then be asked for a capability the module does not use. With
-				// one, an extension the source really needs and this list lacks is a DXC error
-				// naming it, not a silent difference.
-				L"-fspv-extension=SPV_KHR_ray_tracing",
-				L"-fvk-b-shift",
-				shiftValues.b.c_str(),
-				L"0",
-				L"-fvk-t-shift",
-				shiftValues.t.c_str(),
-				L"1",
-				L"-fvk-s-shift",
-				shiftValues.s.c_str(),
-				L"1",
-				L"-fvk-u-shift",
-				shiftValues.u.c_str(),
-				L"1",
-			};
-			if( g_skipOptimization )
-			{
-				arguments.push_back( DXC_ARG_SKIP_OPTIMIZATIONS );
-			}
-			CompileWithDxc( compiler, sourceBuffer, arguments, true, &syncData->librarySpirv, nullptr );
-		}
-
-		{
-			std::lock_guard scope( syncData->mutex );
-			syncData->compiled = true;
-		}
-		syncData->conditionVariable.notify_all();
-	}
+		CompileWithDxc( compiler, sourceBuffer, arguments.arguments, true, subject, &entry.librarySpirv, nullptr );
+	} );
 
 	// A raw pointer, as CompileEffect takes its cache entries': the entry keeps the blob alive.
 	IDxcBlob* spirv = syncData->librarySpirv;
-	{
-		std::lock_guard scope( m_compiledCS );
-		syncData.reset();
-	}
+	ReleaseCacheEntry( syncData );
 	if( !spirv )
 	{
 		return false;
 	}
 
-	SpirvReflection module;
+	SpirvReflectVulkan::SpirvReflection module;
 	if( !SpirvReflectVulkan::ReflectSpirv( spirv->GetBufferPointer(), spirv->GetBufferSize(), module ) )
 	{
 		g_messages.AddMessage( "\\memory(0): error X0000: ray tracing library '%s': DXC's output is not a SPIR-V module this compiler can read", libraryName.c_str() );
 		return false;
 	}
-	if( !CheckShaderRecords( module, reflection, library, libraryName ) )
+	if( !RtShaderRecordLayout::CheckShaderRecords( module, reflection, library, libraryName ) )
 	{
 		return false;
 	}
@@ -2086,9 +1816,6 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 				ID3D10Blob* effectData = nullptr;
 				IDxcBlob* spirvEffectData = nullptr;
 				IDxcBlob* spirvReflectionData = nullptr;
-#if _WIN32
-				CComPtr<ID3D10Blob> errors = nullptr;
-#endif
 
 
 				if( shaderNode->GetChild( 1 )->GetSymbol() == nullptr )
@@ -2104,14 +1831,19 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 				state.GetSymbolTable().ResetUsedFlag();
 				MarkUsedSymbols( shaderNode->GetChild( 1 ), state );
 
+				// Vulkan: the declarations whose t/s/u registers the source and the reflection put
+				// on the binding ABI's resource set; null leaves every register as the tree has it.
+				std::set<const Symbol*> resourceSpace;
+				const std::set<const Symbol*>* vulkanResourceSpace = nullptr;
 				if( compileOptions.addSpaces )
 				{
 					CreateGlobalsCB( state );
 					AssignRegisters( state.GetTree(), stage.type );
 					if( compileOptions.spirv )
 					{
+						vulkanResourceSpace = &resourceSpace;
 						VulkanRegisterSpaceReject reject;
-						if( !ForceVulkanRegisterSpaces( state.GetTree(), reject ) )
+						if( !CheckVulkanRegisterSpaces( state.GetTree(), resourceSpace, reject ) )
 						{
 							// AddMessage sizes its own buffer, so the symbol name needs no cap here.
 							g_messages.AddMessage(
@@ -2123,7 +1855,7 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 				}
 
 				CompilerInputStream os( state, ShadingLanguage::HLSL );
-				os << HLSL{ state.GetTree(), &state.GetSymbolTable() };
+				os << HLSL{ state.GetTree(), &state.GetSymbolTable(), nullptr, vulkanResourceSpace };
 
 				std::string entryPoint = ToString( shaderNode->GetChild( 1 )->GetSymbol()->name );
 
@@ -2140,140 +1872,33 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 
 
 				// Let only one thread compile this permutation.
-				bool needsToCompile = false;
-				std::shared_ptr<SyncData> syncData;
-				{
-					std::lock_guard scope( m_compiledCS );
-					auto found = m_compiled.find( code );
-					if( found == end( m_compiled ) )
-					{
-						// Yep, this thread will have to compile. Make an entry into the cache.
-						syncData = std::make_shared<SyncData>();
-						m_compiled[code] = syncData;
-						needsToCompile = true;
-					}
-					else
-					{
-						// Some other thread is going to compile for us. Grab his stuff from the cache.
-						syncData = found->second;
-					}
-				}
-
-				if( !needsToCompile )
-				{
-					// Let's wait for the other thread to compile for us
-					if( workQueue )
-					{
-						workQueue->OnBlocked();
-					}
-					{
-						std::unique_lock<std::mutex> lock( syncData->mutex );
-						syncData->conditionVariable.wait( lock, [&syncData] { return syncData->compiled; } );
-					}
-					if( workQueue )
-					{
-						workQueue->OnUnblocked();
-					}
-				}
-				else
-				{
-					// We need to compile, nobody else is doing it for this permutation.
+				auto syncData = CompileOnce( code, workQueue, [&]( SyncData& entry ) {
 					if( compileOptions.spirv )
 					{
 						ZoneScopedN( "DxcCompileSpirv" );
 
+						const std::string subject = "entry point '" + patchEntryPoint + "'";
 						CComPtr<IDxcBlobEncoding> src;
-						HRESULT hrBlob = m_dxilUtils->CreateBlobFromPinned( code.c_str(), UINT32( code.size() ), CP_UTF8, &src );
-						if( FAILED( hrBlob ) )
+						DxcBuffer sourceBuffer;
+						CComPtr<IDxcCompiler3> compiler;
+						VulkanDxcArguments spirvArguments, dxilArguments;
+						if( !PrepareDxcCompile( m_dxilUtils, code, subject, src, sourceBuffer, compiler )
+							|| !BuildVulkanDxcArguments( spirvArguments, VulkanDxcCompile::SPIRV_PASS, profile, patchEntryPoint, stage.type )
+							|| !BuildVulkanDxcArguments( dxilArguments, VulkanDxcCompile::DXIL_PASS_REFLECTION, profile, patchEntryPoint, stage.type ) )
 						{
-							g_messages.AddMessage( "\\memory(0): error X0000: entry point '%s': IDxcUtils::CreateBlobFromPinned failed (0x%08x)", patchEntryPoint.c_str(), unsigned( hrBlob ) );
-							syncData->passSpirv = nullptr;
-							syncData->passSpirvReflection = nullptr;
+							return; // no module: this pass fails below, here and in every waiter
 						}
-						else
+						CompileWithDxc( compiler, sourceBuffer, spirvArguments.arguments, true, subject, &entry.passSpirv, nullptr );
+						if( entry.passSpirv )
 						{
-							DxcBuffer sourceBuffer;
-							sourceBuffer.Ptr = src->GetBufferPointer();
-							sourceBuffer.Size = src->GetBufferSize();
-							sourceBuffer.Encoding = 0;
-
-							std::wstring wideProfile( profile.begin(), profile.end() );
-							std::wstring wideEntry( patchEntryPoint.begin(), patchEntryPoint.end() );
-							std::vector<LPCWSTR> spirvArguments = {
-								L"-T", wideProfile.c_str(),
-								L"-E", wideEntry.c_str(),
-								L"-spirv",
-								L"-fspv-target-env=vulkan1.3",
-								L"-Zpc",
-								// The language the effects were written in. DXC defaults to HLSL 2021,
-								// where `||` and `&&` on vectors are errors ("operands for short-circuiting
-								// logical binary operator must be scalar"); FXC-era EVE effects use them --
-								// VolumetricBooster.fxh's `any( ( coord < 0 ) || ( coord > 1 ) )` kept
-								// boostervolumetric out of the S23's Vulkan closure on 2026-09-10. 2018 is
-								// the last version that reads them as the element-wise operators they were.
-								// The DXIL arguments below are left at the default until Windows can measure
-								// the change; the two back ends read the same source under two grammars
-								// for now, and the ledger says so.
-								L"-HV", L"2018",
-							};
-							VulkanBindingShiftArguments shiftValues;
-							if( !TryGetVulkanBindingShiftArguments( shiftValues, stage.type ) )
-							{
-								syncData->passSpirv = nullptr;
-								syncData->passSpirvReflection = nullptr;
-								std::lock_guard scope( syncData->mutex );
-								syncData->compiled = true;
-								syncData->conditionVariable.notify_all();
-								return false;
-							}
-							const LPCWSTR shiftArguments[] = {
-								L"-fvk-b-shift", shiftValues.b.c_str(), L"0",
-								L"-fvk-t-shift", shiftValues.t.c_str(), L"1",
-								L"-fvk-s-shift", shiftValues.s.c_str(), L"1",
-								L"-fvk-u-shift", shiftValues.u.c_str(), L"1",
-							};
-							spirvArguments.insert( end( spirvArguments ), std::begin( shiftArguments ), std::end( shiftArguments ) );
-							if( g_skipOptimization )
-							{
-								spirvArguments.push_back( DXC_ARG_SKIP_OPTIMIZATIONS );
-							}
-
-							// The reflection compile of the same source, on the same path: it has to
-							// parse under the same grammar as the module above, or an effect the
-							// SPIR-V compile accepted fails its reflection pass one line later.
-							std::vector<LPCWSTR> dxilArguments = {
-								L"-T", wideProfile.c_str(),
-								L"-E", wideEntry.c_str(),
-								L"-Zpc",
-								L"-HV", L"2018",
-							};
-							if( g_skipOptimization )
-							{
-								dxilArguments.push_back( DXC_ARG_SKIP_OPTIMIZATIONS );
-							}
-
-							CComPtr<IDxcCompiler3> compiler;
-							HRESULT hrCompiler = DxcCreateInstance( CLSID_DxcCompiler, IID_PPV_ARGS( &compiler ) );
-							if( FAILED( hrCompiler ) )
-							{
-								g_messages.AddMessage( "\\memory(0): error X0000: entry point '%s': DxcCreateInstance(CLSID_DxcCompiler) failed (0x%08x)", patchEntryPoint.c_str(), unsigned( hrCompiler ) );
-								syncData->passSpirv = nullptr;
-								syncData->passSpirvReflection = nullptr;
-							}
-							else
-							{
-								CompileWithDxc( compiler, sourceBuffer, spirvArguments, true, &syncData->passSpirv, nullptr );
-								if( syncData->passSpirv )
-								{
-									CompileWithDxc( compiler, sourceBuffer, dxilArguments, false, nullptr, &syncData->passSpirvReflection );
-								}
-							}
+							CompileWithDxc( compiler, sourceBuffer, dxilArguments.arguments, false, subject, nullptr, &entry.passSpirvReflection );
 						}
 					}
 #if _WIN32
 					else
 					{
 						CComPtr<ID3D10Blob> compiledEffectData;
+						CComPtr<ID3D10Blob> errors = nullptr;
 						HRESULT hr;
 						{
 							ZoneScopedN( "D3DCompile" );
@@ -2294,7 +1919,7 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 						if( FAILED( hr ) )
 						{
 							// We failed compilation, let's print errors.
-							syncData->passResource = nullptr;
+							entry.passResource = nullptr;
 							if( errors )
 							{
 								g_messages.AddMessages( errors );
@@ -2330,29 +1955,17 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 							}
 
 							// Compilation succeeded! Hand over the resource to the cache entry.
-							syncData->passResource.Attach( compiledEffectData.Detach() );
+							entry.passResource.Attach( compiledEffectData.Detach() );
 						}
 					}
 #endif
-
-					// Let's wake up everyone waiting for this permutation's compilation.
-					{
-						std::lock_guard scope( syncData->mutex );
-						syncData->compiled = true;
-					}
-					syncData->conditionVariable.notify_all();
-				}
+				} );
 
 				// Grab a raw pointer from the cache. This is to avoid whatever funny business is going on with CComPtr reference counters.
 				effectData = syncData->passResource;
 				spirvEffectData = syncData->passSpirv;
 				spirvReflectionData = syncData->passSpirvReflection;
-
-				{
-					// Not sure if this is necessary to avoid reference counter bugs. But anyway...
-					std::lock_guard scope( m_compiledCS );
-					syncData.reset();
-				}
+				ReleaseCacheEntry( syncData );
 
 				if( !compileOptions.spirv && !effectData )
 				{
@@ -2380,7 +1993,7 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 						g_messages.AddMessage( "\\memory(0): error X0000: Could not get shader reflection" );
 						return false;
 					}
-					if( !DxReflection::ProcessReflection<DxReflection::ReflectionDx12>( state, reflectionDx12.p, compileOptions.useStaticSamplers, stage, result.annotations ) )
+					if( !DxReflection::ProcessReflection<DxReflection::ReflectionDx12>( state, reflectionDx12.p, compileOptions.useStaticSamplers, stage, result.annotations, vulkanResourceSpace ) )
 					{
 						return false;
 					}
@@ -2662,175 +2275,85 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 			std::string code = os.str();
 			library.source = code;
 
-			// Let only one thread compile this permutation.
-			bool needsToCompile = false;
-			std::shared_ptr<SyncData> syncData;
-			{
-				std::lock_guard scope( m_compiledCS );
-				auto found = m_compiled.find( code );
-				if( found == end( m_compiled ) )
-				{
-					// Yep, this thread will have to compile. Make an entry into the cache.
-					syncData = std::make_shared<SyncData>();
-					m_compiled[code] = syncData;
-					needsToCompile = true;
-				}
-				else
-				{
-					// Some other thread is going to compile for us. Grab his stuff from the cache.
-					syncData = found->second;
-				}
-			}
-
-			if( !needsToCompile )
-			{
-				// Let's wait for the other thread to compile for us
-				if( workQueue )
-				{
-					workQueue->OnBlocked();
-				}
-				{
-					std::unique_lock<std::mutex> lock( syncData->mutex );
-					syncData->conditionVariable.wait( lock, [&syncData] { return syncData->compiled; } );
-				}
-				if( workQueue )
-				{
-					workQueue->OnUnblocked();
-				}
-			}
-			else
-			{
-				// We need to compile, nobody else is doing it for this permutation. Every step is
-				// checked and says why it failed: a failed status used to be read only on Vulkan,
-				// and on DX12 a source error then returned without printing DXC's messages.
+			// Let only one thread compile this permutation. Every step is checked and says why it
+			// failed: a failed status used to be read only on Vulkan, and on DX12 a source error
+			// then returned without printing DXC's messages.
+			const std::string subject = "ray tracing library '" + libraryName + "'";
+			auto syncData = CompileOnce( code, workQueue, [&]( SyncData& entry ) {
 				CComPtr<IDxcBlobEncoding> src;
+				DxcBuffer sourceBuffer;
 				CComPtr<IDxcCompiler3> compiler;
-				CComPtr<IDxcResult> pCompileResult;
-				HRESULT hrCompilation = m_dxilUtils->CreateBlobFromPinned( code.c_str(), UINT32( code.size() ), CP_UTF8, &src );
-				if( FAILED( hrCompilation ) )
+				if( !PrepareDxcCompile( m_dxilUtils, code, subject, src, sourceBuffer, compiler ) )
 				{
-					g_messages.AddMessage( "\\memory(0): error X0000: ray tracing library '%s': IDxcUtils::CreateBlobFromPinned failed (0x%08x)", libraryName.c_str(), unsigned( hrCompilation ) );
+					return;
 				}
-				else if( FAILED( hrCompilation = DxcCreateInstance( CLSID_DxcCompiler, IID_PPV_ARGS( &compiler ) ) ) )
+				std::vector<LPCWSTR> arguments = {
+					L"-T",
+					L"lib_6_3",
+					L"-Qstrip_debug",
+					L"-Qstrip_reflect",
+					DXC_ARG_WARNINGS_ARE_ERRORS, //-WX
+				};
+				// Under spirv this DXIL is reflection only and never ships, so neither -Zi nor its
+				// PDB: a PDB would describe code that is not in the .sm_*. -Zi changes the object,
+				// so the argument list is the old one whenever !spirv.
+				const bool dxilPdb = g_generatePDB && !compileOptions.spirv;
+				if( dxilPdb )
 				{
-					g_messages.AddMessage( "\\memory(0): error X0000: ray tracing library '%s': DxcCreateInstance(CLSID_DxcCompiler) failed (0x%08x)", libraryName.c_str(), unsigned( hrCompilation ) );
+					arguments.push_back( DXC_ARG_DEBUG ); //-Zi
 				}
-				else
+				if( g_skipOptimization )
 				{
-					LPCWSTR arguments[7];
-					uint32_t argumentsSize = 5;
-					arguments[0] = L"-T";
-					arguments[1] = L"lib_6_3";
-					arguments[2] = L"-Qstrip_debug";
-					arguments[3] = L"-Qstrip_reflect";
-					arguments[4] = DXC_ARG_WARNINGS_ARE_ERRORS; //-WX
-					// Under spirv this DXIL is reflection only and never ships, so neither -Zi nor
-					// its PDB: a PDB would describe code that is not in the .sm_*. -Zi changes the
-					// object, so the argument list is the old one whenever !spirv.
-					const bool dxilPdb = g_generatePDB && !compileOptions.spirv;
-					if( dxilPdb )
-					{
-						arguments[argumentsSize++] = DXC_ARG_DEBUG; //-Zi
-					}
-					if( g_skipOptimization )
-					{
-						arguments[argumentsSize++] = DXC_ARG_SKIP_OPTIMIZATIONS; //-Od
-					}
-
-					DxcBuffer sourceBuffer;
-					sourceBuffer.Ptr = src->GetBufferPointer();
-					sourceBuffer.Size = src->GetBufferSize();
-					sourceBuffer.Encoding = 0;
-
-					hrCompilation = compiler->Compile( &sourceBuffer, arguments, argumentsSize, nullptr, IID_PPV_ARGS( &pCompileResult ) );
-					if( SUCCEEDED( hrCompilation ) && !pCompileResult )
-					{
-						hrCompilation = E_FAIL;
-					}
-					if( SUCCEEDED( hrCompilation ) )
-					{
-						// IDxcCompiler3 reports a source error as S_OK with a failed status.
-						pCompileResult->GetStatus( &hrCompilation );
-					}
-					if( FAILED( hrCompilation ) )
-					{
-						CComPtr<IDxcBlobUtf8> errors;
-						if( pCompileResult )
-						{
-							pCompileResult->GetOutput( DXC_OUT_ERRORS, IID_PPV_ARGS( &errors ), nullptr );
-						}
-						if( errors && errors->GetStringLength() > 0 )
-						{
-							g_messages.AddMessages( errors );
-						}
-						else
-						{
-							g_messages.AddMessage( "\\memory(0): error X0000: ray tracing library '%s': DXC failed (0x%08x) and gave no message", libraryName.c_str(), unsigned( hrCompilation ) );
-						}
-					}
+					arguments.push_back( DXC_ARG_SKIP_OPTIMIZATIONS ); //-Od
+				}
+				CComPtr<IDxcResult> compileResult = CompileWithDxc( compiler, sourceBuffer, arguments, false, subject );
+				if( !compileResult )
+				{
+					return;
 				}
 
-				if( FAILED( hrCompilation ) )
-				{
-					syncData->libraryResource = nullptr;
-				}
-				else
-				{
-					CComPtr<IDxcBlob> reflectionData;
-					pCompileResult->GetOutput( DXC_OUT_REFLECTION, IID_PPV_ARGS( &reflectionData ), nullptr );
-					syncData->libraryReflection.Attach( reflectionData.Detach() );
+				CComPtr<IDxcBlob> reflectionData;
+				compileResult->GetOutput( DXC_OUT_REFLECTION, IID_PPV_ARGS( &reflectionData ), nullptr );
+				entry.libraryReflection.Attach( reflectionData.Detach() );
 
 #if _WIN32
-					// EffectData.h declares PDB::pdbBlob under _WIN32, and wcstombs_s is
-					// the CRT's. Ray tracing is a DX12 feature; nothing reaches here on
-					// macOS, where /pdb would need a different container anyway.
-					if( g_generatePDB && !compileOptions.spirv )
+				// EffectData.h declares PDB::pdbBlob under _WIN32, and wcstombs_s is
+				// the CRT's. Ray tracing is a DX12 feature; nothing reaches here on
+				// macOS, where /pdb would need a different container anyway.
+				if( dxilPdb )
+				{
+					// Get debug info and it's name.
+					CComPtr<IDxcBlob> pdbBlob;
+					CComPtr<IDxcBlobUtf16> pdbName;
+					compileResult->GetOutput( DXC_OUT_PDB, IID_PPV_ARGS( &pdbBlob ), &pdbName );
+
+					char outputString[128];
+					size_t outputSize = pdbName->GetStringLength() + 1;
+					size_t charsConverted = 0;
+					const wchar_t* inputW = pdbName->GetStringPointer();
+					wcstombs_s( &charsConverted, outputString, outputSize, inputW, pdbName->GetStringLength() );
+
 					{
-						// Get debug info and it's name.
-						CComPtr<IDxcBlob> pdbBlob;
-						CComPtr<IDxcBlobUtf16> pdbName;
-						pCompileResult->GetOutput( DXC_OUT_PDB, IID_PPV_ARGS( &pdbBlob ), &pdbName );
-
-						char outputString[128];
-						size_t outputSize = pdbName->GetStringLength() + 1;
-						size_t charsConverted = 0;
-						const wchar_t* inputW = pdbName->GetStringPointer();
-						wcstombs_s( &charsConverted, outputString, outputSize, inputW, pdbName->GetStringLength() );
-
-						{
-							// TODO: intern, I'm actually not sure if we need a mutex here at all...
-							std::lock_guard scope( m_pdbCS );
-							PDB pdb;
-							pdb.name = outputString;
-							pdb.pdbBlob = pdbBlob;
-							result.pdbs.push_back( pdb );
-						}
+						// TODO: intern, I'm actually not sure if we need a mutex here at all...
+						std::lock_guard scope( m_pdbCS );
+						PDB pdb;
+						pdb.name = outputString;
+						pdb.pdbBlob = pdbBlob;
+						result.pdbs.push_back( pdb );
 					}
+				}
 #endif
 
-					// Compilation succeeded! Hand over the resource to the cache entry.
-					CComPtr<IDxcBlob> compiled;
-					pCompileResult->GetOutput( DXC_OUT_OBJECT, IID_PPV_ARGS( &compiled ), nullptr );
-					syncData->libraryResource.Attach( compiled.Detach() );
-				}
-
-				// Let's wake up everyone waiting for this permutation's compilation.
-				{
-					std::lock_guard scope( syncData->mutex );
-					syncData->compiled = true;
-				}
-				syncData->conditionVariable.notify_all();
-			}
+				// Compilation succeeded! Hand over the resource to the cache entry.
+				CComPtr<IDxcBlob> compiled;
+				compileResult->GetOutput( DXC_OUT_OBJECT, IID_PPV_ARGS( &compiled ), nullptr );
+				entry.libraryResource.Attach( compiled.Detach() );
+			} );
 
 			// Grab a raw pointer from the cache. This is to avoid whatever funny business is going on with CComPtr reference counters.
 			IDxcBlob* compiled = syncData->libraryResource;
 			IDxcBlob* reflectionData = syncData->libraryReflection;
-
-			{
-				// Not sure if this is necessary to avoid reference counter bugs. But anyway...
-				std::lock_guard scope( m_compiledCS );
-				syncData.reset();
-			}
+			ReleaseCacheEntry( syncData );
 
 			// Vulkan: a library that exports hit groups and nothing else is dropped, with a
 			// warning, when it fails to compile, and the effect builds without it -- the V5 hull
@@ -2842,6 +2365,16 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 			// (rtshadows, rtcalculatefroxels) index their library without a check.
 			const bool dropOnFailure = compileOptions.spirv && std::none_of( begin( library.exports ), end( library.exports ), []( const ShaderExport& e ) { return e.type == RtShaderType::RAY_GEN || e.type == RtShaderType::MISS; } );
 			bool dropped = false;
+			// A dropped library leaves the effect as though it had never been there. Its global
+			// and local inputs live in `library`, which is not kept; the annotations its
+			// reflection adds to the effect's (ProcessReflection, AddGlobalInputs) are put back as
+			// they were. The strings those added to g_stringTable stay: the table is append-only
+			// and shared by every permutation, and the names are the effect's own globals.
+			std::map<StringReference, ParameterAnnotation> annotationsBefore;
+			if( dropOnFailure )
+			{
+				annotationsBefore = result.annotations;
+			}
 
 			if( !compiled || !reflectionData )
 			{
@@ -2907,6 +2440,7 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 
 			if( dropped )
 			{
+				result.annotations = std::move( annotationsBefore );
 				// Unconditional, not a g_printWarnings warning: the staging run compiles with
 				// /no_warnings, and a hull silently without ray-traced shadows is what this says.
 				g_messages.AddMessage( "\\memory(0): warning X0000: ray tracing library '%s' dropped: it exports only hit group shaders and did not compile for Vulkan (errors above); the effect is built without it, and its geometry casts no ray-traced shadow", libraryName.c_str() );
