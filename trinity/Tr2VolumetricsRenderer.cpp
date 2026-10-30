@@ -709,7 +709,11 @@ Tr2GpuResourcePool::Texture Tr2VolumetricsRenderer::RenderFog(
 
 				if( !pipelineState.IsValid() )
 				{
-					CCP_LOGERR( "Failed to get pipeline state for raytraced froxel fog shadows!" );
+					if( !m_rtFogFailureLogged )
+					{
+						CCP_LOGERR( "Failed to get pipeline state for raytraced froxel fog shadows!" );
+						m_rtFogFailureLogged = true;
+					}
 					return {};
 				}
 
@@ -721,7 +725,16 @@ Tr2GpuResourcePool::Texture Tr2VolumetricsRenderer::RenderFog(
 				m_shaderTableDesc.AddMissShader( missName.c_str(), material );
 
 				Tr2RtShaderTableAL shadowShaderTable;
-				shadowShaderTable.Create( m_shaderTableDesc, pipelineState, renderContext.GetPrimaryRenderContext() );
+				if( FAILED( shadowShaderTable.Create( m_shaderTableDesc, pipelineState, renderContext.GetPrimaryRenderContext() ) ) )
+				{
+					// A failed Create leaves the null table, which DispatchRays would be handed.
+					if( !m_rtFogFailureLogged )
+					{
+						CCP_LOGERR( "Failed to create the shader table for raytraced froxel fog shadows!" );
+						m_rtFogFailureLogged = true;
+					}
+					return {};
+				}
 
 				resources.rtCalculateFroxels->SetOption( BlueSharedString( "GOD_RAY_NOISE" ), BlueSharedString( m_froxelFogSettings.godRayNoiseIntensity.value > 0.0f ? "GOD_RAY_NOISE_ENABLED" : "GOD_RAY_NOISE_DISABLED" ) );
 				resources.rtCalculateFroxels->SetOption( BlueSharedString( "FOG_NOISE" ), BlueSharedString( m_froxelFogSettings.fogNoiseIntensity.value > 0.0f ? "FOG_NOISE_ENABLED" : "FOG_NOISE_DISABLED" ) );
@@ -739,14 +752,12 @@ Tr2GpuResourcePool::Texture Tr2VolumetricsRenderer::RenderFog(
 				}
 
 				renderContext.DispatchRays( pipelineState, shadowShaderTable, rayGenName.c_str(), width, height, depth );
+				m_rtFogFailureLogged = false;
 			}
 			else
 			{
 				//Otherwise, just use a plain compute shader.
-				// SHADOWS_CASCADED, the name CalculateFroxelsImpl.fxh's permutation has in 2026-COW.
-				// SHADOWS_ENABLED is not one of its values and was rejected every frame ("Invalid
-				// situation value"), leaving the permutation at its default.
-				resources.calculateFroxels->SetOption( BlueSharedString( "SHADOWS" ), BlueSharedString( shadowType == SHADOWS_CASCADED ? "SHADOWS_CASCADED" : "SHADOWS_DISABLED" ) );
+				resources.calculateFroxels->SetOption( BlueSharedString( "SHADOWS" ), BlueSharedString( shadowType == SHADOWS_CASCADED ? "SHADOWS_ENABLED" : "SHADOWS_DISABLED" ) );
 				resources.calculateFroxels->SetOption( BlueSharedString( "GOD_RAY_NOISE" ), BlueSharedString( m_froxelFogSettings.godRayNoiseIntensity.value > 0.0f ? "GOD_RAY_NOISE_ENABLED" : "GOD_RAY_NOISE_DISABLED" ) );
 				resources.calculateFroxels->SetOption( BlueSharedString( "FOG_NOISE" ), BlueSharedString( m_froxelFogSettings.fogNoiseIntensity.value > 0.0f ? "FOG_NOISE_ENABLED" : "FOG_NOISE_DISABLED" ) );
 
@@ -833,9 +844,6 @@ void Tr2VolumetricsRenderer::UpdatePerObjectData( FogPerObjectData* data, const 
 	Matrix inverseProjection = Inverse( projection );
 
 	{
-		// Transposed, as InverseViewMatrix below: the shader multiplies a row vector.
-		data->ProjectionMatrix = Transpose( projection );
-		data->InverseProjectionMatrix = Transpose( inverseProjection );
 
 		data->ResolutionX = width;
 		data->ResolutionY = height;

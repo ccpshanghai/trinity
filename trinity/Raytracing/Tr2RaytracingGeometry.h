@@ -38,6 +38,10 @@ private:
 	std::unordered_map<uint32_t, std::pair<BlueSharedStringW, BlueSharedStringW>> m_libraries;
 	uint32_t m_nextName;
 	bool m_isDirty;
+	// The last build from this description failed. A failure is deterministic for an unchanged
+	// description, so it is retried only once AddLibrary / AddHitGroup make the description dirty
+	// again, not every frame.
+	bool m_buildFailed;
 };
 
 
