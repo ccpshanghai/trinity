@@ -320,6 +320,7 @@ set(_SOURCES
     stub/Tr2VideoAdapterInfoALStub.h
     stub/upscaling/Tr2UpscalingALStub.cpp
     stub/upscaling/Tr2UpscalingALStub.h
+    vulkan/SpirvReflectVulkan.h
     vulkan/Tr2BufferALVulkan.cpp
     vulkan/Tr2BufferALVulkan.h
     vulkan/Tr2CapsALVulkan.h

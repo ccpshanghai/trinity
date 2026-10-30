@@ -23,6 +23,7 @@
 
 #include "DxReflection.h"
 #include "trinityal/vulkan/Tr2ShaderBindingABIVulkan.h"
+#include "trinityal/vulkan/SpirvReflectVulkan.h"
 #include <WorkQueue.h>
 
 #define DXIL_FOURCC( ch0, ch1, ch2, ch3 ) (                        \
@@ -251,294 +252,8 @@ void CollectLocalCBuffers( ASTNode* node, const std::vector<GlobalInputElement>&
 	}
 }
 
-// One scalar of a laid-out block: where it starts and how wide it is. The layout comparison below
-// walks both sides into the same order and compares these index by index.
-struct ScalarSlot
-{
-	uint32_t offset;
-	uint32_t size;
-	bool operator==( const ScalarSlot& other ) const
-	{
-		return offset == other.offset && size == other.size;
-	}
-	bool operator!=( const ScalarSlot& other ) const
-	{
-		return !( *this == other );
-	}
-};
-
-// What a ray tracing library needs from its SPIR-V module: entry points with their interfaces,
-// the ShaderRecordBufferKHR variables, and enough of the type section to lay a record out.
-struct SpirvModule
-{
-	enum Op : uint32_t
-	{
-		OP_NAME = 5,
-		OP_ENTRY_POINT = 15,
-		OP_TYPE_BOOL = 20,
-		OP_TYPE_INT = 21,
-		OP_TYPE_FLOAT = 22,
-		OP_TYPE_VECTOR = 23,
-		OP_TYPE_MATRIX = 24,
-		OP_TYPE_ARRAY = 28,
-		OP_TYPE_STRUCT = 30,
-		OP_TYPE_POINTER = 32,
-		OP_CONSTANT = 43,
-		OP_VARIABLE = 59,
-		OP_DECORATE = 71,
-		OP_MEMBER_DECORATE = 72,
-	};
-	enum Decoration : uint32_t
-	{
-		DECORATION_ROW_MAJOR = 4,
-		DECORATION_ARRAY_STRIDE = 6,
-		DECORATION_MATRIX_STRIDE = 7,
-		DECORATION_OFFSET = 35,
-	};
-	static constexpr uint32_t MAGIC = 0x07230203;
-	static constexpr uint32_t STORAGE_CLASS_SHADER_RECORD_BUFFER = 5343;
-
-	struct Type
-	{
-		uint32_t opcode = 0;
-		std::vector<uint32_t> operands; // the words after the result id; OP_CONSTANT: { value }
-	};
-	struct MemberLayout
-	{
-		uint32_t offset = 0;
-		uint32_t matrixStride = 0;
-		bool rowMajor = false;
-	};
-	struct EntryPoint
-	{
-		std::string name;
-		std::vector<uint32_t> interfaceIds;
-	};
-
-	std::map<uint32_t, Type> types;
-	std::map<uint32_t, std::string> names;
-	std::map<uint32_t, uint32_t> arrayStrides;
-	std::map<std::pair<uint32_t, uint32_t>, MemberLayout> members;
-	std::map<uint32_t, uint32_t> shaderRecordVariables; // variable id -> pointee type id
-	std::vector<EntryPoint> entryPoints;
-
-	static std::string ReadString( const uint32_t* words, size_t wordCount, size_t& consumed )
-	{
-		std::string result;
-		for( consumed = 0; consumed < wordCount; )
-		{
-			uint32_t word = words[consumed++];
-			for( int i = 0; i < 4; ++i )
-			{
-				char c = char( ( word >> ( 8 * i ) ) & 0xFF );
-				if( c == 0 )
-				{
-					return result;
-				}
-				result += c;
-			}
-		}
-		return result;
-	}
-
-	bool Parse( const void* data, size_t size )
-	{
-		auto words = static_cast<const uint32_t*>( data );
-		size_t wordCount = size / 4;
-		if( wordCount < 5 || words[0] != MAGIC )
-		{
-			return false;
-		}
-		std::map<uint32_t, std::pair<uint32_t, uint32_t>> pointers; // id -> { storage class, pointee }
-		std::vector<std::pair<uint32_t, uint32_t>> variables; // { id, pointer type }
-		for( size_t i = 5; i < wordCount; )
-		{
-			uint32_t opcode = words[i] & 0xFFFF;
-			uint32_t length = words[i] >> 16;
-			if( length == 0 || i + length > wordCount )
-			{
-				return false;
-			}
-			const uint32_t* op = words + i;
-			size_t consumed = 0;
-			switch( opcode )
-			{
-			case OP_NAME:
-				if( length >= 3 )
-				{
-					names[op[1]] = ReadString( op + 2, length - 2, consumed );
-				}
-				break;
-			case OP_ENTRY_POINT:
-				if( length >= 4 )
-				{
-					EntryPoint entryPoint;
-					entryPoint.name = ReadString( op + 3, length - 3, consumed );
-					entryPoint.interfaceIds.assign( op + 3 + consumed, op + length );
-					entryPoints.push_back( entryPoint );
-				}
-				break;
-			case OP_TYPE_BOOL:
-			case OP_TYPE_INT:
-			case OP_TYPE_FLOAT:
-			case OP_TYPE_VECTOR:
-			case OP_TYPE_MATRIX:
-			case OP_TYPE_ARRAY:
-			case OP_TYPE_STRUCT:
-				if( length >= 2 )
-				{
-					types[op[1]] = { opcode, std::vector<uint32_t>( op + 2, op + length ) };
-				}
-				break;
-			case OP_CONSTANT:
-				if( length >= 4 )
-				{
-					types[op[2]] = { opcode, { op[3] } };
-				}
-				break;
-			case OP_TYPE_POINTER:
-				if( length == 4 )
-				{
-					pointers[op[1]] = { op[2], op[3] };
-				}
-				break;
-			case OP_VARIABLE:
-				if( length >= 4 && op[3] == STORAGE_CLASS_SHADER_RECORD_BUFFER )
-				{
-					variables.push_back( { op[2], op[1] } );
-				}
-				break;
-			case OP_DECORATE:
-				if( length >= 4 && op[2] == DECORATION_ARRAY_STRIDE )
-				{
-					arrayStrides[op[1]] = op[3];
-				}
-				break;
-			case OP_MEMBER_DECORATE:
-				if( length >= 4 )
-				{
-					auto& member = members[{ op[1], op[2] }];
-					if( op[3] == DECORATION_OFFSET && length >= 5 )
-					{
-						member.offset = op[4];
-					}
-					else if( op[3] == DECORATION_MATRIX_STRIDE && length >= 5 )
-					{
-						member.matrixStride = op[4];
-					}
-					else if( op[3] == DECORATION_ROW_MAJOR )
-					{
-						member.rowMajor = true;
-					}
-				}
-				break;
-			default:
-				break;
-			}
-			i += length;
-		}
-		for( auto& variable : variables )
-		{
-			auto pointer = pointers.find( variable.second );
-			if( pointer == end( pointers ) )
-			{
-				return false;
-			}
-			shaderRecordVariables[variable.first] = pointer->second.second;
-		}
-		return true;
-	}
-
-	std::string NameOf( uint32_t id ) const
-	{
-		auto found = names.find( id );
-		return found == end( names ) ? std::string( "%" ) + std::to_string( id ) : found->second;
-	}
-
-	uint32_t ScalarSize( uint32_t typeId ) const
-	{
-		auto found = types.find( typeId );
-		if( found == end( types ) || found->second.opcode == OP_TYPE_BOOL || found->second.operands.empty() )
-		{
-			return 4;
-		}
-		return found->second.operands[0] / 8;
-	}
-
-	// Every scalar of the type, in declaration order: struct members in order, array elements
-	// outer, and a matrix by HLSL row, then HLSL column. DXC turns an HLSL matrix's rows into
-	// SPIR-V columns (column_major float4x3 is OpTypeMatrix of 4 vec3, decorated RowMajor), so the
-	// SPIR-V column-outer walk below already is HLSL row-outer, whichever the decoration.
-	bool Flatten( uint32_t typeId, uint32_t base, const MemberLayout& layout, std::vector<ScalarSlot>& offsets ) const
-	{
-		auto found = types.find( typeId );
-		if( found == end( types ) )
-		{
-			return false;
-		}
-		auto& type = found->second;
-		switch( type.opcode )
-		{
-		case OP_TYPE_BOOL:
-		case OP_TYPE_INT:
-		case OP_TYPE_FLOAT:
-			offsets.push_back( { base, ScalarSize( typeId ) } );
-			return true;
-		case OP_TYPE_VECTOR:
-			for( uint32_t i = 0; i < type.operands[1]; ++i )
-			{
-				offsets.push_back( { base + i * ScalarSize( type.operands[0] ), ScalarSize( type.operands[0] ) } );
-			}
-			return true;
-		case OP_TYPE_MATRIX: {
-			auto column = types.find( type.operands[0] );
-			if( column == end( types ) || column->second.opcode != OP_TYPE_VECTOR )
-			{
-				return false;
-			}
-			uint32_t rows = column->second.operands[1];
-			uint32_t scalarSize = ScalarSize( column->second.operands[0] );
-			for( uint32_t c = 0; c < type.operands[1]; ++c )
-			{
-				for( uint32_t r = 0; r < rows; ++r )
-				{
-					offsets.push_back( { base + ( layout.rowMajor ? r * layout.matrixStride + c * scalarSize : c * layout.matrixStride + r * scalarSize ), scalarSize } );
-				}
-			}
-			return true;
-		}
-		case OP_TYPE_ARRAY: {
-			auto length = types.find( type.operands[1] );
-			auto stride = arrayStrides.find( typeId );
-			if( length == end( types ) || length->second.opcode != OP_CONSTANT || stride == end( arrayStrides ) )
-			{
-				return false;
-			}
-			for( uint32_t i = 0; i < length->second.operands[0]; ++i )
-			{
-				if( !Flatten( type.operands[0], base + i * stride->second, layout, offsets ) )
-				{
-					return false;
-				}
-			}
-			return true;
-		}
-		case OP_TYPE_STRUCT:
-			for( uint32_t i = 0; i < type.operands.size(); ++i )
-			{
-				auto member = members.find( { typeId, i } );
-				MemberLayout memberLayout = member == end( members ) ? MemberLayout() : member->second;
-				if( !Flatten( type.operands[i], base + memberLayout.offset, memberLayout, offsets ) )
-				{
-					return false;
-				}
-			}
-			return true;
-		default:
-			return false;
-		}
-	}
-};
+using SpirvReflectVulkan::SpirvReflection;
+using SpirvReflectVulkan::SpirvScalarSlot;
 
 uint32_t AlignTo16( uint32_t size )
 {
@@ -593,10 +308,10 @@ uint32_t D3DTotalSize( ID3D12ShaderReflectionType* type )
 }
 
 // Every array element starts a new 16-byte row; so does every struct and every matrix column
-// (row, for row_major). Scalars come out in SpirvModule::Flatten's order -- declaration order,
+// (row, for row_major). Scalars come out in SpirvReflection's record order -- declaration order,
 // array elements outer, a matrix by row then column whatever its packing -- so the two lists
 // compare index by index.
-void D3DFlatten( ID3D12ShaderReflectionType* type, uint32_t base, std::vector<ScalarSlot>& offsets )
+void D3DFlatten( ID3D12ShaderReflectionType* type, uint32_t base, std::vector<SpirvScalarSlot>& offsets )
 {
 	D3D12_SHADER_TYPE_DESC desc;
 	type->GetDesc( &desc );
@@ -703,7 +418,7 @@ constexpr uint32_t VULKAN_MIN_MAX_SHADER_GROUP_STRIDE = 4096;
 //   whose two layouts differ is refused by name.
 //
 // Messages start with \memory(0), which CompileMessageQueue replaces with the effect's path.
-bool CheckShaderRecords( const SpirvModule& module, ID3D12LibraryReflection* reflection, const Library& library, const std::string& libraryName )
+bool CheckShaderRecords( const SpirvReflection& module, ID3D12LibraryReflection* reflection, const Library& library, const std::string& libraryName )
 {
 	bool ok = true;
 
@@ -714,7 +429,7 @@ bool CheckShaderRecords( const SpirvModule& module, ID3D12LibraryReflection* ref
 	{
 		for( auto id : entryPoint.interfaceIds )
 		{
-			if( !module.shaderRecordVariables.count( id ) )
+			if( !module.FindShaderRecord( id ) )
 			{
 				continue;
 			}
@@ -803,7 +518,7 @@ bool CheckShaderRecords( const SpirvModule& module, ID3D12LibraryReflection* ref
 		}
 		// Scalar for scalar, in one order on both sides: equal offset sets are not enough, two
 		// members swapping places would pass a sorted comparison and copy each into the other.
-		std::vector<ScalarSlot> d3dSlots;
+		std::vector<SpirvScalarSlot> d3dSlots;
 		std::vector<std::string> d3dVariables; // the top-level variable each slot belongs to
 		for( UINT v = 0; v < bufferDesc.Variables; ++v )
 		{
@@ -815,8 +530,8 @@ bool CheckShaderRecords( const SpirvModule& module, ID3D12LibraryReflection* ref
 				d3dVariables.resize( d3dSlots.size(), variableDesc.Name ? variableDesc.Name : "?" );
 			}
 		}
-		std::vector<ScalarSlot> recordSlots;
-		bool flattened = module.Flatten( module.shaderRecordVariables.at( id ), 0, SpirvModule::MemberLayout(), recordSlots );
+		const auto& recordSlots = module.FindShaderRecord( id )->scalars;
+		const bool flattened = module.FindShaderRecord( id )->laidOut;
 		size_t first = 0;
 		while( first < d3dSlots.size() && first < recordSlots.size() && d3dSlots[first] == recordSlots[first] )
 		{
@@ -2200,8 +1915,8 @@ bool EffectCompilerDX11::CompileLibrarySpirv( ParserState& state, const std::vec
 		return false;
 	}
 
-	SpirvModule module;
-	if( !module.Parse( spirv->GetBufferPointer(), spirv->GetBufferSize() ) )
+	SpirvReflection module;
+	if( !SpirvReflectVulkan::ReflectSpirv( spirv->GetBufferPointer(), spirv->GetBufferSize(), module ) )
 	{
 		g_messages.AddMessage( "\\memory(0): error X0000: ray tracing library '%s': DXC's output is not a SPIR-V module this compiler can read", libraryName.c_str() );
 		return false;
