@@ -323,6 +323,106 @@ void RayGen()
 technique T0 { library L0 { RayGenShader = compile lib_6_3 RayGen(); payloadsize = 4; } }
 )";
 
+// A local cbuffer with both matrix packings. D3D stores a column_major matrix column by column
+// and DXC's record row by row as a RowMajor SPIR-V matrix of the transposed shape; the bytes are
+// the same, and the layout check has to see that scalar for scalar, not only as a set of offsets.
+const char* RT_MATRIX_LOCAL_CBUFFER_EFFECT = R"(
+RWTexture2D<float4> Output;
+cbuffer LocalData { float4x3 ColumnMajor; row_major float3x4 RowMajor; float4 Tail; };
+
+[shader( "raygeneration" )]
+[globalinput( "Output" )]
+void RayGen()
+{
+	float4 v = float4( DispatchRaysIndex().xyz, 1 );
+	Output[DispatchRaysIndex().xy] = float4( mul( v, ColumnMajor ), 1 ) + float4( mul( RowMajor, v ), 0 ) + Tail;
+}
+
+technique T0 { library L0 { RayGenShader = compile lib_6_3 RayGen(); payloadsize = 4; } }
+)";
+
+// A column_major float3x3 is 44 bytes in a D3D cbuffer (its last column is not padded) and 48 in
+// a record: the float after it moves. The refusal names the first scalar that moved.
+const char* RT_MATRIX_TAIL_LOCAL_CBUFFER_EFFECT = R"(
+RWTexture2D<float4> Output;
+cbuffer LocalData { float3x3 Rotation; float After; };
+
+[shader( "raygeneration" )]
+[globalinput( "Output" )]
+void RayGen()
+{
+	Output[DispatchRaysIndex().xy] = float4( mul( float3( DispatchRaysIndex().xyz ), Rotation ), After );
+}
+
+technique T0 { library L0 { RayGenShader = compile lib_6_3 RayGen(); payloadsize = 4; } }
+)";
+
+// A tbuffer the library names in its globalinput: an SRV like any other global, never a shader
+// record (DX12's LOCAL_INPUT counts cbuffers only).
+const char* RT_TBUFFER_EFFECT = R"(
+RWTexture2D<float4> Output;
+tbuffer Lookup : register( t2 ) { float4 Entries[4]; };
+cbuffer LocalData { float4 Tint; };
+
+[shader( "raygeneration" )]
+[globalinput( "Output;Lookup" )]
+void RayGen()
+{
+	Output[DispatchRaysIndex().xy] = Entries[DispatchRaysIndex().x & 3] * Tint;
+}
+
+technique T0 { library L0 { RayGenShader = compile lib_6_3 RayGen(); payloadsize = 4; } }
+)";
+
+// The shape of every V5 hull's `technique RtShadow`: a library of hit group shaders only, beside
+// the effect's ordinary passes. This one reads two local cbuffers, which Vulkan cannot give a
+// library, so its SPIR-V compile is refused.
+const char* RT_HIT_GROUP_LIBRARY_REFUSED_EFFECT = R"(
+cbuffer LocalA { float4 Tint; };
+cbuffer LocalB { float4 Shade; };
+
+struct Payload { float visibility; };
+struct Attributes { float2 uv; };
+
+[shader( "closesthit" )]
+void ClosestHit( inout Payload payload, Attributes attrib )
+{
+	payload.visibility = Tint.x + Shade.x + attrib.uv.x;
+}
+
+float4 MainPS( float2 uv : TEXCOORD0 ) : SV_Target
+{
+	return float4( uv, 0, 1 );
+}
+
+technique T0 { pass P0 { PixelShader = compile ps_5_0 MainPS(); } }
+technique RtShadow { library Refused { ClosestHitShader = compile lib_6_3 ClosestHit(); payloadsize = 4; } }
+)";
+
+// The same shape, refused by DXC itself (a write to a read-only texture).
+const char* RT_HIT_GROUP_LIBRARY_DXC_ERROR_EFFECT = R"(
+Texture2D<float4> Input;
+
+struct Payload { float visibility; };
+struct Attributes { float2 uv; };
+
+[shader( "closesthit" )]
+[globalinput( "Input" )]
+void ClosestHit( inout Payload payload, Attributes attrib )
+{
+	Input[uint2( 0, 0 )] = 1;
+	payload.visibility = attrib.uv.x;
+}
+
+float4 MainPS( float2 uv : TEXCOORD0 ) : SV_Target
+{
+	return float4( uv, 0, 1 );
+}
+
+technique T0 { pass P0 { PixelShader = compile ps_5_0 MainPS(); } }
+technique RtShadow { library DxcError { ClosestHitShader = compile lib_6_3 ClosestHit(); payloadsize = 4; } }
+)";
+
 EffectData CompileSpirv( const char* src )
 {
 	EffectCompilerDX11 compiler;
@@ -775,7 +875,11 @@ TEST( VulkanCompiler, TwoEntryPointsReadingDifferentLocalCBuffersAreRefused )
 
 TEST( VulkanCompiler, ALocalCBufferPackedDifferentlyAsARecordIsRefused )
 {
-	ExpectRefused( RT_PACKED_LOCAL_CBUFFER_EFFECT, { "'RayGen'", "'LocalData'", "laid out differently" } );
+	// Weights[1] is at 16 in the constant buffer and at 4 in the record: the message names the
+	// first scalar that moved. (CompileMessageQueue prints a given text once per process, so
+	// every expectation on this message lives in this one test.)
+	ExpectRefused( RT_PACKED_LOCAL_CBUFFER_EFFECT,
+				   { "'RayGen'", "'LocalData'", "laid out differently", "First difference: scalar 1 ('Weights') is at byte 16", "at byte 4 (4 bytes) in the shader record" } );
 }
 
 TEST( VulkanCompiler, ALocalCBufferTooLargeForARecordIsRefused )
@@ -788,4 +892,95 @@ TEST( VulkanCompiler, ADxcErrorInARayTracingLibraryIsReported )
 	// IDxcCompiler3 answers S_OK with a failed status; the library's DXIL compile used to read
 	// that as success and dereference a reflection that was never produced.
 	ExpectRefused( RT_DXC_ERROR_EFFECT, { "cannot assign to return value" } );
+}
+
+TEST( VulkanCompiler, BothMatrixPackingsInALocalCBufferAreTheSameBytesAsARecord )
+{
+	EffectData data = CompileSpirv( RT_MATRIX_LOCAL_CBUFFER_EFFECT );
+	ASSERT_EQ( data.techniques.size(), 1u );
+	ASSERT_EQ( data.techniques[0].libraries.size(), 1u );
+	auto info = ReadSpirvLibrary( data.techniques[0].libraries[0] );
+	ASSERT_TRUE( info.variableStorageClasses.count( "LocalData" ) );
+	EXPECT_EQ( info.variableStorageClasses["LocalData"], SPIRV_STORAGE_CLASS_SHADER_RECORD_BUFFER );
+}
+
+TEST( VulkanCompiler, AMatrixWhosePaddingDiffersInARecordIsRefusedByName )
+{
+	// Rotation's nine scalars agree; After is at 44 in the constant buffer and at 48 in the record.
+	ExpectRefused( RT_MATRIX_TAIL_LOCAL_CBUFFER_EFFECT, { "'LocalData'", "laid out differently", "scalar 9 ('After') is at byte 44", "at byte 48" } );
+}
+
+TEST( VulkanCompiler, ATbufferIsNeverTheShaderRecord )
+{
+	EffectData data = CompileSpirv( RT_TBUFFER_EFFECT );
+	ASSERT_EQ( data.techniques[0].libraries.size(), 1u );
+	auto& library = data.techniques[0].libraries[0];
+	auto info = ReadSpirvLibrary( library );
+
+	ASSERT_TRUE( info.variableStorageClasses.count( "LocalData" ) );
+	EXPECT_EQ( info.variableStorageClasses["LocalData"], SPIRV_STORAGE_CLASS_SHADER_RECORD_BUFFER );
+	for( auto& variable : info.variableStorageClasses )
+	{
+		if( variable.first != "LocalData" )
+		{
+			EXPECT_NE( variable.second, SPIRV_STORAGE_CLASS_SHADER_RECORD_BUFFER ) << variable.first;
+		}
+	}
+	// One shader record attribute, on the cbuffer; the tbuffer stays a tbuffer.
+	const std::string attribute = "[[vk::shader_record_ext]]";
+	size_t first = library.source.find( attribute );
+	ASSERT_NE( first, std::string::npos );
+	EXPECT_EQ( library.source.find( attribute, first + 1 ), std::string::npos );
+	EXPECT_NE( library.source.find( "tbuffer" ), std::string::npos );
+	// The reflection agrees: the one local input is LocalData's constant buffer.
+	ASSERT_EQ( library.localInputs.registerInputs.size(), 1u );
+	EXPECT_EQ( int( library.localInputs.registerInputs[0].registerType.Packed() ), int( RT_CONSTANT_BUFFER ) );
+}
+
+namespace
+{
+// Compiles `src`, which must succeed with its RtShadow technique's library dropped and a line
+// saying so; returns the compiler's output. Each caller's library has its own name, because
+// CompileMessageQueue prints a given text once per process.
+std::string ExpectHitGroupLibraryDropped( const char* src, const char* libraryName )
+{
+	testing::internal::CaptureStdout();
+	EffectCompilerDX11 compiler;
+	EXPECT_TRUE( compiler.Create() );
+	EffectData data;
+	bool compiled = compiler.CompileEffect( src + 1, strlen( src ), {}, data, { "6_0", true, false, true }, nullptr );
+	g_messages.Flush();
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_TRUE( compiled ) << output;
+	EXPECT_EQ( data.techniques.size(), 2u ) << output;
+	for( auto& technique : data.techniques )
+	{
+		EXPECT_TRUE( technique.libraries.empty() ) << output;
+	}
+	EXPECT_NE( output.find( std::string( "ray tracing library '" ) + libraryName + "' dropped" ), std::string::npos ) << output;
+	return output;
+}
+}
+
+TEST( VulkanCompiler, AHitGroupLibraryTheRecordRulesRefuseIsDroppedNotTheEffect )
+{
+	std::string output = ExpectHitGroupLibraryDropped( RT_HIT_GROUP_LIBRARY_REFUSED_EFFECT, "RtShadow/Refused" );
+	EXPECT_NE( output.find( "one local signature" ), std::string::npos ) << output;
+}
+
+TEST( VulkanCompiler, AHitGroupLibraryDxcRefusesIsDroppedNotTheEffect )
+{
+	std::string output = ExpectHitGroupLibraryDropped( RT_HIT_GROUP_LIBRARY_DXC_ERROR_EFFECT, "RtShadow/DxcError" );
+	EXPECT_NE( output.find( "cannot assign to return value" ), std::string::npos ) << output;
+}
+
+TEST( VulkanCompiler, ARayGenLibraryThatFailsStillFailsTheEffect )
+{
+	// The effects that trace index their library unchecked; only hit group libraries are dropped.
+	testing::internal::CaptureStdout();
+	bool compiled = TryCompileSpirv( RT_DXC_ERROR_EFFECT );
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_FALSE( compiled );
+	EXPECT_EQ( output.find( "dropped" ), std::string::npos ) << output;
 }
