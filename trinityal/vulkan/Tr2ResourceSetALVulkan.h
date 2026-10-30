@@ -47,6 +47,12 @@ namespace TrinityALImpl
 
 	private:
 		static bool IsSetVulkan( const Tr2ResourceSetDescriptionAL& description, const Tr2RegisterInputVulkan& input );
+		// The description's entry for element `element` of `input`'s register, or null when the
+		// register is past the map's table or the map names no slot for it. The one bounds check
+		// every lookup in this class goes through.
+		static const Tr2ResourceSetDescriptionAL::Resource* FindSrvVulkan( const Tr2ResourceSetDescriptionAL& description, const Tr2RegisterInputVulkan& input, uint32_t element = 0 );
+		static const Tr2ResourceSetDescriptionAL::Resource* FindUavVulkan( const Tr2ResourceSetDescriptionAL& description, const Tr2RegisterInputVulkan& input );
+		static const Tr2ResourceSetDescriptionAL::Sampler* FindSamplerVulkan( const Tr2ResourceSetDescriptionAL& description, const Tr2RegisterInputVulkan& input );
 		ALResult WriteSetVulkan(
 			const Tr2ResourceSetDescriptionAL& description,
 			const std::vector<Tr2RegisterInputVulkan>& registers,

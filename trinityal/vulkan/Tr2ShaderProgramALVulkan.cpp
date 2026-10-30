@@ -300,17 +300,24 @@ namespace TrinityALImpl
 		{
 			return VK_NULL_HANDLE;
 		}
-		// Only slots the dummies can stand in for. A buffer, UAV or non-2D texture slot
+		// Only slots the dummies can stand in for. A buffer, UAV or other texture dimension
 		// left unbound keeps today's behaviour -- there is no honest 1x1 stand-in for a
 		// structured buffer, and inventing one would hide a real binding bug.
+		size_t descriptorTotal = 0;
 		for( auto it = begin( m_registerInput ); it != end( m_registerInput ); ++it )
 		{
-			if( it->type != Tr2ShaderRegisterAL::CONSTANT_BUFFER
-				&& it->type != Tr2ShaderRegisterAL::SAMPLER
-				&& it->type != Tr2ShaderRegisterAL::SRV_TEXTURE2D )
+			if( it->type == Tr2ShaderRegisterAL::SRV_TEXTURE2DARRAY && renderContext.GetDummyArrayImageViewVulkan() == VK_NULL_HANDLE )
 			{
 				return VK_NULL_HANDLE;
 			}
+			if( it->type != Tr2ShaderRegisterAL::CONSTANT_BUFFER
+				&& it->type != Tr2ShaderRegisterAL::SAMPLER
+				&& it->type != Tr2ShaderRegisterAL::SRV_TEXTURE2D
+				&& it->type != Tr2ShaderRegisterAL::SRV_TEXTURE2DARRAY )
+			{
+				return VK_NULL_HANDLE;
+			}
+			descriptorTotal += it->arrayCount ? it->arrayCount : 1;
 		}
 
 		VkDescriptorPoolCreateInfo poolDesc = {
@@ -341,21 +348,25 @@ namespace TrinityALImpl
 
 		std::vector<VkWriteDescriptorSet> writes;
 		writes.reserve( m_registerInput.size() );
+		// Reserved by descriptors: every write keeps a pointer into this vector.
 		std::vector<VkDescriptorImageInfo> imageInfos;
-		imageInfos.reserve( m_registerInput.size() );
+		imageInfos.reserve( descriptorTotal );
 		for( auto it = begin( m_registerInput ); it != end( m_registerInput ); ++it )
 		{
 			if( it->type == Tr2ShaderRegisterAL::CONSTANT_BUFFER )
 			{
 				continue;
 			}
+			// Every element the layout declares (arrayCount of them), not only the first: the
+			// rest would otherwise stay undefined for a shader that indexes the array.
+			const uint32_t arrayCount = it->arrayCount ? it->arrayCount : 1;
 			VkWriteDescriptorSet d = {
 				VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 				nullptr,
 				m_defaultSet,
 				it->binding,
 				0,
-				1,
+				arrayCount,
 			};
 			VkDescriptorImageInfo imageInfo = {};
 			if( it->type == Tr2ShaderRegisterAL::SAMPLER )
@@ -365,12 +376,13 @@ namespace TrinityALImpl
 			}
 			else
 			{
-				imageInfo.imageView = renderContext.GetDummyImageViewVulkan();
+				imageInfo.imageView = it->type == Tr2ShaderRegisterAL::SRV_TEXTURE2DARRAY ? renderContext.GetDummyArrayImageViewVulkan() : renderContext.GetDummyImageViewVulkan();
 				imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 				d.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 			}
-			imageInfos.push_back( imageInfo );
-			d.pImageInfo = &imageInfos.back();
+			const size_t first = imageInfos.size();
+			imageInfos.insert( end( imageInfos ), arrayCount, imageInfo );
+			d.pImageInfo = &imageInfos[first];
 			writes.push_back( d );
 		}
 		vkUpdateDescriptorSets( renderContext.m_device, uint32_t( writes.size() ), writes.data(), 0, nullptr );

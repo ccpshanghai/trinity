@@ -1631,8 +1631,7 @@ ALResult Tr2RenderContextAL::SetPipeline()
 	// resource set across shader program changes, and a set is only legal with the
 	// layout it was allocated against. Drawing CanSampleVolumeTexture's set with
 	// CanSampleUnassignedTexture's 2D-sampling program was this suite's one flaky test.
-	if( m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet && program && program->m_resourceLayout
-		&& m_resourceSet.m_resourceSet->m_layout == program->m_resourceLayout )
+	if( program && IsBindableWithVulkan( program->m_resourceLayout ) )
 	{
 		vkCmdBindDescriptorSets( 
 			m_commandBuffer, 
@@ -1869,6 +1868,11 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint,
 	return S_OK;
 }
 
+bool Tr2RenderContextAL::IsBindableWithVulkan( VkDescriptorSetLayout layout ) const
+{
+	return layout != VK_NULL_HANDLE && m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet != VK_NULL_HANDLE && m_resourceSet.m_resourceSet->m_layout == layout;
+}
+
 ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned groupDimY, unsigned groupDimZ ) throw( )
 {
 	auto* program = m_pipelineSource.m_shaderProgram.m_program.get();
@@ -1877,17 +1881,24 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 		return E_INVALIDCALL;
 	}
 
-	const bool resourceSetBound = m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet;
+	const bool resourceSetBound = IsBindableWithVulkan( program->m_resourceLayout );
 	if( program->m_resourceLayout && !resourceSetBound )
 	{
-		// The program reads set-1 resources and the caller's resource set failed to build (or
-		// was never set). Dispatching anyway reads unbound descriptors, which lost the device
-		// on the first froxel-fog frame; skipping is the failure the caller can see.
-		static bool logged = false;
+		// The program reads set-1 resources and the caller's resource set failed to build, was
+		// never set, or was built for another program (the AL's state machine keeps the last set
+		// bound across program changes). Dispatching anyway reads unbound descriptors, which
+		// lost the device on the first froxel-fog frame, or binds a set against a layout it was
+		// not allocated for; skipping is the failure the caller can see. No default set: it has
+		// nothing for a UAV or buffer slot, which nearly every compute program has.
+		const bool anySet = m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet;
+		static bool loggedNoSet = false;
+		static bool loggedOtherLayout = false;
+		bool& logged = anySet ? loggedOtherLayout : loggedNoSet;
 		if( !logged )
 		{
 			logged = true;
-			CCP_AL_LOGERR( "Tr2RenderContextAL::RunComputeShader: dispatch skipped, the program has resources and no resource set is bound" );
+			CCP_AL_LOGERR( anySet ? "Tr2RenderContextAL::RunComputeShader: dispatch skipped, the bound resource set was built for another program's layout"
+								  : "Tr2RenderContextAL::RunComputeShader: dispatch skipped, the program has resources and no resource set is bound" );
 		}
 		return E_FAIL;
 	}
@@ -1993,6 +2004,13 @@ ALResult Tr2RenderContextAL::DispatchRays( Tr2RtPipelineStateAL& pipeline, Tr2Rt
 		return E_INVALIDARG;
 	}
 	const VkStridedDeviceAddressRegionKHR callable = {};
+	// The set ApplyMaterialDataForRtState created against this pipeline. Any other set (one left
+	// bound by an earlier draw) was allocated against another layout and is not legal here.
+	// Checked before anything is recorded, so a refused trace leaves the command buffer alone.
+	if( rt->m_resourceLayout && !IsBindableWithVulkan( rt->m_resourceLayout ) )
+	{
+		return E_INVALIDCALL;
+	}
 
 	// As RunComputeShader: no rendering scope, the set's images in the layouts its
 	// descriptors claim, and memory ordered on both sides -- the target UAV cleared just before
@@ -2015,13 +2033,6 @@ ALResult Tr2RenderContextAL::DispatchRays( Tr2RtPipelineStateAL& pipeline, Tr2Rt
 	vkCmdBindPipeline( m_commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt->m_pipeline );
 	if( rt->m_resourceLayout )
 	{
-		// The set ApplyMaterialDataForRtState created against this pipeline. Any other set
-		// (one left bound by an earlier draw) was allocated against another layout and is not
-		// legal here.
-		if( !m_resourceSet.IsValid() || !m_resourceSet.m_resourceSet->m_descriptorSet || m_resourceSet.m_resourceSet->m_layout != rt->m_resourceLayout )
-		{
-			return E_INVALIDCALL;
-		}
 		vkCmdBindDescriptorSets( m_commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt->m_pipelineLayout, 1, 1, &m_resourceSet.m_resourceSet->m_descriptorSet, 0, nullptr );
 	}
 	FORWARD_HR( BindConstantBuffers( VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt->m_constantLayout, rt->m_constantBindings, rt->m_pipelineLayout ) );

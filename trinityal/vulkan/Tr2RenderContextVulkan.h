@@ -470,6 +470,11 @@ private:
 	// The work of the overload above against an explicit layout: the bound shader program's
 	// for draws and dispatches, a ray tracing pipeline's for DispatchRays.
 	ALResult BindConstantBuffers( VkPipelineBindPoint bindPoint, VkDescriptorSetLayout constantLayout, const std::set<uint32_t>& constantBindings, VkPipelineLayout pipelineLayout );
+	// The bound resource set has a descriptor set allocated against `layout`. A set is only
+	// legal with the layout it was built for, and the AL's state machine carries a bound set
+	// across program and pipeline changes; SetPipeline, RunComputeShader and DispatchRays all
+	// ask this before binding it at set 1.
+	bool IsBindableWithVulkan( VkDescriptorSetLayout layout ) const;
 
 	// Four, matching Tr2VertexLayoutAL::m_streamRates. The two arrays are indexed by the
 	// same stream number and CreatePipeline reads them together.

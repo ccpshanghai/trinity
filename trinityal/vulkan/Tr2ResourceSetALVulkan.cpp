@@ -6,6 +6,8 @@
 #include "Tr2ResourceSetALVulkan.h"
 #include <cstring>
 #include <map>
+#include <mutex>
+#include <set>
 #include <string>
 #include "Tr2PrimaryRenderContextVulkan.h"
 #include "Tr2SamplerStateALVulkan.h"
@@ -15,7 +17,35 @@
 #include "Tr2RtPipelineStateALVulkan.h"
 #include "../include/Tr2RtPipelineStateAL.h"
 #include "UtilitiesVulkan.h"
+#include "../ALLog.h"
 
+
+namespace
+{
+	// A black dummy standing in for an unset texture is legal and renders, so it is easy not to
+	// notice; one line per (layout, binding) says which register of which program got one. The
+	// layout handle is the program's identity here. Bounded, so a scene creating programs
+	// without end cannot grow this forever.
+	void LogDummyTextureOnceVulkan( VkDescriptorSetLayout layout, const TrinityALImpl::Tr2RegisterInputVulkan& input )
+	{
+		static const size_t MAX_LOGGED = 256;
+		static std::mutex mutex;
+		static std::set<std::pair<VkDescriptorSetLayout, uint32_t>> logged;
+		{
+			std::lock_guard<std::mutex> lock( mutex );
+			if( logged.size() >= MAX_LOGGED || !logged.insert( { layout, input.binding } ).second )
+			{
+				return;
+			}
+		}
+		CCP_AL_LOGWARN( "vulkan: resource set for layout %p: nothing set for %s t%u (stage %u, binding %u); bound the black dummy",
+						(void*)layout,
+						input.type == Tr2ShaderRegisterAL::SRV_TEXTURE2DARRAY ? "Texture2DArray" : "Texture2D",
+						input.registerIndex,
+						input.stage,
+						input.binding );
+	}
+}
 
 namespace TrinityALImpl
 {
@@ -55,27 +85,49 @@ namespace TrinityALImpl
 		return S_OK;
 	}
 
+	const Tr2ResourceSetDescriptionAL::Resource* Tr2ResourceSetAL::FindSrvVulkan( const Tr2ResourceSetDescriptionAL& description, const Tr2RegisterInputVulkan& input, uint32_t element )
+	{
+		const uint32_t index = input.registerIndex + element;
+		if( input.stage >= Tr2RenderContextEnum::SHADER_TYPE_COUNT || index >= Tr2RegisterMapAL::MAX_RESOURCES_IN_STAGE )
+		{
+			return nullptr;
+		}
+		const uint8_t slot = description.m_registerMap.srvs[input.stage][index];
+		return slot < description.m_registerMap.srvCount ? &description.m_srv[slot] : nullptr;
+	}
+
+	const Tr2ResourceSetDescriptionAL::Resource* Tr2ResourceSetAL::FindUavVulkan( const Tr2ResourceSetDescriptionAL& description, const Tr2RegisterInputVulkan& input )
+	{
+		if( input.stage >= Tr2RenderContextEnum::SHADER_TYPE_COUNT || input.registerIndex >= Tr2RegisterMapAL::MAX_RESOURCES_IN_STAGE )
+		{
+			return nullptr;
+		}
+		const uint8_t slot = description.m_registerMap.uavs[input.stage][input.registerIndex];
+		return slot < description.m_registerMap.uavCount ? &description.m_uav[slot] : nullptr;
+	}
+
+	const Tr2ResourceSetDescriptionAL::Sampler* Tr2ResourceSetAL::FindSamplerVulkan( const Tr2ResourceSetDescriptionAL& description, const Tr2RegisterInputVulkan& input )
+	{
+		if( input.stage >= Tr2RenderContextEnum::SHADER_TYPE_COUNT || input.registerIndex >= Tr2RegisterMapAL::MAX_RESOURCES_IN_STAGE )
+		{
+			return nullptr;
+		}
+		const uint8_t slot = description.m_registerMap.samplers[input.stage][input.registerIndex];
+		return slot < description.m_registerMap.samplerCount ? &description.m_samplers[slot] : nullptr;
+	}
+
 	// Whether the description holds anything for `input`'s register.
 	bool Tr2ResourceSetAL::IsSetVulkan( const Tr2ResourceSetDescriptionAL& description, const Tr2RegisterInputVulkan& input )
 	{
 		typedef Tr2ResourceSetDescriptionAL::Resource::Type ResourceType;
-		if( input.registerIndex >= Tr2RegisterMapAL::MAX_RESOURCES_IN_STAGE )
-		{
-			return false;
-		}
 		if( input.type == Tr2ShaderRegisterAL::SAMPLER )
 		{
-			const uint8_t slot = description.m_registerMap.samplers[input.stage][input.registerIndex];
-			return slot < description.m_registerMap.samplerCount && description.m_samplers[slot].sampler.IsValid();
+			const auto* sampler = FindSamplerVulkan( description, input );
+			return sampler && sampler->sampler.IsValid();
 		}
 		const bool uav = ( input.type & Tr2ShaderRegisterAL::UAV_REGISTER_FLAG ) != 0;
-		const uint8_t slot = uav ? description.m_registerMap.uavs[input.stage][input.registerIndex] : description.m_registerMap.srvs[input.stage][input.registerIndex];
-		if( slot >= ( uav ? description.m_registerMap.uavCount : description.m_registerMap.srvCount ) )
-		{
-			return false;
-		}
-		const auto& resource = uav ? description.m_uav[slot] : description.m_srv[slot];
-		return ( resource.type == ResourceType::BUFFER && resource.buffer.IsValid() ) || ( resource.type == ResourceType::TEXTURE && resource.texture.IsValid() );
+		const auto* resource = uav ? FindUavVulkan( description, input ) : FindSrvVulkan( description, input );
+		return resource && ( ( resource->type == ResourceType::BUFFER && resource->buffer.IsValid() ) || ( resource->type == ResourceType::TEXTURE && resource->texture.IsValid() ) );
 	}
 
 	// Allocates m_descriptorSet against `layout` and writes every resource register of
@@ -178,12 +230,12 @@ namespace TrinityALImpl
 			{
 				// The TLAS's ::Tr2BufferAL, set as an SRV like any buffer; the structure built
 				// over it is what the descriptor names.
-				const auto& resource = description.m_srv[description.m_registerMap.srvs[it->stage][it->registerIndex]];
-				if( resource.type != ResourceType::BUFFER || !resource.buffer.IsValid() || !resource.buffer.m_buffer->GetAccelerationStructureVulkan() )
+				const auto* resource = FindSrvVulkan( description, *it );
+				if( !resource || resource->type != ResourceType::BUFFER || !resource->buffer.IsValid() || !resource->buffer.m_buffer->GetAccelerationStructureVulkan() )
 				{
 					return E_FAIL;
 				}
-				accelerationStructures.push_back( resource.buffer.m_buffer->GetAccelerationStructureVulkan() );
+				accelerationStructures.push_back( resource->buffer.m_buffer->GetAccelerationStructureVulkan() );
 				VkWriteDescriptorSetAccelerationStructureKHR asWrite = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
 				asWrite.accelerationStructureCount = 1;
 				asWrite.pAccelerationStructures = &accelerationStructures.back();
@@ -193,20 +245,30 @@ namespace TrinityALImpl
 			}
 			else if( it->type == Tr2ShaderRegisterAL::SAMPLER )
 			{
-				if( !description.m_samplers[description.m_registerMap.samplers[it->stage][it->registerIndex]].sampler.IsValid() )
+				const auto* sampler = FindSamplerVulkan( description, *it );
+				if( !sampler || !sampler->sampler.IsValid() )
 				{
 					return E_FAIL;
 				}
-				VkDescriptorImageInfo imageInfo = { description.m_samplers[description.m_registerMap.samplers[it->stage][it->registerIndex]].sampler.m_sampler->m_sampler };
+				VkDescriptorImageInfo imageInfo = { sampler->sampler.m_sampler->m_sampler };
 				imageInfos.push_back( imageInfo );
 				d.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
 				d.pImageInfo = &imageInfos.back();
 			}
 			else if( it->type & Tr2ShaderRegisterAL::UAV_REGISTER_FLAG )
 			{
-				const auto& resource = description.m_uav[description.m_registerMap.uavs[it->stage][it->registerIndex]];
+				const auto* found = FindUavVulkan( description, *it );
+				if( !found )
+				{
+					return E_FAIL;
+				}
+				const auto& resource = *found;
 				if( resource.type == ResourceType::BUFFER )
 				{
+					if( !resource.buffer.IsValid() )
+					{
+						return E_FAIL;
+					}
 					if( it->type == Tr2ShaderRegisterAL::UAV_BUFFER )
 					{
 						texelBufferViews.push_back( resource.buffer.m_buffer->GetBufferViewVulkan() );
@@ -242,9 +304,18 @@ namespace TrinityALImpl
 			}
 			else
 			{
-				const auto& resource = description.m_srv[description.m_registerMap.srvs[it->stage][it->registerIndex]];
+				const auto* found = FindSrvVulkan( description, *it );
+				if( !found )
+				{
+					return E_FAIL;
+				}
+				const auto& resource = *found;
 				if( resource.type == ResourceType::BUFFER )
 				{
+					if( !resource.buffer.IsValid() )
+					{
+						return E_FAIL;
+					}
 					if( it->type == Tr2ShaderRegisterAL::SRV_BUFFER )
 					{
 						texelBufferViews.push_back( resource.buffer.m_buffer->GetBufferViewVulkan() );
@@ -269,16 +340,12 @@ namespace TrinityALImpl
 					const size_t first = imageInfos.size();
 					for( uint32_t k = 0; k < arrayCount; ++k )
 					{
-						if( it->registerIndex + k >= Tr2RegisterMapAL::MAX_RESOURCES_IN_STAGE )
+						const auto* elementFound = FindSrvVulkan( description, *it, k );
+						if( !elementFound )
 						{
 							return E_FAIL;
 						}
-						const uint8_t slot = description.m_registerMap.srvs[it->stage][it->registerIndex + k];
-						if( slot >= description.m_registerMap.srvCount )
-						{
-							return E_FAIL;
-						}
-						const auto& element = description.m_srv[slot];
+						const auto& element = *elementFound;
 						if( element.type != ResourceType::TEXTURE || !element.texture.IsValid() )
 						{
 							// Nothing set for a 2D or 2D-array texture: the primary context's
@@ -291,12 +358,20 @@ namespace TrinityALImpl
 							// stand-in exists for them yet.
 							// Tracked like any bound image: nothing else moves the dummy out of
 							// the layout its upload left it in.
-							const ::Tr2TextureAL* dummy = it->type == Tr2ShaderRegisterAL::SRV_TEXTURE2D ? &renderContext.m_dummyTexture : it->type == Tr2ShaderRegisterAL::SRV_TEXTURE2DARRAY ? &renderContext.m_dummyTextureArray :
-																																																 nullptr;
+							const ::Tr2TextureAL* dummy = nullptr;
+							if( it->type == Tr2ShaderRegisterAL::SRV_TEXTURE2D )
+							{
+								dummy = &renderContext.m_dummyTexture;
+							}
+							else if( it->type == Tr2ShaderRegisterAL::SRV_TEXTURE2DARRAY )
+							{
+								dummy = &renderContext.m_dummyTextureArray;
+							}
 							if( !dummy || !dummy->IsValid() )
 							{
 								return E_FAIL;
 							}
+							LogDummyTextureOnceVulkan( layout, *it );
 							VkDescriptorImageInfo imageInfo = {};
 							imageInfo.imageView = dummy->m_texture->GetImageView( Tr2RenderContextEnum::COLOR_SPACE_LINEAR );
 							imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -381,7 +456,7 @@ namespace TrinityALImpl
 			m_owner = nullptr;
 			m_pool = VK_NULL_HANDLE;
 			m_descriptorSet = VK_NULL_HANDLE;
-		m_layout = VK_NULL_HANDLE;
+			m_layout = VK_NULL_HANDLE;
 		}
 	}
 
