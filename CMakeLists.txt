@@ -40,6 +40,10 @@ else()
         # The same backend as the Windows Vulkan configuration, minus the two
         # Windows-only feature ports (see vcpkg.json's vulkan feature comment).
         option(BUILD_VULKAN "Build Vulkan." OFF)
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # Native desktop Vulkan. The loader is the vulkan-loader port (see the
+        # linux row of the vulkan feature), not Android's OS libvulkan.
+        option(BUILD_VULKAN "Build Vulkan." OFF)
     elseif(APPLE)
         option(BUILD_METAL "Build Metal." OFF)
     endif()

@@ -102,7 +102,9 @@ namespace TrinityALImpl
 	// VK_FORMAT_B8G8R8A8_SRGB at 4. Every pair below is same-class by construction.
 	VkFormat GetSrgbCounterpartVulkan( VkFormat format );
 
-	ALResult AllocateMemory( VkDeviceMemory& memory, const VkMemoryRequirements& memoryRequirements, VkMemoryPropertyFlagBits memoryProperty, Tr2PrimaryRenderContextAL& renderContext );
+	// allocateFlags non-zero chains a VkMemoryAllocateFlagsInfo; CreateBuffer passes
+	// DEVICE_ADDRESS for a buffer with SHADER_DEVICE_ADDRESS usage and 0 otherwise.
+	ALResult AllocateMemory( VkDeviceMemory& memory, const VkMemoryRequirements& memoryRequirements, VkMemoryPropertyFlagBits memoryProperty, Tr2PrimaryRenderContextAL& renderContext, VkMemoryAllocateFlags allocateFlags = 0 );
 	ALResult CreateBuffer( VkBuffer& buffer, VkDeviceMemory& memory, size_t size, VkBufferUsageFlags usage, VkMemoryPropertyFlagBits memoryProperty, Tr2PrimaryRenderContextAL& renderContext );
 	ALResult CreateImage( VkImage& image, VkDeviceMemory& memory, const Tr2BitmapDimensions& desc, const Tr2MsaaDesc& msaa, VkImageUsageFlags usage, VkImageCreateFlags flags, VkMemoryPropertyFlagBits memoryProperty, Tr2PrimaryRenderContextAL& renderContext );
 

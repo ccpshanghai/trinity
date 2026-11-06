@@ -242,8 +242,10 @@ enum class ReflectionTarget
 	GLOBAL_INPUT,
 };
 
+// vulkanResourceSpace: on Vulkan, the declarations CheckVulkanRegisterSpaces put on the binding
+// ABI's resource set; their t/s/u registers are reported on space1, the space the module uses.
 template <typename Traits>
-static bool ProcessReflection( ParserState& parserState, typename Traits::Reflection* reflection, bool collectStaticSamplers, StageData& stage, std::map<StringReference, ParameterAnnotation>& annotations, ReflectionTarget reflectionTarget = ReflectionTarget::SHADER_INPUT, const std::vector<GlobalInputElement>& filter = {} )
+static bool ProcessReflection( ParserState& parserState, typename Traits::Reflection* reflection, bool collectStaticSamplers, StageData& stage, std::map<StringReference, ParameterAnnotation>& annotations, ReflectionTarget reflectionTarget = ReflectionTarget::SHADER_INPUT, const std::vector<GlobalInputElement>& filter = {}, const std::set<const Symbol*>* vulkanResourceSpace = nullptr )
 {
 	ZoneScoped;
 
@@ -417,12 +419,17 @@ static bool ProcessReflection( ParserState& parserState, typename Traits::Reflec
 		}
 	}
 
-	auto GetRegisterSpace = []( Symbol* symbol ) -> uint8_t {
+	auto GetRegisterSpace = [vulkanResourceSpace]( Symbol* symbol ) -> uint8_t {
 		if( symbol )
 		{
 			if( !symbol->registerSpecifier.empty() )
 			{
-				auto space = symbol->registerSpecifier.begin()->second.space;
+				auto& reg = symbol->registerSpecifier.begin()->second;
+				if( vulkanResourceSpace && vulkanResourceSpace->count( symbol ) && ( reg.registerType == 't' || reg.registerType == 's' || reg.registerType == 'u' ) )
+				{
+					return 1;
+				}
+				auto space = reg.space;
 				if( space > 0 )
 				{
 					return uint8_t( space );
@@ -678,9 +685,9 @@ static bool ProcessReflection( ParserState& parserState, typename Traits::Reflec
 }
 
 template <typename Traits>
-static bool ProcessReflection( ParserState& parserState, typename Traits::Reflection* reflection, bool collectStaticSamplers, StageInput& stage, std::map<StringReference, ParameterAnnotation>& annotations )
+static bool ProcessReflection( ParserState& parserState, typename Traits::Reflection* reflection, bool collectStaticSamplers, StageInput& stage, std::map<StringReference, ParameterAnnotation>& annotations, const std::set<const Symbol*>* vulkanResourceSpace = nullptr )
 {
-	if( !ProcessReflection<Traits>( parserState, reflection, collectStaticSamplers, static_cast<StageData&>( stage ), annotations ) )
+	if( !ProcessReflection<Traits>( parserState, reflection, collectStaticSamplers, static_cast<StageData&>( stage ), annotations, ReflectionTarget::SHADER_INPUT, {}, vulkanResourceSpace ) )
 	{
 		return false;
 	}

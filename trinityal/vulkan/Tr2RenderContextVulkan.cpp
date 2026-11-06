@@ -18,6 +18,11 @@
 #include "VkResult.h"
 #include "ALLog.h"
 #include "../include/Tr2RtTopLevelAccelerationStructureAL.h"
+#include "../include/Tr2RtPipelineStateAL.h"
+#include "../include/Tr2RtShaderTableAL.h"
+#include "Tr2RtPipelineStateALVulkan.h"
+#include "Tr2RtShaderTableALVulkan.h"
+#include <set>
 
 bool g_gatherPipelineStatistics = false;
 
@@ -206,11 +211,9 @@ Tr2RenderContextAL::Tr2RenderContextAL() throw( )
 	m_srgbWrite( false ),
 	m_renderingActive( false ),
 	m_commandBuffer( VK_NULL_HANDLE ),
-	m_constantPool( VK_NULL_HANDLE ),
 	m_constantSet( VK_NULL_HANDLE ),
 	m_boundConstantLayout( VK_NULL_HANDLE ),
 	m_constantsDirty( false ),
-	m_constantPoolLastUse( 0 ),
 	m_computePipeline( VK_NULL_HANDLE ),
 	m_computePipelineLayout( VK_NULL_HANDLE ),
 	m_primitiveToVertexCount( 0, 0 ),
@@ -324,10 +327,13 @@ void Tr2RenderContextAL::Destroy() throw( )
 	}
 	m_boundIndices = BoundIndexBuffer();
 
-	if( m_constantPool != VK_NULL_HANDLE )
+	for( auto& slot : m_constantPools )
 	{
-		m_owner->DestroyLaterVulkan( m_constantPool, vkDestroyDescriptorPool );
-		m_constantPool = VK_NULL_HANDLE;
+		if( m_owner )
+		{
+			m_owner->DestroyLaterVulkan( slot.pools, vkDestroyDescriptorPool );
+		}
+		slot = ConstantPoolSlotVulkan();
 	}
 	m_constantSet = VK_NULL_HANDLE;
 	m_boundConstantLayout = VK_NULL_HANDLE;
@@ -671,15 +677,11 @@ ALResult Tr2RenderContextAL::SetShaderProgram( const Tr2ShaderProgramAL& shader 
 {
 	if( !( m_pipelineSource.m_shaderProgram == shader ) )
 	{
-		// The constant descriptor set/pool belong to the old program's layout, which
-		// is destroyed when the program is released (and the driver may reuse the
-		// handle). Invalidate them so the next SetPipeline reallocates against the
-		// new program's layout rather than comparing stale layout handles.
-		if( m_constantPool )
-		{
-			m_owner->DestroyLaterVulkan( m_constantPool, vkDestroyDescriptorPool );
-			m_constantPool = VK_NULL_HANDLE;
-		}
+		// The constant descriptor set belongs to the old program's layout, which is
+		// destroyed when the program is released (and the driver may reuse the handle).
+		// Invalidate it so the next SetPipeline allocates against the new program's layout
+		// rather than comparing stale layout handles. The pools are not per layout: every
+		// constant layout holds UNIFORM_BUFFER descriptors only.
 		m_constantSet = VK_NULL_HANDLE;
 		m_boundConstantLayout = VK_NULL_HANDLE;
 		m_constantsDirty = true;
@@ -1553,6 +1555,7 @@ ALResult Tr2RenderContextAL::SetPass()
 
 	m_owner->m_vkCmdBeginRendering( m_commandBuffer, &renderingInfo );
 	m_renderingActive = true;
+	m_asBatch.open = false;
 
 	// FlippedViewport applies the y flip; only the source of the rectangle differs. m_viewportSet
 	// is false both before any SetViewport and after one with a degenerate rectangle, and the
@@ -1626,18 +1629,17 @@ ALResult Tr2RenderContextAL::SetPipeline()
 	// resource set across shader program changes, and a set is only legal with the
 	// layout it was allocated against. Drawing CanSampleVolumeTexture's set with
 	// CanSampleUnassignedTexture's 2D-sampling program was this suite's one flaky test.
-	if( m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet && program && program->m_resourceLayout
-		&& m_resourceSet.m_resourceSet->m_layout == program->m_resourceLayout )
+	if( program && IsBindableWithVulkan( program->m_layouts.resourceLayout ) )
 	{
 		vkCmdBindDescriptorSets( 
 			m_commandBuffer, 
 			VK_PIPELINE_BIND_POINT_GRAPHICS, 
-			program->m_pipelineLayout, 
+			program->m_layouts.pipelineLayout,
 			1, 
 			1,
 			&m_resourceSet.m_resourceSet->m_descriptorSet, 0, nullptr );
 	}
-	else if( program && program->m_resourceLayout )
+	else if( program && program->m_layouts.resourceLayout )
 	{
 		// The program statically uses set 1 and the caller bound nothing. Without this
 		// the draw consumed whatever the recycled pool last held -- a stale set from an
@@ -1650,7 +1652,7 @@ ALResult Tr2RenderContextAL::SetPipeline()
 			vkCmdBindDescriptorSets(
 				m_commandBuffer,
 				VK_PIPELINE_BIND_POINT_GRAPHICS,
-				program->m_pipelineLayout,
+				program->m_layouts.pipelineLayout,
 				1,
 				1,
 				&defaultSet, 0, nullptr );
@@ -1668,6 +1670,7 @@ void Tr2RenderContextAL::InvalidateAttachmentsVulkan()
 
 void Tr2RenderContextAL::EndRenderPassVulkan()
 {
+	m_asBatch.open = false;
 	if( m_renderingActive )
 	{
 		m_owner->m_vkCmdEndRendering( m_commandBuffer );
@@ -1678,53 +1681,37 @@ void Tr2RenderContextAL::EndRenderPassVulkan()
 
 void Tr2RenderContextAL::ResetConstantPoolVulkan()
 {
-	if( m_constantPool == VK_NULL_HANDLE || !m_owner )
+	if( !m_owner )
 	{
 		return;
 	}
-
-	// Waiting on this frame slot's fence proves the work from VIRTUAL_FRAMES ago is done,
-	// not that the last two frames are -- and they allocated from this same pool.
-	// vkResetDescriptorPool on a pool a live command buffer still references is
-	// VUID-vkResetDescriptorPool-descriptorPool-00313. The frame numbers added for
-	// Tr2FenceAL answer exactly this question, so ask them rather than adding a second
-	// mechanism. If the answer is no, the sets simply survive another frame.
-	if( m_owner->GetRenderedFrameNumber() < m_constantPoolLastUse )
-	{
-		return;
-	}
-
-	vkResetDescriptorPool( m_owner->m_device, m_constantPool, 0 );
+	// The bound set, whichever slot it came from, is not carried into the new frame: a set from
+	// the previous slot's pools would still be bound when BeginFrame resets those pools, with
+	// this frame possibly in flight.
 	m_constantSet = VK_NULL_HANDLE;
 	m_constantsDirty = true;
+
+	// This slot's fence has been waited on, so the frame that last allocated from its pools is
+	// complete; no other frame allocates from them.
+	ConstantPoolSlotVulkan& slot = m_constantPools[m_owner->GetFrameSlotVulkan() % CONSTANT_POOL_SLOTS_VULKAN];
+	for( auto pool : slot.pools )
+	{
+		vkResetDescriptorPool( m_owner->m_device, pool, 0 );
+	}
+	slot.current = 0;
 }
 
-ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint )
+ALResult Tr2RenderContextAL::AllocateConstantSetVulkan( VkDescriptorSetLayout layout, VkDescriptorSet& set )
 {
-	auto* program = m_pipelineSource.m_shaderProgram.m_program.get();
-	if( !program || !program->m_constantLayout || m_constantBuffers.empty() )
+	set = VK_NULL_HANDLE;
+	ConstantPoolSlotVulkan& slot = m_constantPools[m_owner->GetFrameSlotVulkan() % CONSTANT_POOL_SLOTS_VULKAN];
+	for( ;; )
 	{
-		return S_OK;
-	}
-	if( m_boundConstantLayout != program->m_constantLayout )
-	{
-		m_boundConstantLayout = program->m_constantLayout;
-		if( m_constantPool )
+		const bool created = slot.current == slot.pools.size();
+		if( created )
 		{
-			m_owner->DestroyLaterVulkan( m_constantPool, vkDestroyDescriptorPool );
-			m_constantPool = VK_NULL_HANDLE;
-		}
-		m_constantSet = VK_NULL_HANDLE;
-	}
-
-	if( !m_constantSet )
-	{
-		if( !m_constantPool )
-		{
-			// One set per SetConstants that actually changes something, for a whole
-			// frame, so maxSets is a frame's budget rather than 1. The pool is reset in
-			// BeginFrame, after the frame fence has been waited on -- which is the only
-			// moment nothing in flight can still reference a set from it.
+			// One set per SetConstants that actually changes something, so maxSets is a
+			// frame's budget rather than 1; a frame that needs more gets another pool.
 			VkDescriptorPoolSize poolSize = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, CONSTANT_SETS_PER_FRAME * 4 };
 			VkDescriptorPoolCreateInfo poolInfo = {
 				VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -1734,18 +1721,66 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 				1,
 				&poolSize
 			};
-			CR_RETURN_HR( Vk2Al( vkCreateDescriptorPool( m_owner->m_device, &poolInfo, nullptr, &m_constantPool ) ) );
+			VkDescriptorPool pool = VK_NULL_HANDLE;
+			CR_RETURN_HR( Vk2Al( vkCreateDescriptorPool( m_owner->m_device, &poolInfo, nullptr, &pool ) ) );
+			slot.pools.push_back( pool );
+			if( slot.pools.size() > 1 )
+			{
+				// Once per growth, and a slot only grows: says the per-pool budget is too small.
+				CCP_AL_LOG( "vulkan: constant descriptor pools for frame slot %u: %zu (a frame used more than %u sets)", m_owner->GetFrameSlotVulkan(), slot.pools.size(), CONSTANT_SETS_PER_FRAME * uint32_t( slot.pools.size() - 1 ) );
+			}
 		}
-
 		VkDescriptorSetAllocateInfo allocateInfo = {
 			VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
 			nullptr,
-			m_constantPool,
+			slot.pools[slot.current],
 			1,
-			&program->m_constantLayout
+			&layout
 		};
-		CR_RETURN_HR( Vk2Al( vkAllocateDescriptorSets( m_owner->m_device, &allocateInfo, &m_constantSet ) ) );
+		const VkResult allocated = vkAllocateDescriptorSets( m_owner->m_device, &allocateInfo, &set );
+		if( ( allocated != VK_ERROR_OUT_OF_POOL_MEMORY && allocated != VK_ERROR_FRAGMENTED_POOL ) || created )
+		{
+			// An empty pool that cannot hold one set never will; no endless chain of them.
+			return Vk2Al( allocated );
+		}
+		// This pool is full for the frame; the next one (or a new one) takes over.
+		set = VK_NULL_HANDLE;
+		++slot.current;
+	}
+}
+
+ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint )
+{
+	auto* program = m_pipelineSource.m_shaderProgram.m_program.get();
+	if( !program )
+	{
+		return S_OK;
+	}
+	return BindConstantBuffers( bindPoint, program->m_layouts.constantLayout, program->m_layouts.constantBindings, program->m_layouts.pipelineLayout );
+}
+
+ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint, VkDescriptorSetLayout constantLayout, const std::set<uint32_t>& constantBindings, VkPipelineLayout pipelineLayout )
+{
+	if( !constantLayout || m_constantBuffers.empty() )
+	{
+		return S_OK;
+	}
+	if( m_boundConstantLayout != constantLayout )
+	{
+		// A set is only legal with its own layout; the pools serve any constant layout.
+		m_boundConstantLayout = constantLayout;
+		m_constantSet = VK_NULL_HANDLE;
+	}
+
+	// A set allocated just now is bound nowhere yet, so it is written as it is; only a set some
+	// command already bound is replaced below. Allocating a second one here as well used to
+	// spend two sets of the frame's pools on every program or layout switch.
+	bool unbound = false;
+	if( !m_constantSet )
+	{
+		CR_RETURN_HR( AllocateConstantSetVulkan( constantLayout, m_constantSet ) );
 		m_constantsDirty = true;
+		unbound = true;
 	}
 
 	// A buffer that was locked since the set was written has moved to another slot, and the
@@ -1756,7 +1791,7 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 	{
 		for( auto it = begin( m_constantBuffers ); it != end( m_constantBuffers ); ++it )
 		{
-			if( program->m_constantBindings.find( it->first ) == program->m_constantBindings.end() )
+			if( constantBindings.find( it->first ) == constantBindings.end() )
 			{
 				continue;
 			}
@@ -1776,29 +1811,21 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 		// "destroyed or updated without UPDATE_AFTER_BIND" -- and every command recorded
 		// afterwards is rejected. Nothing reached this before, because it needs two draws
 		// with different constants in one frame, which needed depth states to get to.
-		VkDescriptorSetAllocateInfo reallocateInfo = {
-			VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-			nullptr,
-			m_constantPool,
-			1,
-			&program->m_constantLayout
-		};
-		VkDescriptorSet fresh = VK_NULL_HANDLE;
-		if( SUCCEEDED( Vk2Al( vkAllocateDescriptorSets( m_owner->m_device, &reallocateInfo, &fresh ) ) ) )
+		VkDescriptorSet fresh = unbound ? m_constantSet : VK_NULL_HANDLE;
+		if( fresh || SUCCEEDED( AllocateConstantSetVulkan( constantLayout, fresh ) ) )
 		{
 			m_constantSet = fresh;
-			m_constantPoolLastUse = m_owner->GetRecordingFrameNumber();
 		}
 		else
 		{
-			// If the pool is exhausted the old set is rewritten, which is what used to happen
-			// always. Better a validation error than a dropped draw -- and better still a
-			// line that says the budget above is too small, once.
+			// A full pool gets a successor, so this is a failed vkCreateDescriptorPool (out of
+			// memory). The old set is rewritten, which is what used to happen always. Better a
+			// validation error than a dropped draw -- and better still a line that says so, once.
 			static bool logged = false;
 			if( !logged )
 			{
 				logged = true;
-				CCP_AL_LOGERR( "constant descriptor pool exhausted (%u sets a frame); rewriting a bound set, and draws after it may read the wrong constants", CONSTANT_SETS_PER_FRAME );
+				CCP_AL_LOGERR( "constant descriptor pool could not grow (%u sets each); rewriting a bound set, and draws after it may read the wrong constants", CONSTANT_SETS_PER_FRAME );
 			}
 		}
 
@@ -1812,7 +1839,7 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 			// whatever the caller has set, which outlives any one shader program, and
 			// writing a descriptor to a binding the layout does not have is
 			// VUID-VkWriteDescriptorSet-dstBinding-00315.
-			if( program->m_constantBindings.find( it->first ) == program->m_constantBindings.end() )
+			if( constantBindings.find( it->first ) == constantBindings.end() )
 			{
 				continue;
 			}
@@ -1846,7 +1873,7 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 	vkCmdBindDescriptorSets(
 		m_commandBuffer,
 		bindPoint,
-		program->m_pipelineLayout,
+		pipelineLayout,
 		0,
 		1,
 		&m_constantSet,
@@ -1855,20 +1882,46 @@ ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint 
 	return S_OK;
 }
 
+bool Tr2RenderContextAL::IsBindableWithVulkan( VkDescriptorSetLayout layout ) const
+{
+	return layout != VK_NULL_HANDLE && m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet != VK_NULL_HANDLE && m_resourceSet.m_resourceSet->m_layout == layout;
+}
+
 ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned groupDimY, unsigned groupDimZ ) throw( )
 {
 	auto* program = m_pipelineSource.m_shaderProgram.m_program.get();
-	if( !program || !program->m_pipelineLayout || program->m_shaderInfo.empty() )
+	if( !program || !program->m_layouts.pipelineLayout || program->m_shaderInfo.empty() )
 	{
 		return E_INVALIDCALL;
+	}
+
+	const bool resourceSetBound = IsBindableWithVulkan( program->m_layouts.resourceLayout );
+	if( program->m_layouts.resourceLayout && !resourceSetBound )
+	{
+		// The program reads set-1 resources and the caller's resource set failed to build, was
+		// never set, or was built for another program (the AL's state machine keeps the last set
+		// bound across program changes). Dispatching anyway reads unbound descriptors, which
+		// lost the device on the first froxel-fog frame, or binds a set against a layout it was
+		// not allocated for; skipping is the failure the caller can see. No default set: it has
+		// nothing for a UAV or buffer slot, which nearly every compute program has.
+		// Once per program and reason: the engine names the effect (Tr2Renderer::RunComputeShader).
+		const bool anySet = m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet;
+		static char s_noSetSite, s_otherLayoutSite;
+		if( CCP::LogOnceAL( anySet ? &s_otherLayoutSite : &s_noSetSite, uint64_t( uintptr_t( program ) ) ) )
+		{
+			CCP_AL_LOGERR( anySet ? "Tr2RenderContextAL::RunComputeShader: dispatch skipped for program %p, the bound resource set was built for another program's layout"
+								  : "Tr2RenderContextAL::RunComputeShader: dispatch skipped for program %p, the program has resources and no resource set is bound",
+						   (void*)program );
+		}
+		return E_FAIL;
 	}
 
 	// The compute pipeline is determined by the shader module and pipeline layout,
 	// both owned by the program. Cache it keyed by the layout, invalidating on
 	// program change (the same handle-reuse concern as the constant descriptor set).
-	if( m_computePipelineLayout != program->m_pipelineLayout )
+	if( m_computePipelineLayout != program->m_layouts.pipelineLayout )
 	{
-		m_computePipelineLayout = program->m_pipelineLayout;
+		m_computePipelineLayout = program->m_layouts.pipelineLayout;
 		if( m_computePipeline )
 		{
 			m_owner->DestroyLaterVulkan( m_computePipeline, vkDestroyPipeline );
@@ -1883,7 +1936,7 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 			nullptr,
 			0,
 			program->m_shaderInfo[0],
-			program->m_pipelineLayout,
+			program->m_layouts.pipelineLayout,
 			VK_NULL_HANDLE,
 			0
 		};
@@ -1924,12 +1977,12 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 
 	vkCmdBindPipeline( m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_computePipeline );
 
-	if( m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet && program->m_resourceLayout )
+	if( resourceSetBound && program->m_layouts.resourceLayout )
 	{
 		vkCmdBindDescriptorSets(
 			m_commandBuffer,
 			VK_PIPELINE_BIND_POINT_COMPUTE,
-			program->m_pipelineLayout,
+			program->m_layouts.pipelineLayout,
 			1,
 			1,
 			&m_resourceSet.m_resourceSet->m_descriptorSet, 0, nullptr );
@@ -1943,6 +1996,139 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 	// And the other side: what this dispatch wrote is visible to whatever comes next.
 	m_owner->m_vkCmdPipelineBarrier2( m_commandBuffer, &dependencyInfo );
 
+	return S_OK;
+}
+
+ALResult Tr2RenderContextAL::DispatchRays( Tr2RtPipelineStateAL& pipeline, Tr2RtShaderTableAL& shaderTable, const wchar_t* rayGenShader, uint32_t width, uint32_t height, uint32_t depth )
+{
+	if( !m_owner || !m_owner->GetCaps().SupportsRaytracing() )
+	{
+		return E_FAIL;
+	}
+	auto* rt = pipeline.TrinityALImpl_GetObject();
+	auto* table = shaderTable.TrinityALImpl_GetObject();
+	if( !rt || !rt->IsValid() || !table || !table->IsValid() )
+	{
+		return E_INVALIDARG;
+	}
+	// A table's records are in the upload memory of the frame that created it, which another
+	// frame reuses once that one has rendered: only that frame may trace with it.
+	if( table->GetFrameVulkan() != m_owner->GetRecordingFrameNumber() )
+	{
+		static char s_staleTableSite;
+		if( CCP::LogOnceAL( &s_staleTableSite, uint64_t( rt->m_pipeline ) ) )
+		{
+			CCP_AL_LOGERR( "Tr2RenderContextAL::DispatchRays: trace skipped on pipeline %p, the shader table was created in frame %llu and this is frame %llu; a table is good for the frame that created it",
+						   (void*)rt->m_pipeline,
+						   (unsigned long long)table->GetFrameVulkan(),
+						   (unsigned long long)m_owner->GetRecordingFrameNumber() );
+		}
+		return E_INVALIDCALL;
+	}
+	VkStridedDeviceAddressRegionKHR rayGen;
+	if( !table->GetRayGenRegionVulkan( rayGenShader, rayGen ) )
+	{
+		return E_INVALIDARG;
+	}
+	const VkStridedDeviceAddressRegionKHR callable = {};
+	// The set ApplyMaterialDataForRtState created against this pipeline. Any other set (one left
+	// bound by an earlier draw) was allocated against another layout and is not legal here.
+	// Checked before anything is recorded, so a refused trace leaves the command buffer alone.
+	if( rt->m_layouts.resourceLayout && !IsBindableWithVulkan( rt->m_layouts.resourceLayout ) )
+	{
+		static char s_site;
+		if( CCP::LogOnceAL( &s_site, uint64_t( rt->m_pipeline ) ) )
+		{
+			const bool anySet = m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet;
+			CCP_AL_LOGERR( anySet ? "Tr2RenderContextAL::DispatchRays: trace skipped on pipeline %p, the bound resource set was built for another layout (its global input differs from the pipeline's)"
+								  : "Tr2RenderContextAL::DispatchRays: trace skipped on pipeline %p, no resource set is bound",
+						   (void*)rt->m_pipeline );
+		}
+		return E_INVALIDCALL;
+	}
+	// The layout matches, but a set skips a binding no module of the pipeline it was written for
+	// read (Tr2ResourceSetAL::WriteSetVulkan). A pipeline rebuilt since, with a library that does
+	// read it, would trace through an unwritten descriptor.
+	if( rt->m_layouts.resourceLayout )
+	{
+		uint32_t unwritten = 0;
+		if( !m_resourceSet.m_resourceSet->CoversVulkan( rt->m_layouts.registerInput, unwritten ) )
+		{
+			static char s_site;
+			if( CCP::LogOnceAL( &s_site, uint64_t( rt->m_pipeline ) ) )
+			{
+				CCP_AL_LOGERR( "Tr2RenderContextAL::DispatchRays: trace skipped on pipeline %p, binding %u is read by the pipeline and was left unwritten in the bound resource set", (void*)rt->m_pipeline, unwritten );
+			}
+			return E_INVALIDCALL;
+		}
+	}
+
+	// As RunComputeShader: no rendering scope (which also closes an acceleration structure
+	// build batch) and the set's images in the layouts its descriptors claim.
+	EndRenderPassVulkan();
+	if( m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->NeedsTransitionVulkan() )
+	{
+		m_resourceSet.m_resourceSet->TransitionImagesVulkan( m_commandBuffer );
+	}
+	// Memory ordered on both sides, but only the trace waits, and only its readers wait on it.
+	// Before: every earlier write, whatever wrote it, is what the trace may read or overwrite --
+	// the builds of the batch just closed (they record no barrier after themselves), the UAV
+	// ClearUav cleared with no barrier after it, a transition into a read layout whose own
+	// destination scope has no ray tracing stage (GetLayoutStageAccessVulkan), constant uploads.
+	// The source stays ALL_COMMANDS for that reason (and for WAR on the UAV); the destination is
+	// the ray tracing stage alone, so draws recorded after the trace no longer wait on all of
+	// the above. AS_READ may only name the ray tracing stage without rayQuery
+	// (VUID-VkMemoryBarrier2-dstAccessMask-06256), and that stage only exists with
+	// rayTracingPipeline (-07946), which DispatchRays requires. The shader binding table is
+	// written by the host before submission, which needs no barrier.
+	VkMemoryBarrier2 before = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+	before.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	before.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+	before.dstStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+	before.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_UNIFORM_READ_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+	VkDependencyInfo dependencyInfo = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+	dependencyInfo.memoryBarrierCount = 1;
+	dependencyInfo.pMemoryBarriers = &before;
+	m_owner->m_vkCmdPipelineBarrier2( m_commandBuffer, &dependencyInfo );
+
+	vkCmdBindPipeline( m_commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt->m_pipeline );
+	if( rt->m_layouts.resourceLayout )
+	{
+		vkCmdBindDescriptorSets( m_commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt->m_layouts.pipelineLayout, 1, 1, &m_resourceSet.m_resourceSet->m_descriptorSet, 0, nullptr );
+	}
+	FORWARD_HR( BindConstantBuffers( VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt->m_layouts.constantLayout, rt->m_layouts.constantBindings, rt->m_layouts.pipelineLayout ) );
+
+	m_owner->m_raytracing.cmdTraceRays( m_commandBuffer, &rayGen, &table->GetMissRegionVulkan(), &table->GetHitRegionVulkan(), &callable, width, height, depth );
+	// Once per pipeline: the shadow pass and the froxel fog each build their own, so each says
+	// once that it traced, and with what record stride (a local constant buffer's bytes
+	// travel inside the raygen and miss records).
+	static char s_firstTraceSite;
+	if( CCP::LogOnceAL( &s_firstTraceSite, uint64_t( rt->m_pipeline ) ) )
+	{
+		CCP_AL_LOG( "vulkan: first DispatchRays on pipeline %p: %ux%ux%u, raygen record stride %u, %u miss (stride %u), %u hit group records",
+					(void*)rt->m_pipeline,
+					width,
+					height,
+					depth,
+					uint32_t( rayGen.stride ),
+					uint32_t( table->GetMissRegionVulkan().stride ? table->GetMissRegionVulkan().size / table->GetMissRegionVulkan().stride : 0 ),
+					uint32_t( table->GetMissRegionVulkan().stride ),
+					uint32_t( table->GetHitRegionVulkan().stride ? table->GetHitRegionVulkan().size / table->GetHitRegionVulkan().stride : 0 ) );
+	}
+
+	// After: what the trace wrote (its UAV) to the stages that read it next -- the denoiser's and
+	// the lighting pass's draws (any shader stage of a draw: PRE_RASTERIZATION_SHADERS names only
+	// the supported ones), the froxel filter and raymarch dispatches, a clear or copy of the
+	// target. An image leaving GENERAL for another layout is ordered by its own transition,
+	// whose source scope for GENERAL is ALL_COMMANDS; a later trace or build has its own
+	// "before" over ALL_COMMANDS.
+	VkMemoryBarrier2 after = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+	after.srcStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+	after.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+	after.dstStageMask = VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+	after.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+	dependencyInfo.pMemoryBarriers = &after;
+	m_owner->m_vkCmdPipelineBarrier2( m_commandBuffer, &dependencyInfo );
 	return S_OK;
 }
 
@@ -2093,7 +2279,7 @@ ALResult Tr2RenderContextAL::CreatePipeline( VkPipeline& pipeline )
 		m_renderPassSource.m_rt[0].format != VK_FORMAT_UNDEFINED ? &m_pipelineSource.m_depthStencilState : nullptr,
 		&colorBlendState,
 		&dynamicInfo,
-		m_pipelineSource.m_shaderProgram.m_program->m_pipelineLayout,
+		m_pipelineSource.m_shaderProgram.m_program->m_layouts.pipelineLayout,
 		VK_NULL_HANDLE,
 		0,
 		VK_NULL_HANDLE,

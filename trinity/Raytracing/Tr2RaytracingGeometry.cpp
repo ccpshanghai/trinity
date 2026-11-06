@@ -30,7 +30,8 @@ std::mutex s_geometryConstantsMutex;
 
 Tr2RaytracingPipelineStateManager::Tr2RaytracingPipelineStateManager() :
 	m_nextName( 0 ),
-	m_isDirty( true )
+	m_isDirty( true ),
+	m_buildFailed( false )
 {
 }
 
@@ -139,12 +140,12 @@ BlueSharedStringW Tr2RaytracingPipelineStateManager::AddHitGroup( const Tr2Effec
 
 Tr2RtPipelineStateAL Tr2RaytracingPipelineStateManager::GetPipelineState( Tr2RenderContext& renderContext )
 {
-	if( m_isDirty || !m_pipelineState.IsValid() )
+	// A failed build is not retried until the description changes: rebuilding the same description
+	// fails the same way, and on Vulkan each attempt recreates every shader module and logs again.
+	if( m_isDirty || ( !m_pipelineState.IsValid() && !m_buildFailed ) )
 	{
-		if( SUCCEEDED( m_pipelineState.CreateRtPipelineState( m_pipelineDesc, renderContext.GetPrimaryRenderContext() ) ) )
-		{
-			m_isDirty = false;
-		}
+		m_buildFailed = FAILED( m_pipelineState.CreateRtPipelineState( m_pipelineDesc, renderContext.GetPrimaryRenderContext() ) );
+		m_isDirty = false;
 	}
 	return m_pipelineState;
 }

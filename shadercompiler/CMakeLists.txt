@@ -47,6 +47,8 @@ set(_SOURCES
     ParserUtils.cpp
     ParserUtils.h
     Platforms.h
+    RtShaderRecordLayout.cpp
+    RtShaderRecordLayout.h
     ${GENERATED_SOURCES_DIR}/HLSLParser.c
     ${GENERATED_SOURCES_DIR}/HLSLParser.h
     ${GENERATED_SOURCES_DIR}/HLSLScanner.cpp
@@ -70,14 +72,21 @@ set(_SOURCES
 )
 
 set(_TEST_SOURCES
-    tests/Bindless.cpp
-    tests/GlobalInputTest.cpp
-    tests/MetalConversionTest.cpp
-    tests/RayTracingTest.cpp
     tests/ShaderCompilerTest.cpp
     tests/TesingUtils.h
     tests/VulkanCompilerTest.cpp
 )
+# These suites compile through EffectCompilerDX12 on Windows and EffectCompilerMetal
+# everywhere else, which shells out to `xcrun metal`. Linux has neither, so it builds the
+# SPIR-V suite alone.
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND _TEST_SOURCES
+        tests/Bindless.cpp
+        tests/GlobalInputTest.cpp
+        tests/MetalConversionTest.cpp
+        tests/RayTracingTest.cpp
+    )
+endif()
 
 
 set(TELEMETRY_DEFAULT OFF)
@@ -191,6 +200,10 @@ function(configure_shader_compiler target)
         set(FORCE_ZERO_RETURN_FROM_LEMON "true")
         set(CMD "bash")
         set(CMD_ARG "-c")
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set(FORCE_ZERO_RETURN_FROM_LEMON "true")
+        set(CMD "bash")
+        set(CMD_ARG "-c")
     else()
         message(FATAL "Unsupported Platform")
     endif()
@@ -257,9 +270,16 @@ function(configure_shader_compiler target)
             target_link_libraries(${target} PRIVATE Microsoft::DirectXShaderCompiler)
             if(APPLE)
                 set_target_properties(${target} PROPERTIES INSTALL_RPATH "@executable_path/../lib")
+            elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+                target_link_options(${target} PRIVATE
+                    "-Wl,-rpath,${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/lib")
             endif()
         endif()
-        target_compile_options(${target} PRIVATE -Wall -Wextra -pedantic -Wno-gnu-zero-variadic-macro-arguments -Wno-unused-command-line-argument)
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            target_compile_options(${target} PRIVATE -Wall -Wextra -pedantic)
+        else()
+            target_compile_options(${target} PRIVATE -Wall -Wextra -pedantic -Wno-gnu-zero-variadic-macro-arguments -Wno-unused-command-line-argument)
+        endif()
         set_source_files_properties(${GENERATED_SOURCES_DIR}/HLSLParser.c PROPERTIES COMPILE_FLAGS "-x c++ -Wno-unused-parameter -Wno-sign-compare -Wno-unused-variable")
         set_source_files_properties(${GENERATED_SOURCES_DIR}/Preprocessor.c PROPERTIES COMPILE_FLAGS "-x c++ -Wno-unused-parameter -Wno-sign-compare -Wno-unused-variable")
     endif()
@@ -350,7 +370,13 @@ endif()
  
 option(BUILD_TESTING "Build and run tests. Enabled by default." ON)
 message(STATUS " BUILD_TESTING VALUE IS ${BUILD_TESTING}")
-if(BUILD_TESTING)
+# A second way in, so a tree can build this suite without BUILD_TESTING's AL suites and their
+# vcpkg features: x64-linux-vulkan turns this on and BUILD_TESTING off. OFF by default and ORed
+# rather than defaulting to BUILD_TESTING, because an option keeps its first value in the cache
+# and a tree that turned BUILD_TESTING on later would lose the suite. gtest is a top-level
+# dependency of the manifest, so it is installed either way.
+option(BUILD_SHADER_COMPILER_TESTS "Build ShaderCompilerTest without BUILD_TESTING." OFF)
+if(BUILD_TESTING OR BUILD_SHADER_COMPILER_TESTS)
 
     find_package(GTest REQUIRED)
 

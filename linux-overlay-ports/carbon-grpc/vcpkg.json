@@ -1,0 +1,36 @@
+{
+  "name": "carbon-grpc",
+  "version": "1.0.0",
+  "description": "Provides base functionality for project specific gRPC modules.",
+  "dependencies": [
+    {
+      "name": "carbon-prometheus",
+      "version>=": "4.1.2#1"
+    },
+    {
+      "name": "grpc",
+      "version>=": "1.41.0"
+    },
+    {
+      "name": "protobuf",
+      "features": [
+        "pyext"
+      ],
+      "version>=": "3.17.3"
+    },
+    {
+      "name": "python3",
+      "version>=": "3.12.3#2"
+    },
+    {
+      "name": "vcpkg-cmake",
+      "host": true,
+      "version>=": "2024-04-23"
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true,
+      "version>=": "2024-05-23"
+    }
+  ]
+}

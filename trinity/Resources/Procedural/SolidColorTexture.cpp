@@ -29,7 +29,10 @@ struct SolidColorTextureConstructor : public IBlueDynamicResourceConstructor
 	}
 };
 
-SolidColorTextureConstructor s_solidColorTextureConstructor;
+// On the heap because BlueResMan owns what is registered: it keeps a unique_ptr per name and
+// deletes them when it is destroyed. A static instance here was deleted from static storage at
+// process exit ("free(): invalid pointer" in ~BlueResMan).
+[[maybe_unused]] const bool s_solidColorTextureConstructorRegistered = ( new SolidColorTextureConstructor(), true );
 
 std::optional<Color> ParseColor( const std::string_view& query )
 {

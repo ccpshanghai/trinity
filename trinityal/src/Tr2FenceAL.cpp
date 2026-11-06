@@ -2,7 +2,7 @@
 
 #include "StdAfx.h"
 #include "include/Tr2FenceAL.h"
-#include TRINITY_AL_PLATFORM_INCLUDE( Tr2FenceAL )
+#include TRINITY_AL_PLATFORM_INCLUDE(Tr2FenceAL)
 
 namespace
 {

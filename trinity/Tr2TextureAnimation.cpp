@@ -2,6 +2,7 @@
 
 #include "StdAfx.h"
 #include "Tr2TextureAnimation.h"
+#include <condition_variable>
 #include "Resources/Tr2TextureLodManager.h"
 
 namespace

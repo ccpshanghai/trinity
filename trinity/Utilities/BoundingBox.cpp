@@ -305,8 +305,8 @@ bool IntersectAxisAlignedBoxRay( const Vector3& minBounds, const Vector3& maxBou
 
 	XMVECTOR invRayDir = XMVectorReciprocal( rayDir );
 
-	XMVECTOR t0 = ( minA - rayOrigin ) * invRayDir;
-	XMVECTOR t1 = ( maxA - rayOrigin ) * invRayDir;
+	XMVECTOR t0 = ( minA - static_cast<XMVECTOR>( rayOrigin ) ) * invRayDir;
+	XMVECTOR t1 = ( maxA - static_cast<XMVECTOR>( rayOrigin ) ) * invRayDir;
 
 	XMVECTOR smallerIntersection = XMVectorMin( t0, t1 );
 	XMVECTOR biggerIntersection = XMVectorMax( t0, t1 );

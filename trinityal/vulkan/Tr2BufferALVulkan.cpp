@@ -30,6 +30,7 @@ namespace TrinityALImpl
 		m_mapped( nullptr ),
 		m_stagingBuffer( VK_NULL_HANDLE ),
 		m_stagingOffset( 0 ),
+		m_accelerationStructure( VK_NULL_HANDLE ),
 		m_renames( false ),
 		m_slotCount( 1 ),
 		m_slot( 0 ),
@@ -43,6 +44,17 @@ namespace TrinityALImpl
 	Tr2BufferAL::~Tr2BufferAL()
 	{
 		Destroy();
+	}
+
+	VkDeviceAddress Tr2BufferAL::GetDeviceAddressVulkan() const
+	{
+		if( !m_buffer || !( m_usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT ) || !m_owner->m_raytracing.getBufferDeviceAddress )
+		{
+			return 0;
+		}
+		VkBufferDeviceAddressInfo info = { VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO };
+		info.buffer = m_buffer;
+		return m_owner->m_raytracing.getBufferDeviceAddress( m_owner->m_device, &info );
 	}
 
 	ALResult Tr2BufferAL::Create(
@@ -125,6 +137,33 @@ namespace TrinityALImpl
 		if( HasFlag( desc.gpuUsage, Tr2GpuUsage::UNORDERED_ACCESS ) )
 		{
 			usage |= isTypedBuffer ? VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT : VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+		}
+
+		// Acceleration structures, and only on a device that can build them -- elsewhere neither
+		// branch runs and the usage is what it always was (Tr2GpuUsage::ACCELERATION_STRUCTURE
+		// included: ignored).
+		//
+		// BLAS input is whatever vertex and index storage the engine already has: the pooled
+		// g_sharedBuffer every TriGeometryRes allocates from, and the skinned-vertex UAV buffer.
+		// Both exist long before any BLAS is asked for and a VkBuffer's usage cannot be added
+		// later, so every buffer that can be a BLAS input gets the bits at creation.
+		if( renderContext.GetCaps().SupportsAccelerationStructuresVulkan() )
+		{
+			if( HasFlag( desc.gpuUsage, Tr2GpuUsage::VERTEX_BUFFER ) || HasFlag( desc.gpuUsage, Tr2GpuUsage::INDEX_BUFFER ) || HasFlag( desc.gpuUsage, Tr2GpuUsage::SHADER_RESOURCE ) || HasFlag( desc.gpuUsage, Tr2GpuUsage::UNORDERED_ACCESS ) )
+			{
+				usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+			}
+			// The storage a VkAccelerationStructureKHR is created over (the TLAS hands this
+			// buffer to effects as its shader resource). Only builds write it, so it has no
+			// host-visible form.
+			if( HasFlag( desc.gpuUsage, Tr2GpuUsage::ACCELERATION_STRUCTURE ) )
+			{
+				if( HasFlag( desc.cpuUsage, Tr2CpuUsage::READ ) || HasFlag( desc.cpuUsage, Tr2CpuUsage::WRITE ) )
+				{
+					return E_INVALIDARG;
+				}
+				usage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+			}
 		}
 
 		// CreateBuffer takes VkMemoryPropertyFlagBits, not VkMemoryPropertyFlags, so a
@@ -319,6 +358,14 @@ namespace TrinityALImpl
 			m_mapped = nullptr;
 			m_stagingBuffer = VK_NULL_HANDLE;
 			m_stagingOffset = 0;
+
+			// Queued ahead of the buffer it lives in, so the pending-destroy list (drained in
+			// order) never holds a structure whose storage is already gone.
+			if( m_accelerationStructure )
+			{
+				m_owner->DestroyLaterVulkan( m_accelerationStructure, m_owner->m_raytracing.destroyAccelerationStructure );
+				m_accelerationStructure = VK_NULL_HANDLE;
+			}
 
 			if( m_bufferView )
 			{

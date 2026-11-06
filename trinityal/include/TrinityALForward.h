@@ -134,5 +134,7 @@
 #endif
 
 // clang-format off
-#define TRINITY_AL_PLATFORM_INCLUDE( className ) CCP_STRINGIZE(../TRINITY_PLATFORM_SYMBOL/CCP_CONCATENATE( className, TRINITY_PLATFORM_SYMBOL_SUFFIX ).h )
+// GCC turns a space in this invocation into a space in the included path
+// ("../vulkan/ Name.h"). The calls pass the name with no surrounding space.
+#define TRINITY_AL_PLATFORM_INCLUDE(className) CCP_STRINGIZE(../TRINITY_PLATFORM_SYMBOL/CCP_CONCATENATE(className, TRINITY_PLATFORM_SYMBOL_SUFFIX).h)
 // clang-format on

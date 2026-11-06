@@ -28,10 +28,21 @@ struct Children
 	size_t offset;
 };
 
+// Whether `reg`, a register of `symbol`, is written on the Vulkan binding ABI's resource set:
+// a t, s or u register of a declaration CheckVulkanRegisterSpaces collected.
+bool OnVulkanResourceSpace( const HLSL& hlsl, const Symbol* symbol, const RegisterSpecifier& reg )
+{
+	return hlsl.vulkanResourceSpace && ( reg.registerType == 't' || reg.registerType == 's' || reg.registerType == 'u' ) && hlsl.vulkanResourceSpace->count( symbol );
+}
+
 template <typename XSL>
 XSL XSLChild( const XSL& parent, size_t childIndex )
 {
-	return XSL{ parent.node->GetChild( childIndex ), parent.symbolTable };
+	// A copy of the parent with only the node swapped, so whatever else the parent carries
+	// (HLSL::shaderRecordCBuffers) reaches every child.
+	XSL child = parent;
+	child.node = parent.node->GetChild( childIndex );
+	return child;
 }
 
 template <typename XSL>
@@ -968,7 +979,11 @@ CodeStream& operator<<( CodeStream& os, const HLSL& hlsl )
 				{
 					os << "[" << reg.subComponent << "]";
 				}
-				if( reg.space >= 0 )
+				if( OnVulkanResourceSpace( hlsl, node->GetSymbol(), reg ) )
+				{
+					os << ", space1";
+				}
+				else if( reg.space >= 0 )
 				{
 					os << ", space" << reg.space;
 				}
@@ -1150,6 +1165,10 @@ CodeStream& operator<<( CodeStream& os, const HLSL& hlsl )
 		{
 			break;
 		}
+		if( hlsl.shaderRecordCBuffers && hlsl.shaderRecordCBuffers->count( node->GetSymbol() ) )
+		{
+			os << "[[vk::shader_record_ext]]" << Endl();
+		}
 		if( node->GetToken()->type == OP_TBUFFER )
 		{
 			os << "tbuffer ";
@@ -1162,7 +1181,11 @@ CodeStream& operator<<( CodeStream& os, const HLSL& hlsl )
 		for( auto it = node->GetSymbol()->registerSpecifier.begin(); it != node->GetSymbol()->registerSpecifier.end(); ++it )
 		{
 			os << " : register( " << it->second.registerType << it->second.registerNumber;
-			if( it->second.space >= 0 )
+			if( OnVulkanResourceSpace( hlsl, node->GetSymbol(), it->second ) )
+			{
+				os << ", space1";
+			}
+			else if( it->second.space >= 0 )
 			{
 				os << ", space" << it->second.space;
 			}

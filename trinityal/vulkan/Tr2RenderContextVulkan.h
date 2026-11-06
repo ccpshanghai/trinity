@@ -7,6 +7,7 @@
 
 #include <map>
 #include <memory>
+#include <set>
 
 #include "../Tr2HalHelperStructures.h"
 #include "../Tr2RenderContextEnum.h"
@@ -190,10 +191,12 @@ public:
 		return E_NOTIMPL;
 	}
 
-	ALResult DispatchRays( Tr2RtPipelineStateAL&, Tr2RtShaderTableAL&, const wchar_t*, uint32_t, uint32_t, uint32_t )
-	{
-		return E_FAIL;
-	}
+	// vkCmdTraceRaysKHR, with the global inputs the engine bound through the compute slots
+	// (SetConstants / SetResourceSet on COMPUTE_SHADER) bound at the ray tracing bind point
+	// against the pipeline's layout. Synchronized like RunComputeShader: any open rendering
+	// scope ends, the resource set's images move to their layouts, and one global barrier on
+	// each side orders the trace against everything else.
+	ALResult DispatchRays( Tr2RtPipelineStateAL& pipeline, Tr2RtShaderTableAL& shaderTable, const wchar_t* rayGenShader, uint32_t width, uint32_t height, uint32_t depth );
 
 	ALResult SetRenderState( Tr2RenderContextEnum::RenderState state, uint32_t value ) throw( );
 	ALResult SetRenderStates( const uint32_t* stateValuePairs, uint32_t count ) throw( );
@@ -464,6 +467,14 @@ private:
 	// places that must agree, so it is one function.
 	uint32_t SrgbWriteMaskVulkan() const;
 	ALResult BindConstantBuffers( VkPipelineBindPoint bindPoint );
+	// The work of the overload above against an explicit layout: the bound shader program's
+	// for draws and dispatches, a ray tracing pipeline's for DispatchRays.
+	ALResult BindConstantBuffers( VkPipelineBindPoint bindPoint, VkDescriptorSetLayout constantLayout, const std::set<uint32_t>& constantBindings, VkPipelineLayout pipelineLayout );
+	// The bound resource set has a descriptor set allocated against `layout`. A set is only
+	// legal with the layout it was built for, and the AL's state machine carries a bound set
+	// across program and pipeline changes; SetPipeline, RunComputeShader and DispatchRays all
+	// ask this before binding it at set 1.
+	bool IsBindableWithVulkan( VkDescriptorSetLayout layout ) const;
 
 	// Four, matching Tr2VertexLayoutAL::m_streamRates. The two arrays are indexed by the
 	// same stream number and CreatePipeline reads them together.
@@ -558,18 +569,29 @@ private:
 	};
 	std::map<uint32_t, ConstantBinding> m_constantBuffers;
 	bool m_constantsDirty;
-	// How many distinct constant descriptor sets one frame may use before the pool is
-	// exhausted. Reset every BeginFrame.
-	// A frame's budget of constant descriptor sets: one per SetConstants (or per Lock of a
+	// One constant descriptor pool's budget of sets: one per SetConstants (or per Lock of a
 	// bound buffer) that changes something. 64 was enough while every object read the same
 	// constants; with each object bound at its own slot the EVE scene needs a few hundred.
 	static const uint32_t CONSTANT_SETS_PER_FRAME = 1024;
-	VkDescriptorPool m_constantPool;
 
-	// The newest frame that allocated a set from m_constantPool. The pool cannot be reset
-	// until that frame has retired -- a single pool is shared by every frame in flight, so
-	// "this slot's fence has signalled" is not enough on its own.
-	uint64_t m_constantPoolLastUse;
+	// Constant descriptor pools per frame slot (Tr2PrimaryRenderContextAL::VIRTUAL_FRAMES, which
+	// a static_assert there ties to this). A frame allocates only from its own slot's pools, and
+	// BeginFrame resets that slot's pools right after waiting on the slot's fence, the one moment
+	// nothing in flight can still name a set from them (VUID-vkResetDescriptorPool-descriptorPool-00313).
+	// A slot whose pools run out gets one more, reset with the others from then on. One shared
+	// pool, reset only once every frame that used it had rendered, was never reset with frames in
+	// flight, and only survived by being thrown away and recreated on every program change.
+public:
+	static const uint32_t CONSTANT_POOL_SLOTS_VULKAN = 3;
+private:
+	struct ConstantPoolSlotVulkan
+	{
+		std::vector<VkDescriptorPool> pools;
+		size_t current = 0; // the pool new sets come from; earlier ones are full
+	};
+	ConstantPoolSlotVulkan m_constantPools[CONSTANT_POOL_SLOTS_VULKAN];
+	// A set from the current slot's pools, against `layout`.
+	ALResult AllocateConstantSetVulkan( VkDescriptorSetLayout layout, VkDescriptorSet& set );
 	VkDescriptorSet m_constantSet;
 	VkDescriptorSetLayout m_boundConstantLayout;
 
@@ -602,9 +624,10 @@ protected:
 	bool m_renderingActive;
 
 public:
-	// Recycle the frame's constant descriptor sets. Only safe once the frame's fence has
-	// been waited on, which is why the primary render context calls it from BeginFrame and
-	// nothing else calls it at all.
+	// Recycle the current frame slot's constant descriptor sets, and drop the bound one (it came
+	// from another slot's pools, which a later BeginFrame resets while this frame may be in
+	// flight). Only safe once the slot's fence has been waited on, which is why the primary
+	// render context calls it from BeginFrame and nothing else calls it at all.
 	void ResetConstantPoolVulkan();
 
 	// Force the next draw to re-begin rendering. Needed when the images the attachments
@@ -623,7 +646,33 @@ public:
 	//
 	// On a tiler this is a resolve and a reload, so it is not free; it is here because
 	// Vulkan 1.0 has no host-side vkResetQueryPool, which arrived in 1.2.
+	//
+	// Also closes an open acceleration structure build batch (m_asBatch): every command that is
+	// not a build and is recorded outside a rendering scope calls this first, so it is the one
+	// place that knows something other than a build came next.
 	void EndRenderPassVulkan();
+
+	// Acceleration structure builds recorded back to back share one "before" barrier
+	// (RecordAccelerationStructureBuildVulkan, Tr2RtBottomLevelAccelerationStructureALVulkan.cpp).
+	// Open from the first build of a run until another command is recorded:
+	// EndRenderPassVulkan, the start of a rendering scope and BeginFrame close it. Only ray
+	// tracing builds open it, so on a device without the capability it is never open.
+	struct AccelerationStructureBatchVulkan
+	{
+		bool open = false;
+		// The scratch range the batch's builds have written since its last barrier, as device
+		// addresses (one interval: the scratch arena hands out increasing ranges).
+		VkDeviceAddress scratchLow = 0;
+		VkDeviceAddress scratchHigh = 0;
+		// The structures built since the last barrier, which a later build must not read
+		// (a TLAS over them, or a refit of one) or write again without one.
+		std::vector<VkAccelerationStructureKHR> written;
+		// A TLAS was built since the last barrier. It read BLASes `written` does not name, so a
+		// later build, which may rewrite one of them in place, waits for it.
+		bool topLevelBuilt = false;
+	};
+	AccelerationStructureBatchVulkan m_asBatch;
+
 	// Whether a dynamic rendering instance is open right now -- what EndRenderPassVulkan
 	// would close. Tr2BufferAL asks, so the draw log can count the pass restarts its
 	// synchronized copies cause.

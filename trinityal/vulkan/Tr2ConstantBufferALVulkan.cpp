@@ -177,6 +177,20 @@ namespace TrinityALImpl
 		return S_OK;
 	}
 
+	ALResult Tr2ConstantBufferAL::ReadCurrentVulkan( void* data, uint32_t size ) const
+	{
+		if( !IsValid() )
+		{
+			return E_INVALIDCALL;
+		}
+		size = std::min( size, m_size );
+		void* mapped = nullptr;
+		CR_RETURN_HR( Vk2Al( vkMapMemory( m_owner->m_device, m_memory, GetOffsetVulkan(), size, 0, &mapped ) ) );
+		memcpy( data, mapped, size );
+		vkUnmapMemory( m_owner->m_device, m_memory );
+		return S_OK;
+	}
+
 	bool Tr2ConstantBufferAL::IsValid() const
 	{
 		return m_owner != nullptr;

@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <memory>
+
 enum Tr2ALMemoryType
 {
 	AL_MEMORY_VIDEO = 1 << 0, // resources created on video card memory
