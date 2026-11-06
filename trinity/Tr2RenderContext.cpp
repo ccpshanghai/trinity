@@ -298,10 +298,29 @@ bool g_renderContextIsBeingDestroyed = false;
 
 namespace
 {
+// A process that ends with exit() while its device is still up (DestroyMainThreadRenderContext
+// never called) must not release the main-thread context from this module's static destructors.
+// Other statics are destroyed after this one and still own resources whose raw m_owner points
+// into the context: g_sharedBuffer, g_bakedMorphTargetBuffer, and the effect state manager's
+// stream buffer inside the context itself. Each one's Destroy() then queues onto the freed
+// context's pending-destroy list, a write into freed heap memory that glibc catches later as
+// "free(): corrupted unsorted chunks". Releasing the context at that point would also call into
+// the GPU driver after the driver's own finalizers have run, since the driver is loaded later.
+// So the pointer is detached instead: the context, its device and everything queued on it are
+// left to the process exit.
+template <typename Ptr>
+struct KeptPastStaticDestruction : Ptr
+{
+	~KeptPastStaticDestruction()
+	{
+		this->Detach();
+	}
+};
+
 #if TRINITY_PLATFORM_HAS_PRIMARY_CONTEXT
-Tr2PrimaryRenderContextPtr s_mainThreadRenderContext;
+KeptPastStaticDestruction<Tr2PrimaryRenderContextPtr> s_mainThreadRenderContext;
 #else
-Tr2RenderContextPtr s_mainThreadRenderContext;
+KeptPastStaticDestruction<Tr2RenderContextPtr> s_mainThreadRenderContext;
 #endif
 }
 
