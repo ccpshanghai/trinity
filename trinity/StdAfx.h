@@ -86,6 +86,11 @@ using std::max;
 
 #include "include/Tr2WindowHandle.h"
 #include <../trinityal/include/TrinityAL.h>
+// Invoke canonical names of AL and ImageIO enums in hooked signatures (neither layer includes Blue).
+BLUE_INVOKE_CANONICAL_NAME( Tr2RenderContextEnum::DepthStencilFormat, "Tr2RenderContextEnum::DepthStencilFormat" );
+BLUE_INVOKE_CANONICAL_NAME( Tr2RenderContextEnum::ExFlag, "Tr2RenderContextEnum::ExFlag" );
+BLUE_INVOKE_CANONICAL_NAME( ImageIO::PixelFormat, "ImageIO::PixelFormat" );
+BLUE_INVOKE_CANONICAL_NAME( ImageIO::TextureType, "ImageIO::TextureType" );
 #include "Tr2RenderContext.h"
 #include "Tr2RenderUtils.h"
 #if WITH_GRANNY

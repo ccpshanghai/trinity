@@ -151,5 +151,6 @@ public:
 		ITriVector* translation );
 };
 TYPEDEF_BLUECLASS( TriMatrix );
+BLUE_INVOKE_CANONICAL_NAME( TriMatrix, "TriMatrix" ); // not declared through a Blue macro
 
 #endif

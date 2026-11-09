@@ -198,5 +198,6 @@ public:
 };
 
 TYPEDEF_BLUECLASS( Tr2TextureAtlas );
+BLUE_INVOKE_CANONICAL_NAME( Tr2TextureAtlas::AtlasTextureType, "Tr2TextureAtlas::AtlasTextureType" );
 
 #endif //Tr2TextureAtlas_h
