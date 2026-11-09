@@ -1,0 +1,4 @@
+# carbon-bind (Windows parity e): no line-ending conversion for the vcpkg overlay recipes.
+# Under core.autocrlf=true their patches were checked out CRLF and vcpkg's `git apply` rejected
+# them; -text writes the committed bytes on every host.
+linux-overlay-ports/** -text
