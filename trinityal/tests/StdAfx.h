@@ -14,7 +14,10 @@
 #include <Windows.h>
 typedef HWND Tr2WindowHandle;
 #elif defined( __APPLE__ )
-#include <objc/objc-runtime.h>
+// objc/objc.h (not objc-runtime.h) is the one header this typedef needs and the
+// one that ships in every Apple platform SDK -- objc-runtime.h is macOS-SDK-only
+// and isn't present under iPhoneOS/iPhoneSimulator.
+#include <objc/objc.h>
 typedef id Tr2WindowHandle;
 #else
 #include <cstdint>
@@ -29,6 +32,8 @@ typedef uintptr_t Tr2WindowHandle;
 #define SHADER_PATH Shaders.DX11
 #elif ( TRINITY_PLATFORM == TRINITY_DIRECTX12 )
 #define SHADER_PATH Shaders.DX12
+#elif( TRINITY_PLATFORM==TRINITY_VULKAN )
+#define SHADER_PATH Shaders.vulkan
 #elif ( TRINITY_PLATFORM == TRINITY_METAL )
 #define SHADER_PATH Shaders.metal
 #else

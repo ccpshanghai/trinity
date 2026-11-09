@@ -167,6 +167,18 @@ Tr2PrimaryRenderContextAL* Tr2RenderContextAL::GetPrimaryRenderContextPointer()
 	return m_ownerDevice;
 }
 
+uint64_t Tr2RenderContextAL::GetNativeBackBufferFormat() const
+{
+	// m_ownerDevice is null before CreateDx12 and again after Destroy, and 0 is
+	// DXGI_FORMAT_UNKNOWN -- the same "no device, no format" answer the stub backend
+	// documents, so a caller checking for 0 is right on every backend (spec D3).
+	if( !m_ownerDevice )
+	{
+		return 0;
+	}
+	return static_cast<uint64_t>( m_ownerDevice->GetBackBufferFormat() );
+}
+
 ALResult Tr2RenderContextAL::BeginScene() throw()
 {
 	return S_OK;

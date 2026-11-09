@@ -244,6 +244,14 @@ private:
 
 	bool SetPresentParameters( unsigned adapter, const Tr2PresentParametersAL& pp );
 
+	// Hand the device a new native window and rebuild presentation on it. Android hands the
+	// process a NEW ANativeWindow after backgrounding, and the Vulkan AL's SetPresentParameters
+	// recreates the VkSurfaceKHR when outputWindow changes (Tr2PrimaryRenderContextVulkan.cpp,
+	// `windowChanged`); Python owns the device, so Python makes this call from its foreground
+	// callback (M6 second-half spec §6.1). Elsewhere the handle never changes and this is a
+	// same-handle rebuild -- a resize's cost, and no more.
+	bool SetOutputWindow( Tr2WindowHandle window );
+
 	static void LogAllLiveResources( Tr2ALMemoryTypes flags = AL_MEMORY_VIDEO | AL_MEMORY_MANAGED );
 
 	bool ShouldSkipFrame() const;
@@ -322,6 +330,7 @@ public:
 	PyObject* PyCreateWindowedDevice( PyObject * args );
 	PyObject* PyCreateFullScreenDevice( PyObject * args );
 	PyObject* PyCreateWindowlessDevice( PyObject * args );
+	PyObject* PySetOutputWindow( PyObject * args );
 
 	void PyRender();
 

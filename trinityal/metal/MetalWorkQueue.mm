@@ -2,6 +2,7 @@
 
 #if TRINITY_PLATFORM == TRINITY_METAL
 #import <Foundation/Foundation.h>
+#include <TargetConditionals.h>
 #include <float.h>
 #include "MetalWorkQueue.h"
 #include "MetalContext.h"
@@ -293,9 +294,11 @@ void MetalWorkQueue::SetCommandQueue( id<MTLCommandQueue> commandQueue )
 	m_device = commandQueue.device;
 
 	m_isIntelGpu = [m_device.name containsString:@"Intel"];
-	if( @available( macOS 10.15, * ) )
+	if( @available( macOS 11.0, iOS 14.0, * ) )
 	{
-		m_isAppleSilicon = [m_device supportsFamily:MTLGPUFamilyMac2] && [m_device supportsFamily:MTLGPUFamilyApple7];
+		// Apple7 alone: an M1 reports it and so does an iPhone 12. The old
+		// Mac2 && Apple7 conjunction was false on every iPhone (spec D7).
+		m_isAppleSilicon = [m_device supportsFamily:MTLGPUFamilyApple7];
 	}
 
 	SetupPresentBlitResources();
@@ -423,10 +426,17 @@ void MetalWorkQueue::RenderTargetBarrier()
 		GetRenderEncoder();
 		ReleaseEncoder( true );
 	}
+#if !TARGET_OS_IPHONE
+	// The alternative to splitting the pass above: an explicit render-target
+	// memory barrier for non-Apple-Silicon (Intel) Mac GPUs. MTLBarrierScopeRenderTargets
+	// is API_UNAVAILABLE(ios) -- every iOS GPU is Apple-family/TBDR, so this
+	// branch (and the flag it sets, consumed in SetCurrentEncoder below) is
+	// macOS-only surface, not a behavior iOS ever needs.
 	else
 	{
 		m_hasPendingRenderTargetBarrier = true;
 	}
+#endif
 }
 
 void MetalWorkQueue::CommitCommandBuffer( MetalCBCommitFlags flags )
@@ -548,7 +558,7 @@ void MetalWorkQueue::SetupPresentBlitResources()
 	m_numCommands = 0;
 }
 
-bool MetalWorkQueue::BlitToDrawableAndPresent( id<MTLTexture> srcTexture, NSView* view, uint64_t* renderedFrameNumber )
+bool MetalWorkQueue::BlitToDrawableAndPresent( id<MTLTexture> srcTexture, CAMetalLayer* layer, uint64_t* renderedFrameNumber )
 {
 	CCP_ASSERT( m_isPrimary );
 
@@ -558,23 +568,17 @@ bool MetalWorkQueue::BlitToDrawableAndPresent( id<MTLTexture> srcTexture, NSView
 
 	// JM - this should not be done every blit but rather setup only when something changes.
 	// Probably from the SwapChain or PresentParameters code.
-	CAMetalLayer* caMetalLayer = (CAMetalLayer*)view.layer;
-	caMetalLayer.device = m_device;
-	caMetalLayer.pixelFormat = srcTexture.pixelFormat;
-	id<CAMetalDrawable> drawable = [caMetalLayer nextDrawable];
+	layer.device = m_device;
+	layer.pixelFormat = srcTexture.pixelFormat;
+	id<CAMetalDrawable> drawable = [layer nextDrawable];
 
-	CCP_ASSERT( view != nil && caMetalLayer != nil && drawable != nil );
+	CCP_ASSERT( layer != nil && drawable != nil );
 
-	if( view == nil || caMetalLayer == nil || drawable == nil )
+	if( layer == nil || drawable == nil )
 	{
-		if( view == nil )
+		if( layer == nil )
 		{
-			CCP_AL_LOGERR( "No target view - present failed." );
-		}
-
-		if( caMetalLayer == nil )
-		{
-			CCP_AL_LOGERR( "Target view doesn't have a Metal layer - present failed." );
+			CCP_AL_LOGERR( "No CAMetalLayer provided - present failed." );
 		}
 
 		if( drawable == nil )
@@ -861,6 +865,10 @@ void MetalWorkQueue::SetCurrentEncoder( MetalEncoderType encoderType, NSString* 
 		// If the encoder types match then we can carry on using the current encoder otherwise we need to create a new one
 		if( m_currentEncoderType == encoderType )
 		{
+#if !TARGET_OS_IPHONE
+			// m_hasPendingRenderTargetBarrier is never set true on iOS (see
+			// RenderTargetBarrier above), but the enumerator itself is
+			// API_UNAVAILABLE(ios), so the whole call has to stay macOS-only too.
 			if( encoderType == MTLENCODERTYPE_RENDER && m_hasPendingRenderTargetBarrier )
 			{
 				[m_currentRenderEncoder memoryBarrierWithScope:MTLBarrierScopeRenderTargets
@@ -868,6 +876,7 @@ void MetalWorkQueue::SetCurrentEncoder( MetalEncoderType encoderType, NSString* 
 												  beforeStages:MTLRenderStageVertex];
 				m_hasPendingRenderTargetBarrier = false;
 			}
+#endif
 			// Mark that this curent encoder is in use and return
 			m_encoderInUse = true;
 			return;
@@ -1031,7 +1040,18 @@ void MetalWorkQueue::CopyDataToBuffer( id<MTLBuffer> buffer, const void* data, s
 
 		memcpy( offsetDest, data, sizeInBytes );
 
-		[buffer didModifyRange:NSMakeRange( offset, sizeInBytes )];
+		// CPU writes buffer.contents directly above; sync it here. Managed needs
+		// the explicit call, Shared (spec D7) is a no-op, and didModifyRange is
+		// macOS-only API. CopyDataToBuffer has no callers in the tree today, but
+		// this file still has to compile for iOS (Task 11's gate), so it gets the
+		// same guard as every other didModifyRange site rather than being skipped
+		// as unreachable.
+#if TARGET_OS_OSX
+		if( buffer.storageMode == MTLStorageModeManaged )
+		{
+			[buffer didModifyRange:NSMakeRange( offset, sizeInBytes )];
+		}
+#endif
 	}
 }
 
@@ -1054,7 +1074,12 @@ void MetalWorkQueue::ReadBackBufferToCPU( id<MTLBuffer> buffer, bool waitForData
 
 	id<MTLBlitCommandEncoder> blitEncoder = GetBlitEncoder();
 
+	// synchronizeResource: is Managed-storage-mode CPU sync, same family as
+	// didModifyRange in CopyDataToBuffer above -- macOS-only API, no-op on iOS
+	// because iOS buffers are never Managed (spec D7's Shared-only story).
+#if TARGET_OS_OSX
 	[blitEncoder synchronizeResource:buffer]; // sync to CPU
+#endif
 
 	if( waitForData )
 	{
@@ -1358,7 +1383,10 @@ void MetalWorkQueue::CopyTextureToMTLBuffer( id<MTLTexture> texture,
 	ReleaseEncoder( true );
 	blitEncoder = GetBlitEncoder();
 
+	// See ReadBackBufferToCPU: same Managed-only sync, no-op on iOS.
+#if TARGET_OS_OSX
 	[blitEncoder synchronizeResource:destBuffer]; // sync to CPU
+#endif
 
 	if( waitForData )
 	{
@@ -1413,8 +1441,12 @@ void MetalWorkQueue::ResolveMsaa( id<MTLTexture> source, id<MTLTexture> destinat
 	// Changing an attachment requires a new render encoder so we must flush any outstanding work.
 	ReleaseEncoder( true );
 
+	// Depth24Unorm_Stencil8 is macOS-only SDK surface (spec D7's producing site,
+	// MetalUtils.mm's SetupPixelFormatConversionTable, never emits it on iOS).
 	if( source.pixelFormat == MTLPixelFormatDepth16Unorm || source.pixelFormat == MTLPixelFormatDepth32Float ||
+#if TARGET_OS_OSX
 		source.pixelFormat == MTLPixelFormatDepth24Unorm_Stencil8 ||
+#endif
 		source.pixelFormat == MTLPixelFormatDepth32Float_Stencil8 )
 	{
 		id<MTLTexture> oldAttachment = m_currentRenderPassDescriptor.depthAttachment.texture;
@@ -2065,11 +2097,21 @@ void MetalWorkQueue::SetDepthStencilAttachment( id<MTLTexture> texture )
 
 		case MTLPixelFormatStencil8:
 		case MTLPixelFormatX32_Stencil8:
+		// X24_Stencil8 is the same macOS-only SDK surface as Depth24Unorm_Stencil8
+		// below -- the 24-bit-depth combined formats never existed on iOS hardware,
+		// and MetalUtils.mm's MetalDefaultDepthStencilPixelFormat never produces it there.
+#if TARGET_OS_OSX
 		case MTLPixelFormatX24_Stencil8:
+#endif
 			stencilTexture = texture;
 			break;
 
+		// Depth24Unorm_Stencil8 is macOS-only SDK surface (spec D7's producing
+		// site, MetalUtils.mm's SetupPixelFormatConversionTable, never emits
+		// it on iOS), so the enumerator itself must be guarded here too.
+#if TARGET_OS_OSX
 		case MTLPixelFormatDepth24Unorm_Stencil8:
+#endif
 		case MTLPixelFormatDepth32Float_Stencil8:
 			depthTexture = texture;
 			stencilTexture = texture;
@@ -2571,7 +2613,7 @@ void MetalWorkQueue::ResetSamplers( Tr2RenderContextEnum::ShaderType shaderType 
 	m_dirtySamplersMask[shaderType] = ~0u;
 }
 
-void MetalWorkQueue::SetVertexStream( uint32 stream, id<MTLBuffer> buffer, uint32 stride, uint32 offset )
+void MetalWorkQueue::SetVertexStream( uint32_t stream, id<MTLBuffer> buffer, uint32_t stride, uint32_t offset )
 {
 	CCP_ASSERT( stream < METAL_VERTEX_STREAM_BUFFER_COUNT );
 	const uint32_t bufferIndex = METAL_VERTEX_STREAM_BUFFER_OFFSET + stream;

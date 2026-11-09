@@ -167,9 +167,13 @@ ALResult Tr2RtShaderTableAL::Create( const Tr2RtShaderTableDescriptionAL& desc,
 		id<MTLDevice> device = renderContext.GetMetalContext()->GetDevice();
 		if( !hitBuffers.empty() )
 		{
+			// Write-once via newBufferWithBytes: the initial contents are synced by
+			// the allocator itself. m_materialBuffer is then only ever GPU-read
+			// (bound into the anyHit function table below), so no didModifyRange
+			// is ever needed for it.
 			m_materialBuffer = [device newBufferWithBytes:hitBuffers.data()
 												   length:hitBuffers.size() * sizeof( uint64_t )
-												  options:MTLResourceStorageModeManaged];
+												  options:MetalDefaultUploadStorageMode( device )];
 			for( auto& tables : m_functionTables )
 			{
 				[tables.anyHit setBuffer:m_materialBuffer offset:0 atIndex:0];

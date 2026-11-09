@@ -1,7 +1,16 @@
 // Copyright © 2023 CCP ehf.
 
 #include "StdAfx.h"
-#if defined( __APPLE__ ) && TRINITY_PLATFORM != TRINITY_STUB
+
+// TARGET_OS_* is needed by the guard below, so the include cannot go inside it -- but it
+// is an Apple header and Windows compiles this file too, so it is wrapped rather than
+// left bare. Off Apple the undefined TARGET_OS_* evaluates to 0 and __APPLE__ already
+// makes the guard false.
+#if defined( __APPLE__ )
+#include <TargetConditionals.h>
+#endif
+
+#if defined( __APPLE__ ) && TARGET_OS_OSX && ( TRINITY_PLATFORM != TRINITY_STUB )
 
 #include "RenderWindow.h"
 #import <Cocoa/Cocoa.h>
@@ -114,7 +123,7 @@ bool RenderWindow::Resize( uint32_t width, uint32_t height )
 
 Tr2WindowHandle RenderWindow::GetHandle() const
 {
-	return [(NSWindow*)m_handle contentView];
+	return [(NSWindow*)m_handle contentView].layer;
 }
 
 

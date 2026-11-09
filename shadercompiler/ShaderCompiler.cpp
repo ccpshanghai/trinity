@@ -6,6 +6,7 @@
 #include "StringTable.h"
 #include "EffectCompilerDX11.h"
 #include "EffectCompilerDX12.h"
+#include "EffectCompilerVulkan.h"
 #include "EffectCompilerMetal.h"
 #include "EffectData.h"
 #include "WorkQueue.h"
@@ -146,6 +147,10 @@ bool CompileShader( const CompileShaderArguments& arguments, IWorkQueue* workQue
 			switch( platform )
 			{
 #if _WIN32
+			// DX11 and DX12 need d3dcompiler.dll (D3DCompile, D3DStripShader, D3DReflect).
+			// Vulkan does not: its back end is dxc's -spirv, and reflection comes from a
+			// DXIL sibling compile through IDxcUtils::CreateReflection -- all of which the
+			// directx-dxc port supplies on macOS too. See EffectCompilerDX11.cpp.
 			case PLATFORM_DX11:
 				newCompiler.reset( new EffectCompilerDX11() );
 				break;
@@ -153,6 +158,9 @@ bool CompileShader( const CompileShaderArguments& arguments, IWorkQueue* workQue
 				newCompiler.reset( new EffectCompilerDX12() );
 				break;
 #endif
+			case PLATFORM_VULKAN:
+				newCompiler.reset( new EffectCompilerVulkan() );
+				break;
 			case PLATFORM_METAL:
 				newCompiler.reset( new EffectCompilerMetal() );
 				break;
@@ -212,6 +220,7 @@ void PrintUsage()
 	printf( "  /telemetry - Enable RAD Telemetry\n" );
 #endif
 	printf( "  /metal <path> - Path to Metal Developer Tools for Windows\n" );
+	printf( "  /metal_target <macosx|iphoneos|iphonesimulator> - Air target for the metallib (default macosx)\n" );
 	printf( "  /pdb <path> - Path to output debug files\n" );
 	printf( "input_file - Path to input HLSL file\n" );
 	printf( "output_file - Path to output binary file\n" );
@@ -344,6 +353,35 @@ bool ExtractCommandLineArguments( ProgramArguments& args, int argc, char* argv[]
 			if( i < argc )
 			{
 				g_metalToolsPath = argv[i];
+			}
+			else
+			{
+				return false;
+			}
+		}
+		else if( strcmp( argv[i], "/metal_target" ) == 0 )
+		{
+			// M3 §2.7: the SDK was hardcoded to macosx. Compile-global target for the whole
+			// compile-unit; the staging tool passes it once per metallib.
+			++i;
+			if( i < argc )
+			{
+				if( strcmp( argv[i], "iphoneos" ) == 0 )
+				{
+					g_metalTarget = MetalTarget::IPhoneOS;
+				}
+				else if( strcmp( argv[i], "iphonesimulator" ) == 0 )
+				{
+					g_metalTarget = MetalTarget::IPhoneSimulator;
+				}
+				else if( strcmp( argv[i], "macosx" ) == 0 )
+				{
+					g_metalTarget = MetalTarget::MacOSX;
+				}
+				else
+				{
+					return false;
+				}
 			}
 			else
 			{

@@ -1,0 +1,412 @@
+// Copyright © 2026 CCP ehf.
+#include "StdAfx.h"
+#if ( TRINITY_PLATFORM == TRINITY_VULKAN )
+
+#include "WithRenderContextFixture.h"
+#include "gtest/gtest-spi.h"
+#include <cstdlib>
+#include <filesystem>
+#include <string>
+
+// Set by the host (or by a test) to the directory the backend persists its
+// VkPipelineCache blob in. Null means the feature is off, which is the default
+// everywhere except an Android run and this test.
+extern const char* g_pipelineCacheDirectory;
+
+// Bytes of cache blob the most recent CreateDevice started the device from; 0 for a cold
+// start or a rejected one. This is the test's only oracle for "accepted", because
+// CreateDevice returns S_OK whether the blob was loaded, was rejected by the header
+// check, or was never found -- see the warm leg below.
+extern size_t g_pipelineCacheBytesLoaded;
+
+namespace
+{
+
+// Android has no writable /tmp and TMPDIR is usually unset, so
+// std::filesystem::temp_directory_path() is not portable here. When the host has
+// already pointed the backend at a directory (the app's files dir on Android), take
+// a subdirectory of that -- it is writable by construction. Fall back to the temp
+// directory on desktop, where it is real.
+std::filesystem::path TestCacheDirectory()
+{
+	const std::filesystem::path base = ( g_pipelineCacheDirectory && *g_pipelineCacheDirectory )
+		? std::filesystem::path( g_pipelineCacheDirectory )
+		: std::filesystem::temp_directory_path();
+	return base / "trinityal-pipelinecache-test";
+}
+
+ALResult CreatePositionOnlyVS( Tr2ShaderAL& shader, Tr2PrimaryRenderContextAL& renderContext )
+{
+	uint8_t bytecode[] = {
+#include INCLUDE_SHADER_CODE( PositionOnly.vs )
+	};
+
+	auto input = Tr2ShaderSignatureAL().Add( Tr2VertexDefinition::POSITION, 0, 0, Tr2ShaderPipelineInputAL::FLOAT, 3 );
+
+	return shader.Create( Tr2RenderContextEnum::VERTEX_SHADER, bytecode, input, "", renderContext );
+}
+
+ALResult CreateConstantColorPS( Tr2ShaderAL& shader, Tr2PrimaryRenderContextAL& renderContext )
+{
+	uint8_t bytecode[] = {
+#include INCLUDE_SHADER_CODE( ConstantColor.ps )
+	};
+
+	return shader.Create( Tr2RenderContextEnum::PIXEL_SHADER, bytecode, Tr2ShaderSignatureAL(), "", renderContext );
+}
+
+// One draw, which is what puts a pipeline in the cache. A device that is created and
+// destroyed without drawing writes a bare 32-byte header and would prove nothing.
+void DrawOneTriangle( Tr2PrimaryRenderContextAL& renderContext )
+{
+	Tr2ShaderAL vs;
+	ASSERT_HRESULT_SUCCEEDED( CreatePositionOnlyVS( vs, renderContext ) );
+
+	Tr2ShaderAL ps;
+	ASSERT_HRESULT_SUCCEEDED( CreateConstantColorPS( ps, renderContext ) );
+
+	Tr2ShaderAL shaders[] = { vs, ps };
+	Tr2ShaderProgramAL sp;
+	ASSERT_HRESULT_SUCCEEDED( sp.Create( shaders, 2, renderContext ) );
+
+	float vertices[] = {
+		-0.5f, -0.5f, 0.0f,
+		-0.5f,  0.5f, 0.0f,
+		 0.5f, -0.5f, 0.0f,
+	};
+	const uint32_t vbStride = 3 * sizeof( float );
+	Tr2BufferAL vb;
+	ASSERT_HRESULT_SUCCEEDED( vb.Create( vbStride, sizeof( vertices ) / vbStride, Tr2GpuUsage::VERTEX_BUFFER, Tr2CpuUsage::NONE, vertices, renderContext ) );
+
+	Tr2VertexDefinition definition;
+	definition.Add( Tr2VertexDefinition::FLOAT32_3, Tr2VertexDefinition::POSITION );
+
+	Tr2VertexLayoutAL vertexLayout;
+	ASSERT_HRESULT_SUCCEEDED( vertexLayout.Create( definition, renderContext ) );
+
+	ASSERT_HRESULT_SUCCEEDED( renderContext.BeginScene() );
+	ASSERT_HRESULT_SUCCEEDED( renderContext.Clear( Tr2RenderContextEnum::CLEARFLAGS_TARGET, 0xff000000, 1.0f ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext.SetStreamSource( 0, vb, 0, vbStride ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext.SetVertexLayout( vertexLayout ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext.SetShaderProgram( sp ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext.SetTopology( Tr2RenderContextEnum::TOP_TRIANGLES ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext.SetRenderState( Tr2RenderContextEnum::RS_ZENABLE, 0 ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext.SetRenderState( Tr2RenderContextEnum::RS_CULLMODE, Tr2RenderContextEnum::CULLMODE_NONE ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext.DrawPrimitive( 0, 1 ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext.EndScene() );
+	ASSERT_HRESULT_SUCCEEDED( renderContext.Present() );
+
+	// The draw has to have reached the GPU before the device is torn down, or the
+	// pipeline may never be built at all. Present already waits on the frame fence.
+	ASSERT_HRESULT_SUCCEEDED( renderContext.SetStreamSource( 0, Tr2BufferAL(), 0, 0 ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext.SetShaderProgram( Tr2ShaderProgramAL() ) );
+}
+
+void SetUpPresentParameters( Tr2PresentParametersAL& presentParameters )
+{
+	Tr2VideoAdapterInfo::GetAdapterDisplayMode( Tr2VideoAdapterInfo::DEFAULT_ADAPTER, presentParameters.mode );
+	presentParameters.mode.width = 640;
+	presentParameters.mode.height = 480;
+	presentParameters.backBufferCount = 1;
+	presentParameters.msaaType = 0;
+	presentParameters.msaaQuality = 0;
+	presentParameters.swapEffect = Tr2RenderContextEnum::SWAP_EFFECT_DISCARD;
+	presentParameters.outputWindow = WithWindow::GetWindowHandle();
+	presentParameters.windowed = true;
+	presentParameters.software = false;
+	presentParameters.presentInterval = Tr2RenderContextEnum::PRESENT_INTERVAL_IMMEDIATE;
+}
+
+// Points the backend at a directory for as long as the scope lives, and restores the
+// previous value on every way out of it -- including the way a fatal gtest assertion
+// takes, which is a bare `return` from the test body with no trailing statement reached.
+//
+// The guard owns the string because the global holds a `const char*` into it. With the
+// string a plain local of the test and the restore a trailing assignment, a failed ASSERT
+// destroys the string while the global still points at its heap buffer, and every later
+// CreateDevice and Destroy *in the whole process* does std::string() + fopen() on freed
+// memory -- a use-after-free that lands in whatever test runs next. Member destruction
+// runs after this destructor body, so the global is restored before the string dies.
+class ScopedPipelineCacheDirectory
+{
+public:
+	explicit ScopedPipelineCacheDirectory( const std::filesystem::path& directory )
+		: m_directory( directory.string() )
+		, m_previous( g_pipelineCacheDirectory )
+	{
+		g_pipelineCacheDirectory = m_directory.c_str();
+	}
+
+	~ScopedPipelineCacheDirectory()
+	{
+		g_pipelineCacheDirectory = m_previous;
+	}
+
+	ScopedPipelineCacheDirectory( const ScopedPipelineCacheDirectory& ) = delete;
+	ScopedPipelineCacheDirectory& operator=( const ScopedPipelineCacheDirectory& ) = delete;
+
+private:
+	const std::string m_directory;
+	const char* const m_previous;
+};
+
+// The env-var half of the same rule, and the same lifetime discipline: the string has to
+// outlive the variable that points into it. putenv-family calls differ on that between
+// platforms, so this uses setenv/unsetenv where they exist and _putenv_s on Windows, and
+// keeps its own copy either way.
+class ScopedPipelineCacheEnvironment
+{
+public:
+	explicit ScopedPipelineCacheEnvironment( const std::filesystem::path& directory )
+		: m_value( directory.string() )
+	{
+		Set( m_value.c_str() );
+	}
+
+	~ScopedPipelineCacheEnvironment()
+	{
+		Set( nullptr );
+	}
+
+	ScopedPipelineCacheEnvironment( const ScopedPipelineCacheEnvironment& ) = delete;
+	ScopedPipelineCacheEnvironment& operator=( const ScopedPipelineCacheEnvironment& ) = delete;
+
+private:
+	static void Set( const char* value )
+	{
+#if defined( _WIN32 )
+		// _putenv_s with an empty value removes the variable, which is what null means here.
+		_putenv_s( "TRINITY_PIPELINE_CACHE_DIR", value ? value : "" );
+#else
+		if( value )
+		{
+			setenv( "TRINITY_PIPELINE_CACHE_DIR", value, 1 );
+		}
+		else
+		{
+			unsetenv( "TRINITY_PIPELINE_CACHE_DIR" );
+		}
+#endif
+	}
+
+	const std::string m_value;
+};
+
+// Nulls the global for the duration, so the environment is the only thing left naming a
+// directory. Needed because the global is NOT null to begin with on the Android host -- it
+// points at the app's files directory -- so a test that only set the variable would be
+// asserting the global's behaviour there and the variable's on desktop.
+class ScopedNoPipelineCacheDirectory
+{
+public:
+	ScopedNoPipelineCacheDirectory()
+		: m_previous( g_pipelineCacheDirectory )
+	{
+		g_pipelineCacheDirectory = nullptr;
+	}
+
+	~ScopedNoPipelineCacheDirectory()
+	{
+		g_pipelineCacheDirectory = m_previous;
+	}
+
+	ScopedNoPipelineCacheDirectory( const ScopedNoPipelineCacheDirectory& ) = delete;
+	ScopedNoPipelineCacheDirectory& operator=( const ScopedNoPipelineCacheDirectory& ) = delete;
+
+private:
+	const char* const m_previous;
+};
+
+// A test body that leaves under a fatal assertion, which is the shape the guard exists
+// for and the one the round-trip test cannot check about itself. Takes no arguments
+// because EXPECT_FATAL_FAILURE's statement may not name the caller's locals.
+void FailFatallyUnderTheDirectoryGuard()
+{
+	// Captured before the guard is constructed: TestCacheDirectory() reads
+	// g_pipelineCacheDirectory itself, so asking it again inside the scope would answer
+	// with a path *under* the one the guard has just installed.
+	const std::string expected = TestCacheDirectory().string();
+	const ScopedPipelineCacheDirectory scopedDirectory( expected );
+	// The path, not merely non-null. On Android the global is already non-null before the
+	// guard runs -- the host points it at the app's files directory -- so a constructor
+	// that forgot to install m_directory would satisfy a null check there and this test
+	// would pass while proving nothing.
+	ASSERT_STREQ( g_pipelineCacheDirectory, expected.c_str() );
+	FAIL() << "deliberate: standing in for the cold CreateDevice failing";
+}
+
+}
+
+struct PipelineCache : public WithRenderContext
+{
+};
+
+// The feature this proves: a device that draws leaves a pipeline cache on disk, and the
+// next device on the same machine loads that blob instead of starting cold. It asserts the
+// round trip -- one file, more than a bare header, and accepted on the way back in -- not a
+// timing, because a timing assertion on a warm cache is a flake generator. The device
+// measurement lives in the milestone doc.
+TEST_F( PipelineCache, RoundTripsThroughDisk )
+{
+	if( !MachineHasGfxAdapter() )
+	{
+		GTEST_SKIP() << "Test Skipped as no adapters present on machine.";
+	}
+
+	const std::filesystem::path dir = TestCacheDirectory();
+	std::error_code ec;
+	std::filesystem::remove_all( dir, ec );
+	ASSERT_TRUE( std::filesystem::create_directories( dir, ec ) ) << "could not create " << dir.string();
+
+	const ScopedPipelineCacheDirectory scopedDirectory( dir );
+
+	// Declared before the device guard below, so it runs after it: the blob this test's
+	// last device writes has to land in the directory before the directory is removed.
+	ON_BLOCK_EXIT( [&] { std::filesystem::remove_all( dir, ec ); } );
+
+	// The device dies inside the directory guard's scope by construction, not because a
+	// trailing statement happens to sit in the right place -- Fix 2's whole lesson is that
+	// a cleanup step written as a trailing statement is skipped by a fatal assertion, and
+	// "destroy the device while this test's directory is still the configured one" is a
+	// cleanup step. On a scope guard it runs in the same order, for the same reason, on
+	// every way out of the body including the fatal one, so this device's cache write can
+	// never land wherever the host had pointed the backend before. Destroy() is idempotent,
+	// which is what makes the cold leg's own Destroy() below cost nothing here.
+	ON_BLOCK_EXIT( [&] { renderContext->Destroy(); } );
+
+	Tr2PresentParametersAL presentParameters;
+	SetUpPresentParameters( presentParameters );
+
+	// Cold: nothing on disk yet. Asserted, not assumed -- if this leg started warm off a
+	// blob a previous run left behind, the warm leg below proves nothing.
+	ASSERT_HRESULT_SUCCEEDED( renderContext->CreateDevice( 0, WithWindow::GetWindowHandle(), presentParameters ) );
+	// Fatal, per the comment above: a cold leg that started warm makes the warm leg's
+	// equality below pass while proving nothing, so there is nothing left worth running.
+	ASSERT_EQ( g_pipelineCacheBytesLoaded, 0u ) << "the cold leg started from a blob";
+	DrawOneTriangle( *renderContext );
+	renderContext->Destroy();
+
+	int files = 0;
+	std::filesystem::path cacheFile;
+	for( const auto& entry : std::filesystem::directory_iterator( dir ) )
+	{
+		++files;
+		cacheFile = entry.path();
+	}
+	ASSERT_EQ( files, 1 ) << "expected exactly one cache blob in " << dir.string();
+
+	// VkPipelineCacheHeaderVersionOne is 32 bytes. Anything at or below that is a header
+	// with no pipelines behind it, which is not a round trip.
+	const uintmax_t coldBytes = std::filesystem::file_size( cacheFile );
+	EXPECT_GT( coldBytes, 32u );
+
+	// Warm: the same directory, now populated. CreateDevice's return cannot be the oracle
+	// for this leg -- it is S_OK whether the blob was loaded, was discarded by the header
+	// check, was never found because the read path built a different filename than the
+	// write path, or was handed to a driver that refused it, because the whole cache block
+	// is non-fatal by design. So assert what the device actually started from, against the
+	// file the cold leg wrote.
+	//
+	// Exactly what that equality proves: the read path opened the same file the write path
+	// wrote, read all of it, its header matched this device, and vkCreatePipelineCache took
+	// the blob without failing. It does not prove that one pipeline was reused from it --
+	// vkCreatePipelineCache is allowed to accept a blob and then quietly ignore every entry
+	// (see the comment above PipelineCachePath in Tr2PrimaryRenderContextVulkan.cpp), and
+	// Vulkan exposes no in-API count of entries, hits or compiles to assert instead. Reuse
+	// has only one oracle, the device-side timing measurement in the milestone doc; this
+	// test's job is the round trip -- written, found, matched, accepted by the driver.
+	EXPECT_HRESULT_SUCCEEDED( renderContext->CreateDevice( 0, WithWindow::GetWindowHandle(), presentParameters ) );
+	EXPECT_EQ( (uintmax_t)g_pipelineCacheBytesLoaded, coldBytes )
+		<< "the warm device did not start from the " << coldBytes << "-byte blob the cold run wrote";
+
+	// No trailing Destroy() and no trailing remove_all: both are on the scope guards at the
+	// top of the body, which run in that order on every exit path.
+}
+
+// spec §6.1: the app shell asks for the pipeline cache through the environment, because it
+// has no C++ path into this extension module. Two claims in one body, because the second is
+// only meaningful next to the first.
+TEST_F( PipelineCache, TheEnvironmentNamesTheDirectoryAndTheGlobalStillWins )
+{
+	if( !MachineHasGfxAdapter() )
+	{
+		GTEST_SKIP() << "Test Skipped as no adapters present on machine.";
+	}
+
+	// Read before the global is nulled: on Android it is what makes this path writable.
+	const std::filesystem::path fromEnv = TestCacheDirectory() / "from-env";
+	const std::filesystem::path fromGlobal = TestCacheDirectory() / "from-global";
+	std::error_code ec;
+	std::filesystem::remove_all( fromEnv, ec );
+	std::filesystem::remove_all( fromGlobal, ec );
+	ASSERT_TRUE( std::filesystem::create_directories( fromEnv, ec ) ) << fromEnv.string();
+	ASSERT_TRUE( std::filesystem::create_directories( fromGlobal, ec ) ) << fromGlobal.string();
+
+	// Order matters on the way out, so both guards are declared before the device guard:
+	// the device's cache write happens in ITS destructor, which runs first, while the
+	// environment and the global still say where the blob goes. Then the directories go.
+	ON_BLOCK_EXIT( [&] { std::filesystem::remove_all( fromEnv, ec ); std::filesystem::remove_all( fromGlobal, ec ); } );
+
+	Tr2PresentParametersAL presentParameters;
+	SetUpPresentParameters( presentParameters );
+
+	auto blobsIn = []( const std::filesystem::path& dir ) {
+		int count = 0;
+		for( const auto& entry : std::filesystem::directory_iterator( dir ) )
+		{
+			if( entry.path().filename().string().rfind( "TrinityALVkPipelineCache-", 0 ) == 0 )
+			{
+				++count;
+			}
+		}
+		return count;
+	};
+
+	// (1) With no host choice, the variable is what the backend reads.
+	{
+		const ScopedNoPipelineCacheDirectory noGlobal;
+		const ScopedPipelineCacheEnvironment env( fromEnv );
+		ON_BLOCK_EXIT( [&] { renderContext->Destroy(); } );
+
+		ASSERT_HRESULT_SUCCEEDED( renderContext->CreateDevice( 0, WithWindow::GetWindowHandle(), presentParameters ) );
+		DrawOneTriangle( *renderContext );
+		renderContext->Destroy();
+
+		EXPECT_EQ( blobsIn( fromEnv ), 1 ) << "the environment named " << fromEnv.string()
+			<< " and nothing was written there";
+	}
+
+	// (2) With both set, the global wins -- which is what keeps
+	// ScopedPipelineCacheDirectory meaning what it says while a machine's environment
+	// happens to name somewhere else.
+	{
+		const ScopedPipelineCacheEnvironment env( fromEnv );
+		const ScopedPipelineCacheDirectory scopedDirectory( fromGlobal );
+		ON_BLOCK_EXIT( [&] { renderContext->Destroy(); } );
+
+		const int before = blobsIn( fromEnv );
+		ASSERT_HRESULT_SUCCEEDED( renderContext->CreateDevice( 0, WithWindow::GetWindowHandle(), presentParameters ) );
+		DrawOneTriangle( *renderContext );
+		renderContext->Destroy();
+
+		EXPECT_EQ( blobsIn( fromGlobal ), 1 ) << "the global named " << fromGlobal.string()
+			<< " and the blob did not land there";
+		EXPECT_EQ( blobsIn( fromEnv ), before ) << "the environment overrode the host's explicit choice";
+	}
+}
+
+// The failure path of the test above, which that test cannot exercise about itself: the
+// round trip only reaches its restore when everything succeeds, and the one thing the
+// backend reads on every CreateDevice and every Destroy in the process is exactly what
+// gets left behind. Needs no adapter -- it never creates a device.
+TEST( PipelineCacheDirectory, IsRestoredWhenAFatalAssertionLeavesTheScope )
+{
+	const char* const before = g_pipelineCacheDirectory;
+
+	EXPECT_FATAL_FAILURE( FailFatallyUnderTheDirectoryGuard(), "deliberate" );
+
+	EXPECT_EQ( g_pipelineCacheDirectory, before )
+		<< "the directory every later CreateDevice and Destroy reads was left pointing into a destroyed std::string";
+}
+
+#endif

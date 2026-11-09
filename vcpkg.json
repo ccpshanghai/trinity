@@ -2,8 +2,7 @@
   "dependencies": [
     {
       "name": "gtest",
-      "version>=": "1.16.0",
-      "host": true
+      "version>=": "1.16.0"
     },
     {
       "name": "carbon-core",
@@ -11,7 +10,7 @@
     },
     {
       "name": "carbon-imageio",
-      "version>=": "2.0.6#1"
+      "version>=": "2.0.6#4"
     },
     {
       "name": "libsquish",
@@ -27,7 +26,7 @@
     },
     {
       "name": "tbb",
-      "version>=": "2021.5.0#1"
+      "version>=": "2022.1.0#1"
     },
     {
       "name": "vulkan-headers",
@@ -95,18 +94,24 @@
         },
         {
           "name": "directx-dxc",
-          "version>=": "2023-03-01#2",
+          "version>=": "2026-02-20#2",
           "platform": "windows & x64"
+        },
+        {
+          "$comment": "Not a host dependency: the shader compiler IS a host tool, so it is built for the target triplet and needs dxc's headers and dylib in that same triplet. On osx it links dxcompiler for the Vulkan back end (dxc -spirv + IDxcUtils::CreateReflection) -- see shadercompiler/stdafx.h and EffectCompilerDX11.cpp. macOS has no d3d11.h or d3d12shader.h of its own either, so the overlay port's headers are what the whole compiler's Windows types come from, whatever back end is selected; WITH_DXC=OFF is not a macOS configuration. This row cannot reach an Android or iOS tree: those never set BUILD_SHADER_COMPILER, which is what asks for this feature.",
+          "name": "directx-dxc",
+          "version>=": "2026-02-20#2",
+          "platform": "osx"
         }
       ]
     },
     "dx11": {
       "description": "Create DirectX 11 targets",
-       "supports": "windows & x64",
+      "supports": "windows & x64",
       "dependencies": [
         {
           "name": "directx-dxc",
-          "version>=": "2023-03-01#2"
+          "version>=": "2026-02-20#2"
         },
         {
           "name": "fxc",
@@ -123,7 +128,11 @@
         {
           "name": "nvidia-streamline",
           "version>=": "2.8.0",
-          "features":["dlss-fg","dlss-sr","nis" ]
+          "features": [
+            "dlss-fg",
+            "dlss-sr",
+            "nis"
+          ]
         }
       ]
     },
@@ -133,7 +142,7 @@
       "dependencies": [
         {
           "name": "directx-dxc",
-          "version>=": "2023-03-01#2"
+          "version>=": "2026-02-20#2"
         },
         {
           "name": "fxc",
@@ -154,7 +163,12 @@
         {
           "name": "nvidia-streamline",
           "version>=": "2.8.0",
-          "features":["dlss-fg","dlss-sr","nis","reflex" ]
+          "features": [
+            "dlss-fg",
+            "dlss-sr",
+            "nis",
+            "reflex"
+          ]
         },
         {
           "name": "intel-xess",
@@ -164,11 +178,33 @@
     },
     "metal": {
       "description": "Create Metal targets",
-      "supports": "osx",
+      "supports": "osx | ios",
       "dependencies": [
         {
           "name": "amd-fidelityfx-fsr",
           "version>=": "1.0.2"
+        }
+      ]
+    },
+    "vulkan": {
+      "description": "Create Vulkan targets",
+      "$comment": "On Android vulkan-loader is not built: the loader is the OS's libvulkan (NDK link library, never a built port). This feature is the engine library's Vulkan closure and carries no host tool, because the engine library builds no shaders -- every shader that needs dxc belongs to the AL test suite. So dxc sits in the separate vulkan-tests feature, which the root CMakeLists requests only when BUILD_VULKAN and BUILD_TESTING are both on. It cannot instead stay here behind a platform expression: vcpkg evaluates a dependency's platform against the TARGET triplet, so \"the host is not osx\" is inexpressible -- an Android target would keep the host tool in its closure and resolve it against VCPKG_HOST_TRIPLET, which on the Mac is arm64-osx-release, and directx-dxc's supports excludes osx.",
+      "supports": "(windows & x64) | android",
+      "dependencies": [
+        {
+          "name": "vulkan-loader",
+          "platform": "windows",
+          "version>=": "1.4.304.1"
+        }
+      ]
+    },
+    "vulkan-tests": {
+      "description": "The Vulkan AL test suite's host tool: dxc compiles the test shaders to SPIR-V at build time",
+      "dependencies": [
+        {
+          "name": "directx-dxc",
+          "host": true,
+          "version>=": "2026-02-20#2"
         }
       ]
     },
@@ -188,10 +224,6 @@
       "version": "3.6.0.1"
     },
     {
-      "name": "openssl",
-      "version": "1.1.1k#8"
-    },
-    {
       "name": "libpng",
       "version": "1.6.47"
     },
@@ -202,6 +234,20 @@
     {
       "name": "libsquish",
       "version": "1.15#14"
+    },
+    {
+      "$comment": "vulkan-headers, vulkan-loader and vulkan-memory-allocator are a matched SDK set and must move together: the loader's generated VulkanLoaderConfig.cmake hard-references the Vulkan::Headers target of its own release, so pinning one and leaving the others on a bare version>= lets a baseline move break the configure in whichever direction the unpinned side drifts (observed once already, headers pinned / loader floating -- see docs/spikes/M4-phase2a-test-harness.md \u00c2\u00a74b).",
+      "name": "vulkan-headers",
+      "version": "1.4.304.1#1"
+    },
+    {
+      "name": "vulkan-loader",
+      "version": "1.4.304.1"
+    },
+    {
+      "name": "vulkan-memory-allocator",
+      "version": "3.3.0"
     }
-  ]
+  ],
+  "$comment-android": "The Android tree is configured only on POSIX hosts. carbon-blue depends on python3, and CPython cannot be cross-built from Windows (its pybuilddir step runs a POSIX-only sysconfig on the build python); a POSIX-built cache entry cannot be restored on Windows either, because vcpkg's ABI hash embeds the host (docs/spikes/artifacts/m6-python3-abi-probe-20260901.txt, four causes). So there are no android platform gates here: the engine's whole dependency set is in the Android closure, and Windows is not an Android build host (M6 second-half spec D3). amd-fidelityfx-cas and -cacao are header-only copies and the engine cannot compile without them (Tr2SSAO.cpp includes ffx_cacao.cpp) -- the first-half note that they never lift was mistaken about what they are."
 }

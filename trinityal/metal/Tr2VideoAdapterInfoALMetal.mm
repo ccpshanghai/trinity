@@ -6,8 +6,15 @@
 
 #include "Tr2VideoAdapterInfoALMetal.h"
 #include "Tr2AdapterStructures.h"
+#include <cmath>
+#include <TargetConditionals.h>
+#if TARGET_OS_OSX
 #import <CoreGraphics/CoreGraphics.h>
 #import <IOKit/graphics/IOGraphicsLib.h>
+#endif
+#if TARGET_OS_IPHONE
+#import <UIKit/UIScreen.h>
+#endif
 #import <Metal/Metal.h>
 
 
@@ -17,7 +24,11 @@ namespace
 {
 struct Display
 {
-	CGDirectDisplayID displayID;
+	// CGDirectDisplayID on macOS -- itself just a uint32_t -- so this stays a plain
+	// integer instead of pulling the type into scope unconditionally. iOS has no
+	// per-display id at all and leaves this 0 (see RefreshDisplays); GetAdapterMonitor
+	// already turns that into a null monitor handle without any platform split.
+	uint32_t displayID;
 	std::string name;
 	std::wstring description;
 	uint32_t vendorID;
@@ -26,6 +37,8 @@ struct Display
 	std::vector<Tr2DisplayModeInfo> modes;
 };
 std::vector<Display> s_displays;
+
+#if TARGET_OS_OSX
 
 void GetDisplayModes( CGDirectDisplayID display, std::vector<Tr2DisplayModeInfo>& modes )
 {
@@ -94,6 +107,36 @@ uint32_t GetEntryProperty( io_registry_entry_t entry, CFStringRef propertyName )
 	return value;
 }
 
+#endif // TARGET_OS_OSX
+
+#if TARGET_OS_IPHONE
+
+// The one screen's current pixel extent. UIScreen is iOS's screen descriptor --
+// the role CGDisplayCopyDisplayMode plays in the macOS branch. The AL is
+// deliberately window-less (spec D6: it receives a CAMetalLayer, never a view),
+// so there is no window scene to look the screen up through; mainScreen is
+// deprecated in iOS 26 in favor of that scene-based lookup, and the pragma
+// silences exactly that deprecation.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+void GetIOSScreenExtent( uint32_t& width, uint32_t& height )
+{
+	width = 0;
+	height = 0;
+	UIScreen* screen = [UIScreen mainScreen];
+	if( !screen )
+	{
+		return;
+	}
+	const CGRect bounds = screen.bounds;
+	const CGFloat nativeScale = screen.nativeScale; // pixels, not points -- CGDisplayModeGetPixelWidth parity
+	width = (uint32_t)lround( bounds.size.width * nativeScale );
+	height = (uint32_t)lround( bounds.size.height * nativeScale );
+}
+#pragma clang diagnostic pop
+
+#endif // TARGET_OS_IPHONE
+
 std::string ToString( NSString* string )
 {
 	NSData* data = [string dataUsingEncoding:NSASCIIStringEncoding allowLossyConversion:YES];
@@ -107,6 +150,8 @@ std::wstring ToWString( NSString* string )
 	int32_t length = int32_t( [data length] ) / sizeof( wchar_t );
 	return std::wstring( reinterpret_cast<const wchar_t*>( [data bytes] ), length );
 }
+
+#if TARGET_OS_OSX
 
 io_service_t IOServicePortFromCGDisplayID( CGDirectDisplayID displayID )
 {
@@ -157,6 +202,8 @@ io_service_t IOServicePortFromCGDisplayID( CGDirectDisplayID displayID )
 	return servicePort;
 }
 
+#endif // TARGET_OS_OSX
+
 void RefreshDisplays()
 {
 	s_displays.clear();
@@ -166,9 +213,28 @@ void RefreshDisplays()
 	{
 		return;
 	}
-	if( @available( macOS 10.15, * ) )
+	if( @available( macOS 10.15, iOS 13.0, * ) )
 	{
-		if( ![device supportsFamily:MTLGPUFamilyMac1] )
+		// Admission: any Mac- or Apple-family GPU. The old check asked for Mac1,
+		// which every iPhone answers no to — family detection, not capability,
+		// which is why this is a list rather than a threshold (spec D7). The
+		// iOS simulator's software GPU ("Apple iOS simulator GPU") reports only
+		// Apple1/Apple2, so the list reaches down to Apple1 or the suite would
+		// find zero adapters and skip every device-dependent test.
+		const MTLGPUFamily families[] = { MTLGPUFamilyMac2,   MTLGPUFamilyApple9, MTLGPUFamilyApple8,
+										  MTLGPUFamilyApple7, MTLGPUFamilyApple6, MTLGPUFamilyApple5,
+										  MTLGPUFamilyApple4, MTLGPUFamilyApple3, MTLGPUFamilyApple2,
+										  MTLGPUFamilyApple1 };
+		bool supported = false;
+		for( MTLGPUFamily family : families )
+		{
+			if( [device supportsFamily:family] )
+			{
+				supported = true;
+				break;
+			}
+		}
+		if( !supported )
 		{
 			return;
 		}
@@ -176,6 +242,7 @@ void RefreshDisplays()
 
 	std::wstring deviceDescription = ToWString( [device name] );
 
+#if TARGET_OS_OSX
 	uint32_t vendorID = 0;
 	uint32_t deviceID = 0;
 	if( uint64_t regID = [device respondsToSelector:@selector( registryID )] ? device.registryID : 0 )
@@ -193,8 +260,14 @@ void RefreshDisplays()
 			IOObjectRelease( entry );
 		}
 	}
+#else
+	// One GPU, Apple's, no PCI identity to look up. Zero is the honest value —
+	// the same convention PR #6 chose for the android monitor handle.
+	uint32_t vendorID = 0;
+	uint32_t deviceID = 0;
+#endif
 
-
+#if TARGET_OS_OSX
 	uint32_t displayCount;
 	CGGetOnlineDisplayList( 0, NULL, &displayCount );
 	std::unique_ptr<CGDirectDisplayID[]> displays( new CGDirectDisplayID[displayCount] );
@@ -242,6 +315,40 @@ void RefreshDisplays()
 			s_displays.push_back( display );
 		}
 	}
+#else
+	// iOS: no CoreGraphics/IOKit display enumeration exists to ask, and there is
+	// exactly one screen/GPU. The screen's pixel extent is asked of UIScreen the
+	// way the macOS branch asks CGDisplay, so the adapter reports a real display
+	// mode; the swapchain's actual extent still comes from the CAMetalLayer at
+	// present time (D6).
+	uint32_t screenWidth = 0;
+	uint32_t screenHeight = 0;
+	GetIOSScreenExtent( screenWidth, screenHeight );
+
+	Display display = {};
+	display.displayID = 0; // no per-display id on iOS; GetAdapterMonitor already
+							// turns this into a null monitor handle, matching PR #6's
+							// android convention for the same field.
+	display.description = deviceDescription; // the GPU name -- the same field every
+											   // macOS display carries too.
+	display.vendorID = vendorID; // 0, set above
+	display.deviceID = deviceID; // 0, set above
+	// display.name is left empty: iOS has no "display product name" API (that is
+	// what the macOS-only IOKit lookup above provides), so there is nothing honest
+	// to put there.
+
+	Tr2DisplayModeInfo mode = {};
+	mode.format = PIXEL_FORMAT_B8G8R8A8_UNORM;
+	mode.width = screenWidth;  // the one real screen's extent, queried above --
+	mode.height = screenHeight; // a reported mode of 0x0 would be a lie.
+	mode.refreshRateNumerator = 1;
+	mode.refreshRateDenominator = 1;
+	mode.scaling = DISPLAY_SCALING_UNSPECIFIED;
+	mode.scanlineOrdering = SCANLINE_ORDER_UNSPECIFIED;
+	display.modes.push_back( mode );
+
+	s_displays.push_back( display );
+#endif
 }
 }
 
@@ -270,7 +377,9 @@ ALResult Tr2VideoAdapterInfo::GetAdapterInfo( unsigned adapterIndex, Tr2AdapterI
 	CHECK_ADAPTER;
 
 	auto& display = s_displays[adapterIndex];
-	id<MTLDevice> device = CGDirectDisplayCopyCurrentMetalDevice( display.displayID );
+#if TARGET_OS_OSX
+	id<MTLDevice> device = CGDirectDisplayCopyCurrentMetalDevice( display.displayID ); // unused below; kept to match existing macOS behavior
+#endif
 
 	info.driver = "";
 	info.driverVersion = 0;
@@ -304,6 +413,7 @@ ALResult Tr2VideoAdapterInfo::GetAdapterDisplayMode( unsigned adapterIndex, Tr2D
 {
 	CHECK_ADAPTER;
 
+#if TARGET_OS_OSX
 	size_t w = 0;
 	size_t h = 0;
 
@@ -349,6 +459,20 @@ ALResult Tr2VideoAdapterInfo::GetAdapterDisplayMode( unsigned adapterIndex, Tr2D
 	mode.refreshRateNumerator = 1;
 	mode.scaling = DISPLAY_SCALING_UNSPECIFIED;
 	mode.scanlineOrdering = SCANLINE_ORDER_UNSPECIFIED;
+#else
+	// No CoreGraphics display-mode API on iOS; UIScreen is the one screen's
+	// descriptor. Queried live, like the macOS branch queries CGDisplay.
+	uint32_t width = 0;
+	uint32_t height = 0;
+	GetIOSScreenExtent( width, height );
+	mode.format = PIXEL_FORMAT_B8G8R8A8_UNORM;
+	mode.width = width;
+	mode.height = height;
+	mode.refreshRateDenominator = 1;
+	mode.refreshRateNumerator = 1;
+	mode.scaling = DISPLAY_SCALING_UNSPECIFIED;
+	mode.scanlineOrdering = SCANLINE_ORDER_UNSPECIFIED;
+#endif
 
 	return S_OK;
 }
@@ -385,7 +509,23 @@ ALResult Tr2VideoAdapterInfo::GetAdapterMaxTextureWidth( unsigned adapterIndex, 
 {
 	CHECK_ADAPTER;
 
-	maxWidth = 16384;
+	// Asked of the device, not written down. 16384 is Apple3-and-up (and every Mac family);
+	// Apple1 and Apple2 cap at 8192, and the iOS Simulator's software renderer is Apple2 -- so
+	// the constant that used to be here was a promise the simulator could not keep. It broke
+	// where a caller believed it: the cascaded shadow atlas is eight 2048 splits wide, which is
+	// exactly 16384, and Metal aborted the process on the descriptor.
+	//
+	// A family test rather than a device property because Metal exposes no maxTextureWidth; the
+	// numbers are the feature-set tables'.
+	maxWidth = 8192;
+	if( @available( macOS 10.15, iOS 13.0, * ) )
+	{
+		id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+		if( device && ( [device supportsFamily:MTLGPUFamilyApple3] || [device supportsFamily:MTLGPUFamilyMac2] ) )
+		{
+			maxWidth = 16384;
+		}
+	}
 	return S_OK;
 }
 
@@ -472,10 +612,17 @@ bool Tr2VideoAdapterInfo::AreAdaptersDifferent( unsigned adapter1, unsigned adap
 		return true;
 	}
 
+#if TARGET_OS_OSX
 	id<MTLDevice> device1 = CGDirectDisplayCopyCurrentMetalDevice( s_displays[adapter1].displayID );
 	id<MTLDevice> device2 = CGDirectDisplayCopyCurrentMetalDevice( s_displays[adapter2].displayID );
 
 	return device1 != device2;
+#else
+	// RefreshDisplays only ever records one display on iOS, so two distinct valid
+	// indices can't happen in practice; if they somehow did, report "different"
+	// rather than assume they're the same GPU.
+	return true;
+#endif
 }
 
 ALResult Tr2VideoAdapterInfo::RefreshData()

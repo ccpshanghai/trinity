@@ -58,6 +58,32 @@ public:
 	uint32_t GetSrvIndexInHeap( Tr2RenderContextEnum::ColorSpace colorSpace = Tr2RenderContextEnum::COLOR_SPACE_LINEAR ) const;
 	uint32_t GetUavIndexInHeap( uint32_t mip ) const;
 
+	// Debug-only: true once BcDecompress has actually run during this texture's
+	// Create() (spec D8). Lets tests tell "GetFormat reports BGRA8" apart from
+	// "the decompress path really executed" -- without this, a stub that
+	// hardcoded the fallback format without ever calling BcDecompress would
+	// still pass the format-only assertion. Reached from tests via
+	// TrinityALImpl_GetObject() -- a pre-existing production escape hatch (used
+	// elsewhere to reach real backend resources, e.g. GetMetalTexture() below),
+	// repurposed here as the channel for a test-only introspection point. No
+	// new production-facing API is added to Tr2TextureAL itself.
+	bool DebugDecompressedOnCreate() const
+	{
+		return m_debugDecompressedOnCreate;
+	}
+
+	// Debug-only: for each (slice, mip) processed by the decompression branch
+	// of Create(), the m_sysMem of the Tr2SubresourceData source it actually
+	// consumed, in iteration order. Exists to prove per-slice content isn't
+	// corrupted by an indexing mistake (the initialData[mip]-vs-[index] defect
+	// D7's widened trigger made reachable for arrays/cubes) -- MapForReading
+	// cannot substitute for this because it only ever supports face 0
+	// (CCP_ASSERT( region.m_startFace == 0 && region.m_endFace == 1 )).
+	const std::vector<const void*>& DebugDecompressedSources() const
+	{
+		return m_debugDecompressedSources;
+	}
+
 private:
 	Tr2BitmapDimensions m_desc;
 	Tr2MsaaDesc m_msaa;
@@ -91,6 +117,8 @@ private:
 	std::string m_name;
 	Tr2MemoryCounterAL m_memory;
 	bool m_wrappedTexture;
+	bool m_debugDecompressedOnCreate;
+	std::vector<const void*> m_debugDecompressedSources;
 	friend class ::Tr2RenderContextAL;
 };
 }

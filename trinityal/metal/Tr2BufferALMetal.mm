@@ -65,8 +65,12 @@ ALResult Tr2BufferAL::Create( const Tr2BufferDescriptionAL& desc,
 	m_metalContext = renderContext.GetMetalContext();
 	auto bufferSizeInBytes = desc.count * stride;
 
-	// Default to managed storage.
-	m_resourceMode = MTLResourceStorageModeManaged;
+	// Default to the device's upload storage mode (spec D7: Managed on macOS,
+	// Shared on iOS). When m_mtlBuffer itself ends up CPU-write-mapped (the
+	// NON_SYNCRONIZED_WRITE + WRITE_OFTEN path in MapForWriting below), the
+	// sync happens in UnmapForWriting's IndicateBufferModified call, which is
+	// itself guarded by storage mode (MetalContext.mm).
+	m_resourceMode = MetalDefaultUploadStorageMode( m_metalContext->GetDevice() );
 
 	if( !HasFlag( desc.cpuUsage, Tr2CpuUsage::WRITE_OFTEN ) &&
 		!HasFlag( desc.cpuUsage, Tr2CpuUsage::NON_SYNCRONIZED_WRITE ) )
@@ -149,8 +153,10 @@ ALResult
 
 	MetalContext* metalContext = renderContext.GetMetalContext();
 
-	m_mappedBuffer =
-		metalContext->CreateMetalBuffer( renderContext.GetMetalWorkQueue(), size, MTLResourceStorageModeManaged, nil );
+	// GPU-written only: filled by the blit below, then read back to the CPU via
+	// ReadBackBufferToCPU. No CPU write ever happens, so no didModifyRange is needed.
+	m_mappedBuffer = metalContext->CreateMetalBuffer(
+		renderContext.GetMetalWorkQueue(), size, MetalDefaultUploadStorageMode( metalContext->GetDevice() ), nil );
 	renderContext.GetMetalWorkQueue()->CopyBufferToBuffer( m_mappedBuffer, 0, m_mtlBuffer, offset, size );
 	renderContext.GetMetalWorkQueue()->ReadBackBufferToCPU( m_mappedBuffer, true );
 
@@ -219,8 +225,12 @@ ALResult Tr2BufferAL::MapForWriting( void*& data, Tr2RenderContextAL& renderCont
 				return S_OK;
 			}
 		}
-		m_mappedBuffer = m_metalContext->CreateMetalBuffer(
-			renderContext.GetMetalWorkQueue(), m_mtlBuffer.length, MTLResourceStorageModeManaged, nil );
+		// CPU-write-mapped staging buffer; synced by UnmapForWriting's
+		// IndicateBufferModified call below, guarded by storage mode there.
+		m_mappedBuffer = m_metalContext->CreateMetalBuffer( renderContext.GetMetalWorkQueue(),
+															 m_mtlBuffer.length,
+															 MetalDefaultUploadStorageMode( m_metalContext->GetDevice() ),
+															 nil );
 		if( !m_name.empty() )
 		{
 			m_mappedBuffer.label = [NSString stringWithUTF8String:m_name.c_str()];
@@ -231,8 +241,12 @@ ALResult Tr2BufferAL::MapForWriting( void*& data, Tr2RenderContextAL& renderCont
 	}
 	else
 	{
-		m_mappedBuffer = m_metalContext->CreateMetalBuffer(
-			renderContext.GetMetalWorkQueue(), m_mtlBuffer.length, MTLResourceStorageModeManaged, nil );
+		// CPU-write-mapped staging buffer; synced by UnmapForWriting's
+		// IndicateBufferModified call below, guarded by storage mode there.
+		m_mappedBuffer = m_metalContext->CreateMetalBuffer( renderContext.GetMetalWorkQueue(),
+															 m_mtlBuffer.length,
+															 MetalDefaultUploadStorageMode( m_metalContext->GetDevice() ),
+															 nil );
 		m_memory.Grow( m_mtlBuffer.length );
 	}
 	data = m_mappedBuffer.contents;
@@ -302,8 +316,11 @@ ALResult
 	}
 	else if( HasFlag( m_desc.cpuUsage, Tr2CpuUsage::WRITE ) )
 	{
+		// Write-once via newBufferWithBytes (data != nullptr): the initial contents
+		// are synced by the allocator itself, this staging buffer is blitted into
+		// m_mtlBuffer below and destroyed right after, so no didModifyRange is needed.
 		id<MTLBuffer> staging = m_metalContext->CreateMetalBuffer(
-			renderContext.GetMetalWorkQueue(), size, MTLResourceStorageModeManaged, data );
+			renderContext.GetMetalWorkQueue(), size, MetalDefaultUploadStorageMode( m_metalContext->GetDevice() ), data );
 		renderContext.GetMetalWorkQueue()->CopyBufferToBuffer( m_mtlBuffer, offset, staging, 0, size );
 		m_metalContext->DestroyMetalBuffer( staging );
 	}

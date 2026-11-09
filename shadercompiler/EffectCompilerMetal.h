@@ -4,6 +4,17 @@
 
 #include "EffectCompilerBase.h"
 
+// M3 §2.7: the Air target the metallib is compiled for. The whole effect compile-unit is
+// built for one target, so it is a compile-global set once from the /metal_target flag.
+enum class MetalTarget
+{
+	MacOSX,
+	IPhoneOS,
+	IPhoneSimulator,
+};
+
+extern MetalTarget g_metalTarget;
+
 struct MetalRegister
 {
 	enum Enum : char

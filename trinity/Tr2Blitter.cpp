@@ -2,6 +2,8 @@
 
 #include "StdAfx.h"
 #include "Tr2Blitter.h"
+#include <set>
+#include <map>
 #include "Shader/Tr2Effect.h"
 #include "Shader/Tr2Shader.h"
 #include "Tr2TextureReference.h"
@@ -107,18 +109,67 @@ bool Tr2Blitter::DrawHelper( Tr2RenderContext& renderContext, Tr2Shader* shader,
 		return false;
 	}
 
+	// Each early return below used to be silent, and a silent false here is a frame with a
+	// hole in it and no line in any log: the blitter is how a scene's post-processed result
+	// reaches the back buffer, so a blit that declines is a black screen. Once per reason,
+	// because a reason that holds for one frame holds for every frame after it.
 	if( m_screenVertexDecl == -1 || !m_vertexBuffer.IsValid() )
 	{
+		static bool logged = false;
+		if( !logged )
+		{
+			logged = true;
+			CCP_LOGERR( "Tr2Blitter: draw skipped, no screen quad (vertexDecl %d, vertex buffer %s)",
+						m_screenVertexDecl, m_vertexBuffer.IsValid() ? "valid" : "INVALID" );
+		}
 		return false;
 	}
 
+	// Skips are logged on the transitions, per material: once when a material starts being
+	// skipped and once when it draws again, with a count of the frames in between. A single
+	// log-once said "something" and hid which blit it was; a per-material log-once said which
+	// but not whether it ever recovered -- and "skipped for one frame while its effect was
+	// still loading" and "skipped for the whole run" are the benign and the fatal reading of
+	// the same line.
+	static std::map<const Tr2Material*, uint32_t> skipping;
 	if( !shader )
 	{
+		auto inserted = skipping.emplace( material, 0u );
+		if( inserted.second )
+		{
+			const Tr2Effect* effect = dynamic_cast<const Tr2Effect*>( material );
+			CCP_LOGERR( "Tr2Blitter: draw skipped, the material has no shader state: %s (%s)",
+						effect && effect->GetEffectPathName() ? effect->GetEffectPathName() : "(not a Tr2Effect)",
+						effect ? effect->DescribeShaderResolution() : "-" );
+		}
+		++inserted.first->second;
 		return false;
+	}
+	{
+		auto found = skipping.find( material );
+		if( found != skipping.end() )
+		{
+			const Tr2Effect* effect = dynamic_cast<const Tr2Effect*>( material );
+			CCP_LOG( "Tr2Blitter: draws resumed after %u skipped: %s", found->second,
+					 effect && effect->GetEffectPathName() ? effect->GetEffectPathName() : "(not a Tr2Effect)" );
+			skipping.erase( found );
+		}
 	}
 
 	Tr2ScreenVertex* quad = NULL;
-	CR_RETURN_VAL( m_vertexBuffer.MapForWriting( quad, renderContext ), false );
+	{
+		auto hr = m_vertexBuffer.MapForWriting( quad, renderContext );
+		if( FAILED( hr ) )
+		{
+			static bool logged = false;
+			if( !logged )
+			{
+				logged = true;
+				CCP_LOGERR( "Tr2Blitter: draw skipped, MapForWriting on the screen quad failed with HRESULT=0x%X", hr.GetResult() );
+			}
+			return false;
+		}
+	}
 
 	if( isCameraSpace )
 	{
@@ -147,6 +198,15 @@ bool Tr2Blitter::DrawHelper( Tr2RenderContext& renderContext, Tr2Shader* shader,
 	}
 
 	unsigned int passCount = shader->GetPassCount( 0 );
+	if( passCount == 0 )
+	{
+		static bool logged = false;
+		if( !logged )
+		{
+			logged = true;
+			CCP_LOGERR( "Tr2Blitter: draw skipped, the shader's technique 0 has no passes" );
+		}
+	}
 
 	for( unsigned int passIx = 0; passIx < passCount; ++passIx )
 	{

@@ -2,7 +2,13 @@
 
 #pragma once
 
-#if TRINITY_PLATFORM == TRINITY_METAL
+#include <TargetConditionals.h>
+// MetalFX ships no iOS Simulator framework (present for macOS and real iOS/tvOS
+// devices, absent from every *Simulator*.sdk), so this whole technique is compiled
+// out there. Tr2UpscalingALMetal.mm's CreateUpscalingTechnique gates its METALFX
+// case the same way, and IsAvailable() already made this a runtime "unsupported"
+// rather than a guarantee, so nothing here changes what a working platform sees.
+#if TRINITY_PLATFORM == TRINITY_METAL && !TARGET_OS_SIMULATOR
 #include "include/upscaling/Tr2UpscalingAL.h"
 #include <MetalFx/MetalFX.h>
 

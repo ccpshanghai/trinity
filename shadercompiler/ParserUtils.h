@@ -53,9 +53,31 @@ extern bool IsUniformInputArgument( ASTNode* argument );
 
 extern void AssignRegisters( ASTNode* root, int32_t stage, const std::vector<GlobalInputElement>& globalInput = {} );
 
+// Names the declaration ForceVulkanRegisterSpaces had to refuse.
+struct VulkanRegisterSpaceReject
+{
+	InlineString name;
+	int space = 0;
+	char registerType = '\0';
+};
+
+// Puts every t/s/u declaration on the register space the Vulkan binding ABI reads as
+// its descriptor set. Returns false, filling in the reject, for a declaration whose
+// space cannot be reached; the caller reports it.
+extern bool ForceVulkanRegisterSpaces( ASTNode* root, VulkanRegisterSpaceReject& reject );
+
 extern void SortProgramNodes( ASTNode* root );
 
 extern void CreateGlobalsCB( ParserState& state );
+
+// Writes an HLSL initialiser's value into a constant laid out as D3D lays constant buffers out:
+// a scalar or vector in place, a one-dimensional array one element per 16 bytes (D3D's array
+// stride; the last element unpadded), and nothing at all for a shape EvaluateInitializer cannot
+// fold -- the bytes stay as they were. Never fails the compile: a default that cannot be
+// evaluated is what every effect reflected through dxc had before, and a zero there is the
+// documented fallback. Returns whether anything was written. `elements` is the reflected array
+// count (0 for a non-array), `outSize` the constant's reflected size in bytes.
+extern bool FillDefaultValueFromInitializer( ParserState& state, ASTNode* initializer, const Type& type, void* out, size_t outSize, uint32_t elements );
 
 
 ASTNode* NewStruct( ParserState& state, const InlineString& name = InlineString() );

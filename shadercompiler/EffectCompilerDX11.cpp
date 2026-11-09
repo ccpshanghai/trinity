@@ -1,7 +1,6 @@
 // Copyright © 2023 CCP ehf.
 
 #include "stdafx.h"
-#if _WIN32
 #include "EffectCompilerDX11.h"
 #include "CompileMessageQueue.h"
 #include "StringTable.h"
@@ -23,6 +22,7 @@
 #include "OutputHLSL.h"
 
 #include "DxReflection.h"
+#include "trinityal/vulkan/Tr2ShaderBindingABIVulkan.h"
 #include <WorkQueue.h>
 
 #define DXIL_FOURCC( ch0, ch1, ch2, ch3 ) (                        \
@@ -55,6 +55,59 @@ extern unsigned g_optimizationLevel;
 extern bool g_avoidFlowControl;
 extern bool g_generatePDB;
 extern bool g_skipOptimization;
+
+namespace
+{
+struct VulkanBindingShiftArguments
+{
+	std::wstring b;
+	std::wstring t;
+	std::wstring s;
+	std::wstring u;
+};
+
+const char* VulkanBindingStageName( InputStageType stage )
+{
+	switch( stage )
+	{
+	case VERTEX_STAGE:
+		return "vertex";
+	case PIXEL_STAGE:
+		return "pixel";
+	case COMPUTE_STAGE:
+		return "compute";
+	case GEOMETRY_STAGE:
+		return "geometry";
+	case HULL_STAGE:
+		return "hull";
+	case DOMAIN_STAGE:
+		return "domain";
+	default:
+		return "unknown";
+	}
+}
+
+bool TryGetVulkanBindingShiftArguments( VulkanBindingShiftArguments& shifts, InputStageType stage )
+{
+	using namespace Tr2VulkanBindingABI;
+
+	if( stage != VERTEX_STAGE && stage != PIXEL_STAGE && stage != COMPUTE_STAGE )
+	{
+		// AddMessage sizes its own buffer, so the 160-byte stack array can go -- and it
+		// was the only sprintf_s on this path, which matters because WinAdapter.h maps
+		// sprintf_s onto snprintf, whose second parameter is a size, not the format.
+		g_messages.AddMessage( "\\memory(0): error X0000: SPIR-V binding ABI does not support the %s shader stage", VulkanBindingStageName( stage ) );
+		return false;
+	}
+
+	uint32_t stageBase = uint32_t( stage ) * REGISTER_SIZE;
+	shifts.b = std::to_wstring( REGISTER_CLASS_CONSTANT_BUFFER * CLASS_BLOCK + stageBase );
+	shifts.t = std::to_wstring( REGISTER_CLASS_SRV * CLASS_BLOCK + stageBase );
+	shifts.s = std::to_wstring( REGISTER_CLASS_SAMPLER * CLASS_BLOCK + stageBase );
+	shifts.u = std::to_wstring( REGISTER_CLASS_UAV * CLASS_BLOCK + stageBase );
+	return true;
+}
+}
 
 
 static bool FindParameterBySemantics( ASTNode* node, const char** semantics, std::vector<Symbol*>* path, bool outParameter = false )
@@ -184,6 +237,8 @@ static void PatchSemantics( InputStageType shaderStage, ASTNode* callNode )
 	std::vector<Symbol*> targetPath;
 	switch( shaderStage )
 	{
+	default:
+		break; // only the vertex and pixel stages have semantics to patch
 	case VERTEX_STAGE: {
 		const char* semantics[] = { "position", nullptr };
 		if( FindOutputBySemantics( functionHeader, semantics, &targetPath ) )
@@ -473,15 +528,16 @@ bool EffectCompilerDX11::Create()
 	return SUCCEEDED( ::DxcCreateInstance( CLSID_DxcUtils, IID_PPV_ARGS( &m_dxilUtils ) ) );
 }
 
-bool MatchShaderInputOutput( ID3D11ShaderReflection* output, ID3D11ShaderReflection* input )
+template <typename Reflection, typename ShaderDesc, typename SignatureParamDesc>
+bool MatchShaderInputOutputImpl( Reflection* output, Reflection* input )
 {
-	D3D11_SHADER_DESC vsReflDesc;
+	ShaderDesc vsReflDesc;
 	if( FAILED( output->GetDesc( &vsReflDesc ) ) )
 	{
 		g_messages.AddMessage( "\\memory(0): error X0000: Could not get shader reflection description" );
 		return false;
 	}
-	D3D11_SHADER_DESC psReflDesc;
+	ShaderDesc psReflDesc;
 	if( FAILED( input->GetDesc( &psReflDesc ) ) )
 	{
 		g_messages.AddMessage( "\\memory(0): error X0000: Could not get shader reflection description" );
@@ -490,7 +546,7 @@ bool MatchShaderInputOutput( ID3D11ShaderReflection* output, ID3D11ShaderReflect
 
 	for( unsigned k = 0; k < psReflDesc.InputParameters; ++k )
 	{
-		D3D11_SIGNATURE_PARAMETER_DESC psDesc;
+		SignatureParamDesc psDesc;
 		if( FAILED( input->GetInputParameterDesc( k, &psDesc ) ) )
 		{
 			g_messages.AddMessage( "\\memory(0): error X0000: Could not get shader input parameter description" );
@@ -503,7 +559,7 @@ bool MatchShaderInputOutput( ID3D11ShaderReflection* output, ID3D11ShaderReflect
 		bool found = false;
 		for( unsigned n = 0; n < vsReflDesc.OutputParameters; ++n )
 		{
-			D3D11_SIGNATURE_PARAMETER_DESC vsDesc;
+			SignatureParamDesc vsDesc;
 			if( FAILED( output->GetOutputParameterDesc( n, &vsDesc ) ) )
 			{
 				g_messages.AddMessage( "\\memory(0): error X0000: Could not get shader output parameter description" );
@@ -527,6 +583,22 @@ bool MatchShaderInputOutput( ID3D11ShaderReflection* output, ID3D11ShaderReflect
 		}
 	}
 	return true;
+}
+
+#if _WIN32
+// d3d11shader.h is the Windows SDK's; dxc's DirectX-Headers carry d3d12shader.h and no
+// sibling for DX11. So everything ID3D11* in this file is Windows-only, which costs the
+// macOS build nothing: the DX11 and DX12 back ends are Windows-only anyway, and the
+// SPIR-V path reflects through ID3D12ShaderReflection.
+bool MatchShaderInputOutput( ID3D11ShaderReflection* output, ID3D11ShaderReflection* input )
+{
+	return MatchShaderInputOutputImpl<ID3D11ShaderReflection, D3D11_SHADER_DESC, D3D11_SIGNATURE_PARAMETER_DESC>( output, input );
+}
+#endif
+
+bool MatchShaderInputOutput( ID3D12ShaderReflection* output, ID3D12ShaderReflection* input )
+{
+	return MatchShaderInputOutputImpl<ID3D12ShaderReflection, D3D12_SHADER_DESC, D3D12_SIGNATURE_PARAMETER_DESC>( output, input );
 }
 
 std::string PrintPrettyCode( const char* code, const char* indent )
@@ -554,7 +626,8 @@ std::string PrintPrettyCode( const char* code, const char* indent )
 	return os.str();
 }
 
-void PrintShaderOutListing( YamlOutput& listing, ID3DBlob* effectData, ID3D11ShaderReflection* reflection )
+template <typename Reflection, typename ShaderDesc>
+void PrintShaderOutListingImpl( YamlOutput& listing, ID3DBlob* effectData, Reflection* reflection )
 {
 	ZoneScoped;
 
@@ -563,16 +636,38 @@ void PrintShaderOutListing( YamlOutput& listing, ID3DBlob* effectData, ID3D11Sha
 		return;
 	}
 
-	CComPtr<ID3DBlob> disassembly;
-	if( SUCCEEDED( D3DDisassemble( effectData->GetBufferPointer(), effectData->GetBufferSize(), D3D_DISASM_ENABLE_DEFAULT_VALUE_PRINTS, nullptr, &disassembly ) ) )
+#if _WIN32
+	if( effectData )
 	{
-		listing.literal( "asm" ).literal( reinterpret_cast<const char*>( disassembly->GetBufferPointer() ) );
+		CComPtr<ID3DBlob> disassembly;
+		if( SUCCEEDED( D3DDisassemble( effectData->GetBufferPointer(), effectData->GetBufferSize(), D3D_DISASM_ENABLE_DEFAULT_VALUE_PRINTS, nullptr, &disassembly ) ) )
+		{
+			listing.literal( "asm" ).literal( reinterpret_cast<const char*>( disassembly->GetBufferPointer() ) );
+		}
 	}
-	D3D11_SHADER_DESC desc;
+#else
+	// D3DDisassemble is d3dcompiler's. The SPIR-V path passes effectData == nullptr
+	// anyway -- there is no DXBC to disassemble -- so the listing loses nothing.
+	(void)effectData;
+#endif
+
+	ShaderDesc desc;
 	if( reflection && SUCCEEDED( reflection->GetDesc( &desc ) ) )
 	{
 		listing.literal( "stats" ).dict().literal( "Resources" ).dict().literal( "constantBuffers" ).literal( desc.ConstantBuffers ).literal( "boundResources" ).literal( desc.BoundResources ).literal( "inputParameters" ).literal( desc.InputParameters ).literal( "outputParameters" ).literal( desc.OutputParameters ).literal( "tempRegisterCount" ).literal( desc.TempRegisterCount ).literal( "tempArrayCount" ).literal( desc.TempArrayCount ).end().literal( "Instructions" ).dict().literal( "instructionCount" ).literal( desc.InstructionCount ).literal( "defCount" ).literal( desc.DefCount ).literal( "textureNormalInstructions" ).literal( desc.TextureNormalInstructions ).literal( "textureLoadInstructions" ).literal( desc.TextureLoadInstructions ).literal( "textureCompInstructions" ).literal( desc.TextureCompInstructions ).literal( "textureBiasInstructions" ).literal( desc.TextureBiasInstructions ).literal( "textureGradientInstructions" ).literal( desc.TextureGradientInstructions ).literal( "floatInstructionCount" ).literal( desc.FloatInstructionCount ).literal( "intInstructionCount" ).literal( desc.IntInstructionCount ).literal( "uintInstructionCount" ).literal( desc.UintInstructionCount ).literal( "staticFlowControlCount" ).literal( desc.StaticFlowControlCount ).literal( "dynamicFlowControlCount" ).literal( desc.DynamicFlowControlCount ).literal( "macroInstructionCount" ).literal( desc.MacroInstructionCount ).literal( "arrayInstructionCount" ).literal( desc.ArrayInstructionCount ).literal( "cutInstructionCount" ).literal( desc.CutInstructionCount ).literal( "emitInstructionCount" ).literal( desc.EmitInstructionCount ).literal( "cBarrierInstructions" ).literal( desc.cBarrierInstructions ).literal( "cInterlockedInstructions" ).literal( desc.cInterlockedInstructions ).literal( "cTextureStoreInstructions" ).literal( desc.cTextureStoreInstructions ).end().literal( "Misc" ).dict().literal( "GSOutputTopology" ).literal( desc.GSOutputTopology ).literal( "inputPrimitive" ).literal( desc.InputPrimitive ).literal( "GSMaxOutputVertexCount" ).literal( desc.GSMaxOutputVertexCount ).literal( "patchConstantParameters" ).literal( desc.PatchConstantParameters ).literal( "cGSInstanceCount" ).literal( desc.cGSInstanceCount ).literal( "HSOutputPrimitive" ).literal( desc.HSOutputPrimitive ).literal( "HSPartitioning" ).literal( desc.HSPartitioning ).literal( "tessellatorDomain" ).literal( desc.TessellatorDomain ).end().end();
 	}
+}
+
+#if _WIN32
+void PrintShaderOutListing( YamlOutput& listing, ID3DBlob* effectData, ID3D11ShaderReflection* reflection )
+{
+	PrintShaderOutListingImpl<ID3D11ShaderReflection, D3D11_SHADER_DESC>( listing, effectData, reflection );
+}
+#endif
+
+void PrintShaderOutListing( YamlOutput& listing, ID3DBlob* effectData, ID3D12ShaderReflection* reflection )
+{
+	PrintShaderOutListingImpl<ID3D12ShaderReflection, D3D12_SHADER_DESC>( listing, effectData, reflection );
 }
 
 void PrintAnnotations( YamlOutput& listing, const std::map<StringReference, Annotation>& annotations )
@@ -937,9 +1032,11 @@ bool ParseShaderName( const InlineString& name, InputStageType& type )
 
 bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength, const std::vector<Macro>& defines, EffectData& result, IWorkQueue* workQueue )
 {
-	return CompileEffect( source, sourceLength, defines, result, { nullptr, false }, workQueue );
+	return CompileEffect( source, sourceLength, defines, result, { nullptr, false, false }, workQueue );
 }
 
+#if _WIN32
+// The D3DCOMPILE_* flags are d3dcompiler's, and only D3DCompile consumes them.
 DWORD GetOptimizationLevel()
 {
 	switch( g_optimizationLevel )
@@ -954,6 +1051,7 @@ DWORD GetOptimizationLevel()
 		return D3DCOMPILE_OPTIMIZATION_LEVEL3;
 	}
 }
+#endif
 
 RegisterInputDescription GetRegisterInputDescription( const Type& type, const RegisterSpecifier& reg )
 {
@@ -1230,6 +1328,18 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 		return false;
 	}
 
+#if !_WIN32
+	// This file is compiled on macOS for its SPIR-V branch alone (EffectCompilerVulkan).
+	// D3DCompile, D3DStripShader, D3DReflect and D3DDisassemble are d3dcompiler.dll's and
+	// have no macOS equivalent, so a DX11 or DX12 request here has to say so rather than
+	// walk into a half-guarded body and produce an empty effect.
+	if( !compileOptions.spirv )
+	{
+		g_messages.AddMessage( "\\memory(0): error X0000: DX11/DX12 compilation needs Windows" );
+		return false;
+	}
+#endif
+
 	YamlListing listing;
 	listing.dict();
 	listing.literal( "permutation" ).dict().literal( "platform" ).literal( "DX11" ).literal( "id" ).literal( "000" ).literal( "defines" ).dict();
@@ -1261,7 +1371,10 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 			}
 			listing.list();
 			Pass outPass;
+#if _WIN32
 			CComPtr<ID3D11ShaderReflection> reflections[6];
+#endif
+			CComPtr<ID3D12ShaderReflection> reflectionsDx12[6];
 			for( size_t stateIx = 0; stateIx < passNode->GetChildrenCount(); ++stateIx )
 			{
 				if( passNode->GetChild( stateIx )->GetNodeType() == NT_STATE_ASSIGNMENT )
@@ -1280,12 +1393,16 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 						}
 						switch( stateCode )
 						{
-						case -1:
-						case -2:
-						case -3:
-						case -4:
-						case -5:
-						case -6:
+						// g_renderStateNames stores these as `unsigned`, so the labels are
+						// 0xFFFFFFFF down to 0xFFFFFFFA. Spelled as a conversion because a
+						// negative label on an unsigned switch is a narrowing error for
+						// clang, where MSVC converts it silently -- same values either way.
+						case DWORD( -1 ):
+						case DWORD( -2 ):
+						case DWORD( -3 ):
+						case DWORD( -4 ):
+						case DWORD( -5 ):
+						case DWORD( -6 ):
 							if( value != 0 )
 							{
 								state.ShowMessage( passNode->GetChild( stateIx )->GetLocation(), EC_INVALID_STATE_VALUE, name.c_str() );
@@ -1332,7 +1449,11 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 					}
 				}
 				ID3D10Blob* effectData = nullptr;
+				IDxcBlob* spirvEffectData = nullptr;
+				IDxcBlob* spirvReflectionData = nullptr;
+#if _WIN32
 				CComPtr<ID3D10Blob> errors = nullptr;
+#endif
 
 
 				if( shaderNode->GetChild( 1 )->GetSymbol() == nullptr )
@@ -1352,6 +1473,18 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 				{
 					CreateGlobalsCB( state );
 					AssignRegisters( state.GetTree(), stage.type );
+					if( compileOptions.spirv )
+					{
+						VulkanRegisterSpaceReject reject;
+						if( !ForceVulkanRegisterSpaces( state.GetTree(), reject ) )
+						{
+							// AddMessage sizes its own buffer, so the symbol name needs no cap here.
+							g_messages.AddMessage(
+								"\\memory(0): error X0000: '%.*s' was assigned register space %d, which the SPIR-V binding ABI cannot place: it has one descriptor set for constant buffers and one for every '%c' register. A stage may declare at most one resource array per register class, because each array declaration takes a register space of its own.",
+								int( reject.name.end - reject.name.start ), reject.name.start, reject.space, reject.registerType );
+							return false;
+						}
+					}
 				}
 
 				CompilerInputStream os( state, ShadingLanguage::HLSL );
@@ -1364,6 +1497,8 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 				{
 				case PATCH_ERROR:
 					return false;
+				default:
+					break; // PATCH_SKIP and PATCH_USE both continue
 				}
 				state.ResetPragmaUsage();
 				std::string code = os.str();
@@ -1408,65 +1543,210 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 				else
 				{
 					// We need to compile, nobody else is doing it for this permutation.
-					CComPtr<ID3D10Blob> compiledEffectData;
-					HRESULT hr;
+					if( compileOptions.spirv )
 					{
-						ZoneScopedN( "D3DCompile" );
-						hr = D3DCompile(
-							code.c_str(),
-							code.length(),
-							"\\memory",
-							nullptr,
-							nullptr,
-							patchEntryPoint.c_str(),
-							profile.c_str(),
-							( compileOptions.minShaderVersion ? D3DCOMPILE_ENABLE_UNBOUNDED_DESCRIPTOR_TABLES : D3DCOMPILE_ENABLE_BACKWARDS_COMPATIBILITY ) | ( g_generatePDB ? ( D3DCOMPILE_DEBUG | D3DCOMPILE_DEBUG_NAME_FOR_SOURCE ) : 0 ) | ( g_skipOptimization ? D3DCOMPILE_SKIP_OPTIMIZATION : GetOptimizationLevel() ) | D3DCOMPILE_PACK_MATRIX_COLUMN_MAJOR | ( g_avoidFlowControl ? D3DCOMPILE_AVOID_FLOW_CONTROL : 0 ),
-							0,
-							&compiledEffectData,
-							&errors );
-					}
+						ZoneScopedN( "DxcCompileSpirv" );
 
-					if( FAILED( hr ) )
-					{
-						// We failed compilation, let's print errors.
-						syncData->passResource = nullptr;
-						if( errors )
+						CComPtr<IDxcBlobEncoding> src;
+						if( FAILED( m_dxilUtils->CreateBlobFromPinned( code.c_str(), UINT32( code.size() ), CP_UTF8, &src ) ) )
 						{
-							g_messages.AddMessages( errors );
+							syncData->passSpirv = nullptr;
+							syncData->passSpirvReflection = nullptr;
 						}
-					}
-					else
-					{
-						if( g_generatePDB )
+						else
 						{
-							// Get debug info and it's name.
-							CComPtr<ID3DBlob> pdbBlob;
-							D3DGetBlobPart( compiledEffectData->GetBufferPointer(), compiledEffectData->GetBufferSize(), D3D_BLOB_PDB, 0, &pdbBlob );
+							DxcBuffer sourceBuffer;
+							sourceBuffer.Ptr = src->GetBufferPointer();
+							sourceBuffer.Size = src->GetBufferSize();
+							sourceBuffer.Encoding = 0;
 
-							CComPtr<ID3DBlob> pdbName;
-							D3DGetBlobPart( compiledEffectData->GetBufferPointer(), compiledEffectData->GetBufferSize(), D3D_BLOB_DEBUG_NAME, 0, &pdbName );
-
-							struct ShaderDebugName
-							{
-								uint16_t flags;
-								uint16_t nameLength;
+							std::wstring wideProfile( profile.begin(), profile.end() );
+							std::wstring wideEntry( patchEntryPoint.begin(), patchEntryPoint.end() );
+							std::vector<LPCWSTR> spirvArguments = {
+								L"-T", wideProfile.c_str(),
+								L"-E", wideEntry.c_str(),
+								L"-spirv",
+								L"-fspv-target-env=vulkan1.3",
+								L"-Zpc",
+								// The language the effects were written in. DXC defaults to HLSL 2021,
+								// where `||` and `&&` on vectors are errors ("operands for short-circuiting
+								// logical binary operator must be scalar"); FXC-era EVE effects use them --
+								// VolumetricBooster.fxh's `any( ( coord < 0 ) || ( coord > 1 ) )` kept
+								// boostervolumetric out of the S23's Vulkan closure on 2026-09-10. 2018 is
+								// the last version that reads them as the element-wise operators they were.
+								// The DXIL arguments below are left at the default until Windows can measure
+								// the change; the two back ends read the same source under two grammars
+								// for now, and the ledger says so.
+								L"-HV", L"2018",
 							};
-
-							auto debugNameData = reinterpret_cast<const ShaderDebugName*>( pdbName->GetBufferPointer() );
-							auto name = reinterpret_cast<const char*>( debugNameData + 1 );
+							VulkanBindingShiftArguments shiftValues;
+							if( !TryGetVulkanBindingShiftArguments( shiftValues, stage.type ) )
 							{
-								// TODO: intern, I'm actually not sure if we need a mutex here at all...
-								std::lock_guard scope( m_pdbCS );
-								PDB pdb;
-								pdb.name = name;
-								pdb.pdbBlob = pdbBlob;
-								result.pdbs.push_back( pdb );
+								syncData->passSpirv = nullptr;
+								syncData->passSpirvReflection = nullptr;
+								std::lock_guard scope( syncData->mutex );
+								syncData->compiled = true;
+								syncData->conditionVariable.notify_all();
+								return false;
+							}
+							const LPCWSTR shiftArguments[] = {
+								L"-fvk-b-shift", shiftValues.b.c_str(), L"0",
+								L"-fvk-t-shift", shiftValues.t.c_str(), L"1",
+								L"-fvk-s-shift", shiftValues.s.c_str(), L"1",
+								L"-fvk-u-shift", shiftValues.u.c_str(), L"1",
+							};
+							spirvArguments.insert( end( spirvArguments ), std::begin( shiftArguments ), std::end( shiftArguments ) );
+							if( g_skipOptimization )
+							{
+								spirvArguments.push_back( DXC_ARG_SKIP_OPTIMIZATIONS );
+							}
+
+							// The reflection compile of the same source, on the same path: it has to
+							// parse under the same grammar as the module above, or an effect the
+							// SPIR-V compile accepted fails its reflection pass one line later.
+							std::vector<LPCWSTR> dxilArguments = {
+								L"-T", wideProfile.c_str(),
+								L"-E", wideEntry.c_str(),
+								L"-Zpc",
+								L"-HV", L"2018",
+							};
+							if( g_skipOptimization )
+							{
+								dxilArguments.push_back( DXC_ARG_SKIP_OPTIMIZATIONS );
+							}
+
+							CComPtr<IDxcCompiler3> compiler;
+							HRESULT hrCompiler = DxcCreateInstance( CLSID_DxcCompiler, IID_PPV_ARGS( &compiler ) );
+							if( FAILED( hrCompiler ) )
+							{
+								syncData->passSpirv = nullptr;
+								syncData->passSpirvReflection = nullptr;
+							}
+							else
+							{
+								auto compileDxc = [&]( std::vector<LPCWSTR>& arguments, bool reportSpirvBackendMissing, IDxcBlob** objectOutput, IDxcBlob** reflectionOutput ) {
+									CComPtr<IDxcResult> pCompileResult;
+									HRESULT hrCompilation = compiler->Compile( &sourceBuffer, arguments.data(), UINT32( arguments.size() ), nullptr, IID_PPV_ARGS( &pCompileResult ) );
+									HRESULT hrStatus = hrCompilation;
+									if( SUCCEEDED( hrCompilation ) && pCompileResult )
+									{
+										pCompileResult->GetStatus( &hrStatus );
+									}
+
+									if( FAILED( hrCompilation ) || FAILED( hrStatus ) )
+									{
+										if( objectOutput )
+										{
+											*objectOutput = nullptr;
+										}
+										if( reflectionOutput )
+										{
+											*reflectionOutput = nullptr;
+										}
+
+										CComPtr<IDxcBlobUtf8> compileErrors;
+										if( pCompileResult )
+										{
+											pCompileResult->GetOutput( DXC_OUT_ERRORS, IID_PPV_ARGS( &compileErrors ), nullptr );
+										}
+										if( compileErrors && compileErrors->GetStringLength() > 0 )
+										{
+											g_messages.AddMessages( compileErrors );
+											if( reportSpirvBackendMissing && strstr( compileErrors->GetStringPointer(), "spirv" ) )
+											{
+												g_messages.AddMessage( "\\memory(0): error X0000: dxc rejected -spirv: this dxcompiler.dll was built without the SPIR-V backend (Windows SDK copy?) -- the vcpkg directx-dxc port's DLL is required" );
+											}
+										}
+										return false;
+									}
+
+									if( objectOutput )
+									{
+										CComPtr<IDxcBlob> compiled;
+										pCompileResult->GetOutput( DXC_OUT_OBJECT, IID_PPV_ARGS( &compiled ), nullptr );
+										*objectOutput = compiled.Detach();
+									}
+									if( reflectionOutput )
+									{
+										CComPtr<IDxcBlob> reflectionData;
+										pCompileResult->GetOutput( DXC_OUT_REFLECTION, IID_PPV_ARGS( &reflectionData ), nullptr );
+										*reflectionOutput = reflectionData.Detach();
+									}
+									return true;
+								};
+
+								compileDxc( spirvArguments, true, &syncData->passSpirv, nullptr );
+								if( syncData->passSpirv )
+								{
+									compileDxc( dxilArguments, false, nullptr, &syncData->passSpirvReflection );
+								}
 							}
 						}
-
-						// Compilation succeeded! Hand over the resource to the cache entry.
-						syncData->passResource.Attach( compiledEffectData.Detach() );
 					}
+#if _WIN32
+					else
+					{
+						CComPtr<ID3D10Blob> compiledEffectData;
+						HRESULT hr;
+						{
+							ZoneScopedN( "D3DCompile" );
+							hr = D3DCompile(
+								code.c_str(),
+								code.length(),
+								"\\memory",
+								nullptr,
+								nullptr,
+								patchEntryPoint.c_str(),
+								profile.c_str(),
+								( compileOptions.minShaderVersion ? D3DCOMPILE_ENABLE_UNBOUNDED_DESCRIPTOR_TABLES : D3DCOMPILE_ENABLE_BACKWARDS_COMPATIBILITY ) | ( g_generatePDB ? ( D3DCOMPILE_DEBUG | D3DCOMPILE_DEBUG_NAME_FOR_SOURCE ) : 0 ) | ( g_skipOptimization ? D3DCOMPILE_SKIP_OPTIMIZATION : GetOptimizationLevel() ) | D3DCOMPILE_PACK_MATRIX_COLUMN_MAJOR | ( g_avoidFlowControl ? D3DCOMPILE_AVOID_FLOW_CONTROL : 0 ),
+								0,
+								&compiledEffectData,
+								&errors );
+						}
+
+						if( FAILED( hr ) )
+						{
+							// We failed compilation, let's print errors.
+							syncData->passResource = nullptr;
+							if( errors )
+							{
+								g_messages.AddMessages( errors );
+							}
+						}
+						else
+						{
+							if( g_generatePDB )
+							{
+								// Get debug info and it's name.
+								CComPtr<ID3DBlob> pdbBlob;
+								D3DGetBlobPart( compiledEffectData->GetBufferPointer(), compiledEffectData->GetBufferSize(), D3D_BLOB_PDB, 0, &pdbBlob );
+
+								CComPtr<ID3DBlob> pdbName;
+								D3DGetBlobPart( compiledEffectData->GetBufferPointer(), compiledEffectData->GetBufferSize(), D3D_BLOB_DEBUG_NAME, 0, &pdbName );
+
+								struct ShaderDebugName
+								{
+									uint16_t flags;
+									uint16_t nameLength;
+								};
+
+								auto debugNameData = reinterpret_cast<const ShaderDebugName*>( pdbName->GetBufferPointer() );
+								auto name = reinterpret_cast<const char*>( debugNameData + 1 );
+								{
+									// TODO: intern, I'm actually not sure if we need a mutex here at all...
+									std::lock_guard scope( m_pdbCS );
+									PDB pdb;
+									pdb.name = name;
+									pdb.pdbBlob = pdbBlob;
+									result.pdbs.push_back( pdb );
+								}
+							}
+
+							// Compilation succeeded! Hand over the resource to the cache entry.
+							syncData->passResource.Attach( compiledEffectData.Detach() );
+						}
+					}
+#endif
 
 					// Let's wake up everyone waiting for this permutation's compilation.
 					{
@@ -1478,6 +1758,8 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 
 				// Grab a raw pointer from the cache. This is to avoid whatever funny business is going on with CComPtr reference counters.
 				effectData = syncData->passResource;
+				spirvEffectData = syncData->passSpirv;
+				spirvReflectionData = syncData->passSpirvReflection;
 
 				{
 					// Not sure if this is necessary to avoid reference counter bugs. But anyway...
@@ -1485,52 +1767,79 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 					syncData.reset();
 				}
 
-				if( !effectData )
+				if( !compileOptions.spirv && !effectData )
 				{
 					// No resource on the cache entry! This means compilation must have failed.
 					return false;
 				}
 
-
-				auto handleStrippedData = [&]( ID3DBlob* blob ) {
-					// No idea what happens when assigning strippedEffectData = effectData, with effectData now being a raw pointer, and not taking any chances...
-					stage.shaderSize = uint32_t( blob->GetBufferSize() );
-					stage.shaderDataStr = g_stringTable.AddString( blob->GetBufferPointer(), blob->GetBufferSize() );
-					stage.source = code;
-				};
-				CComPtr<ID3DBlob> strippedEffectData;
-				{
-					ZoneScopedN( "D3DStripShader" );
-					if( FAILED( D3DStripShader(
-							effectData->GetBufferPointer(),
-							effectData->GetBufferSize(),
-							D3DCOMPILER_STRIP_REFLECTION_DATA | D3DCOMPILER_STRIP_DEBUG_INFO | D3DCOMPILER_STRIP_TEST_BLOBS,
-							&strippedEffectData ) ) )
-					{
-						handleStrippedData( effectData );
-					}
-					else
-					{
-						handleStrippedData( strippedEffectData );
-					}
-				}
-
-
+#if _WIN32
 				CComPtr<ID3D11ShaderReflection> reflection;
+#endif
+				CComPtr<ID3D12ShaderReflection> reflectionDx12;
+				if( compileOptions.spirv )
 				{
-					ZoneScopedN( "D3DReflect" );
+					if( !spirvEffectData || !spirvReflectionData )
+					{
+						return false;
+					}
+					stage.shaderSize = uint32_t( spirvEffectData->GetBufferSize() );
+					stage.shaderDataStr = g_stringTable.AddString( spirvEffectData->GetBufferPointer(), spirvEffectData->GetBufferSize() );
+					stage.source = code;
 
-					if( FAILED( D3DReflect( effectData->GetBufferPointer(), effectData->GetBufferSize(), IID_ID3D11ShaderReflection, (void**)&reflection.p ) ) )
+					DxcBuffer reflectionBuffer = { spirvReflectionData->GetBufferPointer(), spirvReflectionData->GetBufferSize(), 0 };
+					if( FAILED( m_dxilUtils->CreateReflection( &reflectionBuffer, IID_PPV_ARGS( &reflectionDx12 ) ) ) )
 					{
 						g_messages.AddMessage( "\\memory(0): error X0000: Could not get shader reflection" );
 						return false;
 					}
+					if( !DxReflection::ProcessReflection<DxReflection::ReflectionDx12>( state, reflectionDx12.p, compileOptions.useStaticSamplers, stage, result.annotations ) )
+					{
+						return false;
+					}
 				}
-
-				if( !DxReflection::ProcessReflection<DxReflection::ReflectionDx11>( state, reflection.p, compileOptions.useStaticSamplers, stage, result.annotations ) )
+#if _WIN32
+				else
 				{
-					return false;
+					auto handleStrippedData = [&]( ID3DBlob* blob ) {
+						// No idea what happens when assigning strippedEffectData = effectData, with effectData now being a raw pointer, and not taking any chances...
+						stage.shaderSize = uint32_t( blob->GetBufferSize() );
+						stage.shaderDataStr = g_stringTable.AddString( blob->GetBufferPointer(), blob->GetBufferSize() );
+						stage.source = code;
+					};
+					CComPtr<ID3DBlob> strippedEffectData;
+					{
+						ZoneScopedN( "D3DStripShader" );
+						if( FAILED( D3DStripShader(
+								effectData->GetBufferPointer(),
+								effectData->GetBufferSize(),
+								D3DCOMPILER_STRIP_REFLECTION_DATA | D3DCOMPILER_STRIP_DEBUG_INFO | D3DCOMPILER_STRIP_TEST_BLOBS,
+								&strippedEffectData ) ) )
+						{
+							handleStrippedData( effectData );
+						}
+						else
+						{
+							handleStrippedData( strippedEffectData );
+						}
+					}
+
+					{
+						ZoneScopedN( "D3DReflect" );
+
+						if( FAILED( D3DReflect( effectData->GetBufferPointer(), effectData->GetBufferSize(), IID_ID3D11ShaderReflection, (void**)&reflection.p ) ) )
+						{
+							g_messages.AddMessage( "\\memory(0): error X0000: Could not get shader reflection" );
+							return false;
+						}
+					}
+
+					if( !DxReflection::ProcessReflection<DxReflection::ReflectionDx11>( state, reflection.p, compileOptions.useStaticSamplers, stage, result.annotations ) )
+					{
+						return false;
+					}
 				}
+#endif
 				{
 					stage.annotations.annotations.clear();
 					Symbol* symbol = shaderNode->GetChild( 1 )->GetSymbol();
@@ -1568,11 +1877,29 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 						.literal( patchEntryPoint )
 						.literal( "source" )
 						.literal( SanitizeCode( code ) );
-					PrintShaderOutListing( listing, effectData, reflection );
+					if( compileOptions.spirv )
+					{
+						PrintShaderOutListing( listing, nullptr, reflectionDx12.p );
+					}
+#if _WIN32
+					else
+					{
+						PrintShaderOutListing( listing, effectData, reflection.p );
+					}
+#endif
 					listing.end();
 				}
 
-				reflections[stage.type] = reflection;
+				if( compileOptions.spirv )
+				{
+					reflectionsDx12[stage.type] = reflectionDx12;
+				}
+#if _WIN32
+				else
+				{
+					reflections[stage.type] = reflection;
+				}
+#endif
 
 				PrintStageInfo( listing, stage, result );
 				listing.end();
@@ -1589,19 +1916,45 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 				GEOMETRY_STAGE,
 				PIXEL_STAGE,
 			};
+			// These two were written inline as `compileOptions.spirv ? <dx12> : <dx11>`
+			// ternaries. A ternary cannot be half-compiled, and its DX11 arm names a type
+			// that does not exist on macOS -- hence the lambdas. Same predicates, same
+			// order, one call deeper: Windows behaviour is unchanged.
+			auto hasReflection = [&]( int stageIndex ) -> bool {
+				if( compileOptions.spirv )
+				{
+					return !!reflectionsDx12[stageIndex];
+				}
+#if _WIN32
+				return !!reflections[stageIndex];
+#else
+				return false; // unreachable: !spirv returned above on this platform
+#endif
+			};
+			auto signaturesMatch = [&]( int output, int input ) -> bool {
+				if( compileOptions.spirv )
+				{
+					return MatchShaderInputOutput( reflectionsDx12[output], reflectionsDx12[input] );
+				}
+#if _WIN32
+				return MatchShaderInputOutput( reflections[output], reflections[input] );
+#else
+				return true; // unreachable, as above
+#endif
+			};
 			for( int i = 0; i < 6; ++i )
 			{
-				if( reflections[i] )
+				if( hasReflection( i ) )
 				{
-					for( int j = 0; j < sizeof( pipelineStages ) / sizeof( InputStageType ); ++j )
+					for( int j = 0; j < int( sizeof( pipelineStages ) / sizeof( InputStageType ) ); ++j )
 					{
 						if( i == pipelineStages[j] )
 						{
 							for( int k = j - 1; k >= 0; --k )
 							{
-								if( reflections[pipelineStages[k]] )
+								if( hasReflection( pipelineStages[k] ) )
 								{
-									if( !MatchShaderInputOutput( reflections[pipelineStages[k]], reflections[i] ) )
+									if( !signaturesMatch( pipelineStages[k], i ) )
 									{
 										return false;
 									}
@@ -1808,6 +2161,10 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 					pCompileResult->GetOutput( DXC_OUT_REFLECTION, IID_PPV_ARGS( &reflectionData ), nullptr );
 					syncData->libraryReflection.Attach( reflectionData.Detach() );
 
+#if _WIN32
+					// EffectData.h declares PDB::pdbBlob under _WIN32, and wcstombs_s is
+					// the CRT's. Ray tracing is a DX12 feature; nothing reaches here on
+					// macOS, where /pdb would need a different container anyway.
 					if( g_generatePDB )
 					{
 						// Get debug info and it's name.
@@ -1830,6 +2187,7 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 							result.pdbs.push_back( pdb );
 						}
 					}
+#endif
 
 					// Compilation succeeded! Hand over the resource to the cache entry.
 					CComPtr<IDxcBlob> compiled;
@@ -1920,4 +2278,3 @@ bool EffectCompilerDX11::CompileEffect( const char* source, size_t sourceLength,
 
 	return true;
 }
-#endif

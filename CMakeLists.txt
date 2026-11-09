@@ -18,9 +18,40 @@ else()
     if(WIN32)
         option(BUILD_DX11 "Build dx11." OFF)
         option(BUILD_DX12 "Build dx12." OFF)
+        # vulkan-headers and vulkan-memory-allocator are core, non-feature
+        # dependencies in vcpkg.json, so the backend's own compile surface widens the
+        # closure by nothing. The "vulkan" manifest feature carries exactly two ports:
+        #
+        #   directx-dxc   -- the TrinityALTest_vulkan shader step needs it to emit
+        #                    SPIR-V (fxc cannot), and it is otherwise gated behind
+        #                    dx11/dx12/shader-compiler, all OFF here.
+        #   vulkan-loader -- the import library for the vk* entry points. The headers
+        #                    ship no library, which nothing noticed while Phase 1 built
+        #                    the backend as a static archive and linked no executable
+        #                    against it (85 unresolved vk* symbols; see
+        #                    docs/spikes/M4-phase2a-test-harness.md §4a).
+        #
+        # Both are public ports from the vendored default microsoft/vcpkg registry, so
+        # this preserves the property that the Vulkan configuration is the one Windows
+        # configuration that builds outside the CCP network -- which is the argument to
+        # re-check against this list, not against this comment, before adding a third.
+        option(BUILD_VULKAN "Build Vulkan." OFF)
+    elseif(ANDROID)
+        # The same backend as the Windows Vulkan configuration, minus the two
+        # Windows-only feature ports (see vcpkg.json's vulkan feature comment).
+        option(BUILD_VULKAN "Build Vulkan." OFF)
     elseif(APPLE)
         option(BUILD_METAL "Build Metal." OFF)
     endif()
+
+    # BUILD_TESTING has to exist as a cache variable here, before project(),
+    # because the manifest feature carrying the test suite's host tool is chosen
+    # in this block. trinityal/CMakeLists.txt declares the same option again
+    # after project(); option() is a no-op once the cache entry exists, so this
+    # is the declaration and that one reads it back. Nothing in the tree calls
+    # include(CTest), so there is no CTest-owned BUILD_TESTING to collide with --
+    # the bare enable_testing() below is the whole of CTest here.
+    option(BUILD_TESTING "Build the test suites." ON)
 
     if (BUILD_DX11)
         list(APPEND VCPKG_MANIFEST_FEATURES "dx11")
@@ -32,6 +63,19 @@ else()
 
     if (BUILD_METAL)
         list(APPEND VCPKG_MANIFEST_FEATURES "metal")
+    endif()
+
+    if (BUILD_VULKAN)
+        list(APPEND VCPKG_MANIFEST_FEATURES "vulkan")
+    endif()
+
+    # The test suite's dxc is its own feature, so the engine library's closure
+    # holds no host tool at all -- which is what lets the Android engine
+    # configure resolve on macOS, where directx-dxc has no upstream port and a
+    # platform expression cannot say "the host is not osx". See vcpkg.json's
+    # vulkan feature comment.
+    if (BUILD_VULKAN AND BUILD_TESTING)
+        list(APPEND VCPKG_MANIFEST_FEATURES "vulkan-tests")
     endif()
 
     if (BUILD_SHADER_COMPILER)
@@ -49,6 +93,13 @@ else()
 endif()
 
 project(carbon-trinity VERSION 1.0.0)
+
+# Enables CTest at the scope every add_subdirectory() below inherits from, so a
+# ctest run from the build root can see tests registered by any subdirectory
+# (currently trinityal/tests/CMakeLists.txt's TrinityALTest_vulkan). This is
+# additive only -- it defines no targets and does not touch BUILD_TESTING --
+# so it changes nothing about what dx11, dx12, or metal configurations build.
+enable_testing()
 
 if (BUILD_FOR_PYTHON_2)
     if(NOT DEFINED ENV{CCP_EVE_PERFORCE_BRANCH_PATH})

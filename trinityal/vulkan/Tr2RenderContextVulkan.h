@@ -1,0 +1,651 @@
+// Copyright © 2026 CCP ehf.
+
+#pragma once
+
+
+#if TRINITY_PLATFORM == TRINITY_VULKAN
+
+#include <map>
+#include <memory>
+
+#include "../Tr2HalHelperStructures.h"
+#include "../Tr2RenderContextEnum.h"
+#include "../Tr2DrawUPHelper.h"
+#include "../include/Tr2ConstantBufferAL.h"
+#include "../include/Tr2ResourceSetAL.h"
+#include "../include/Tr2TextureAL.h"
+#include "../include/Tr2VertexLayoutAL.h"
+#include "../include/Tr2ShaderProgramAL.h"
+#include "../include/Tr2RenderPassAL.h"
+#include "../include/upscaling/Tr2UpscalingAL.h"
+
+
+class Tr2ConstantBufferAL;
+class Tr2VertexLayoutAL;
+struct ITr2RenderContextEvents;
+
+class Tr2ShaderAL;
+class Tr2SamplerStateAL;
+class Tr2BufferAL;
+struct Tr2Viewport;
+class Tr2RtShaderTableAL;
+class Tr2RtTopLevelAccelerationStructureAL;
+
+
+// The engine declares members of this type unconditionally (Tr2Material, Tr2RaytracingGeometry,
+// ITr2EffectValue::AddUsedTexture), so every backend has to name it. This backend has no
+// bindless descriptor path, so -- exactly as on dx11 and on the stub -- the type exists and
+// does nothing. It is not a placeholder for a Vulkan implementation; when one arrives it
+// gains members, as on dx12.
+class Tr2BindlessResourcesAL
+{
+public:
+	void Add( const Tr2TextureAL& )
+	{
+	}
+	void Add( const Tr2BufferAL& )
+	{
+	}
+	void Add( const Tr2BindlessResourcesAL& )
+	{
+	}
+	void Clear()
+	{
+	}
+};
+
+
+// -------------------------------------------------------------
+// Description:
+//   See http://carbon/wiki/Tr2RenderContext
+// -------------------------------------------------------------
+class Tr2RenderContextAL
+{
+public:
+	Tr2RenderContextAL() throw( );
+	~Tr2RenderContextAL() throw( );
+
+	void Destroy() throw( );
+	bool IsValid() const throw( );
+
+	// A no-op, as it is on dx12: every render context already knows its owning device, so
+	// there is nothing for the caller to tell it. The tests call it, which is why it
+	// exists at all.
+	static void SetPrimaryRenderContext( Tr2PrimaryRenderContextAL* )
+	{
+
+	}
+
+	// These were returning a null reference and a null pointer. Dereferencing the first is
+	// undefined behaviour at the call site, not at the return -- it happened to survive
+	// only because nothing had called it yet.
+	Tr2PrimaryRenderContextAL& GetPrimaryRenderContext()
+	{
+		return *m_owner;
+	}
+	Tr2PrimaryRenderContextAL* GetPrimaryRenderContextPointer()
+	{
+		return m_owner;
+	}
+
+	ALResult BeginScene() throw( );
+	ALResult EndScene();
+
+
+	void ReleaseDeviceResources() throw( )
+	{
+
+	}
+
+
+	ALResult SetStreamSource( uint32_t stream, const Tr2BufferAL & buffer, uint32_t offset, uint32_t stride ) throw( );
+	ALResult SetIndices( const Tr2BufferAL & buffer ) throw( );
+	ALResult SetIndices( const Tr2BufferAL & buffer, uint32_t stride ) throw( );
+
+	// vkCmdFillBuffer writes one 32-bit value over a range, which covers the single-
+	// component typed buffer these are used for. A buffer whose format has more than one
+	// component would need the pattern repeated, and nothing asks for that yet -- so this
+	// takes values[0] and says so rather than pretending to handle four.
+	ALResult ClearUav( const Tr2BufferAL& buffer, const float values[4] ) throw( );
+	ALResult ClearUav( const Tr2BufferAL& buffer, const uint32_t values[4] ) throw( );
+
+	ALResult CopySubBuffer(
+		Tr2BufferAL& dest,
+		uint32_t destOffset,
+		Tr2BufferAL& src,
+		uint32_t offset,
+		uint32_t length )
+	{
+		return E_NOTIMPL;
+	}
+
+	ALResult SetTopology( Tr2RenderContextEnum::Topology topology ) throw( );
+	ALResult SetVertexLayout( const Tr2VertexLayoutAL& layout ) throw( );
+	ALResult SetShaderProgram( const Tr2ShaderProgramAL& shader ) throw( );
+
+	ALResult ClearUav( const Tr2TextureAL& rt, uint32_t mip, const float values[4] ) throw( );
+	ALResult ClearUav( const Tr2TextureAL& rt, uint32_t mip, const uint32_t values[4] ) throw( );
+
+	ALResult SetResourceSet( const Tr2ResourceSetAL& resourceSet ) throw( );
+	
+	ALResult DrawIndexedPrimitive(
+		uint32_t numVertices,
+		uint32_t startIndex,
+		uint32_t primitiveCount,
+		uint32_t minimumIndex = 0 ) throw( );
+	ALResult DrawPrimitive( uint32_t startVertex, uint32_t primitiveCount ) throw( );
+
+	ALResult DrawIndexedInstanced(
+		uint32_t numVertices,
+		uint32_t startIndex,
+		uint32_t primitiveCount,
+		uint32_t numInstances ) throw( );
+
+	// The direct forms. The overload above counts primitives and derives the index count
+	// from the topology; these two take the counts the caller already has, which is what
+	// Tr2RenderContext::RenderBatch and the DrawUP helper hand over. Every other backend
+	// carries both, and on Vulkan they are the vkCmdDrawIndexed/vkCmdDraw argument lists
+	// verbatim -- no derivation, so nothing to get wrong.
+	ALResult DrawIndexedInstanced(
+		uint32_t indexCountPerInstance,
+		uint32_t instanceCount,
+		uint32_t startIndexLocation,
+		int32_t baseVertexLocation,
+		uint32_t startInstanceLocation ) throw( );
+	ALResult DrawInstanced(
+		uint32_t vertexCountPerInstance,
+		uint32_t instanceCount,
+		uint32_t startVertexLocation,
+		uint32_t startInstanceLocation ) throw( );
+
+	ALResult DrawIndexedInstancedIndirect( Tr2BufferAL& params, uint32_t offset ) throw( );
+	ALResult DrawInstancedIndirect( Tr2BufferAL& params, uint32_t offset ) throw( );
+
+	// The DrawXxxUP family is a DX9 shape -- geometry passed by pointer with no buffer --
+	// and Tr2DrawUPHelper already emulates it on top of SetStreamSource, SetIndices and
+	// the ordinary draws, entirely in terms of the AL. dx12 uses the same helper, so
+	// nothing here is Vulkan-specific and all three are one line.
+	ALResult DrawIndexedPrimitiveUP(
+		uint32_t numVertices,
+		uint32_t primitiveCount,
+		const uint32_t* indexData,
+		const void* vertexStreamZeroData,
+		uint32_t vertexStreamZeroStride ) throw( );
+
+	ALResult DrawIndexedPrimitiveUP(
+		uint32_t numVertices,
+		uint32_t primitiveCount,
+		const uint16_t* indexData,
+		const void* vertexStreamZeroData,
+		uint32_t vertexStreamZeroStride ) throw( );
+
+	ALResult DrawPrimitiveUP(
+		uint32_t primitiveCount,
+		const void* vertexStreamZeroData,
+		uint32_t VertexStreamZeroStride ) throw( );
+
+	ALResult RunComputeShader( unsigned groupDimX, unsigned groupDimY, unsigned groupDimZ ) throw( );
+	ALResult RunComputeShaderIndirect( Tr2BufferAL& indirectParams, unsigned offset ) throw( )
+	{
+		return E_NOTIMPL;
+	}
+
+	ALResult DispatchRays( Tr2RtPipelineStateAL&, Tr2RtShaderTableAL&, const wchar_t*, uint32_t, uint32_t, uint32_t )
+	{
+		return E_FAIL;
+	}
+
+	ALResult SetRenderState( Tr2RenderContextEnum::RenderState state, uint32_t value ) throw( );
+	ALResult SetRenderStates( const uint32_t* stateValuePairs, uint32_t count ) throw( );
+
+	ALResult SetConstants(
+		const Tr2ConstantBufferAL& buffer,
+		Tr2RenderContextEnum::ShaderType constantType,
+		uint32_t registerIndex,
+		uint32_t unusedArgument = 0 ) throw( );
+
+	ALResult SetDepthStencil( const Tr2TextureAL& depthStencil ) throw( );
+	// Real, not the stub it was: with this set the depth attachment is bound in
+	// DEPTH_STENCIL_READ_ONLY_OPTIMAL, which is what lets the same depth buffer be
+	// sampled by the very draw that is depth-testing against it -- the only reason a
+	// caller sets this.
+	void SetReadOnlyDepth( bool enable ) throw( )
+	{
+		if( m_readOnlyDepth != enable )
+		{
+			m_readOnlyDepth = enable;
+			m_dirtyPass = true;
+		}
+	}
+	bool GetReadOnlyDepth() const
+	{
+		return m_readOnlyDepth;
+	}
+	ALResult SetRenderTarget( const Tr2TextureAL& renderTarget, uint32_t slot = 0, uint32_t slice = 0 ) throw();
+
+	void RenderPassHint( const Tr2ColorAttachment& rt0, const Tr2DepthAttachment& depth );
+	void RenderPassHint( const Tr2ColorAttachment& rt0, const Tr2ColorAttachment& rt1, const Tr2DepthAttachment& depth );
+
+	static void DestroyMainThreadRenderContext()
+	{
+
+	}
+
+	// Metal opens a render pass here, and so does this backend: with dynamic rendering a
+	// Vulkan command buffer is always recording but a *rendering scope* is not, and only a
+	// scope makes a vkCmdDraw legal. The comment this replaces said "every other backend has
+	// an always-recording command list and there is nothing to do", which was true of dx11
+	// and dx12 and never of Vulkan -- the step existed for Metal and quietly did nothing
+	// here. Out-of-line because it calls SetPass (spec 5: the frame graph asks, getters
+	// never drive -- GetNativeCommandBuffer also guarantees the scope, because a caller that
+	// forgets the step is exactly who needs the guarantee).
+	ALResult BeginRenderPass();
+
+	ALResult Clear(
+		uint32_t clearFlags,
+		uint32_t color,
+		float depth,
+		uint32_t stencil = 0,
+		uint32_t slot = 0 ) throw( );
+
+	ALResult SetViewport( const Tr2Viewport& viewport ) throw( );
+	ALResult GetViewport( Tr2Viewport& viewport ) throw( );
+
+	// Save/restore of what is bound, nothing more -- the same shape as dx12's. Pop goes
+	// back through SetRenderTarget rather than assigning m_boundRenderTargets directly,
+	// so that the render pass source is marked dirty exactly as it would be on any other
+	// rebind.
+	ALResult PushRenderTarget( uint32_t slot = 0 ) throw( );
+	ALResult PopRenderTarget( uint32_t slot = 0 ) throw( );
+	ALResult PushDepthStencil() throw( );
+	ALResult PopDepthStencil() throw( );
+
+	ALResult GetRenderTargetSize( uint32_t& width, uint32_t& height, uint32_t slot = 0 ) throw( )
+	{
+		if( slot >= RENDER_TARGET_COUNT || !m_boundRenderTargets[slot].IsValid() )
+		{
+			return E_FAIL;
+		}
+		width = m_boundRenderTargets[slot].GetWidth();
+		height = m_boundRenderTargets[slot].GetHeight();
+		return S_OK;
+	}
+
+	Tr2RenderContextEnum::PixelFormat GetBackBufferFormat() const throw( )
+	{
+		return Tr2RenderContextEnum::PIXEL_FORMAT_UNKNOWN;
+	}
+	
+	static const uint32_t SHADER_TYPE_MASK = 
+		( 1 << Tr2RenderContextEnum::VERTEX_SHADER ) |
+		( 1 << Tr2RenderContextEnum::PIXEL_SHADER ) |
+		( 1 << Tr2RenderContextEnum::COMPUTE_SHADER ) |
+		( 1 << Tr2RenderContextEnum::GEOMETRY_SHADER ) |
+		( 1 << Tr2RenderContextEnum::HULL_SHADER ) |
+		( 1 << Tr2RenderContextEnum::DOMAIN_SHADER );
+
+	// Debug helpers
+	size_t GetStackSizeRT( uint32_t RT = 0 )	const { return 0; }
+	size_t GetStackSizeDS()						const { return 0; }
+
+	void	ResetCapturePlayback()
+	{
+
+	}
+
+	// Set of variables that are the first thing we need in ApplyShadowState, keep them
+	// close for the cache -- don't put renderstates, renderStateEmulation or m_esm
+	// in between.
+
+	void AddGpuMarker( const char* marker )
+	{
+
+	}
+	void PushGpuMarker( const char* marker )
+	{
+
+	}
+
+	void PopGpuMarker()
+	{
+
+	}
+	ALResult GetGpuStateMarker( Tr2RenderContextEnum::RenderContextStatus& status, std::string& marker ) const
+	{
+		return E_NOTIMPL;
+	}
+	ALResult GetGpuPageFaultResource(
+		Tr2RenderContextEnum::PixelFormat& format,
+		uint64_t& size,
+		uint32_t& width,
+		uint32_t& height,
+		uint32_t& depth,
+		uint32_t& mips ) const
+	{
+		return E_NOTIMPL;
+	}
+
+	ALResult UseTextures( Tr2GpuUsage::Type usage, size_t count, Tr2TextureAL* textures );
+    ALResult UseAccelerationStructure( Tr2RtTopLevelAccelerationStructureAL tlas );
+
+	// The residency call for the bindless heap. There is no bindless heap on this backend
+	// (see Tr2BindlessResourcesAL above), so there is nothing to make resident and S_OK is
+	// the truthful answer -- the same answer dx11 gives, and for the same reason.
+	ALResult UseResources( Tr2UseResourceDestination, Tr2GpuUsage::Type, const Tr2BindlessResourcesAL& )
+	{
+		return S_OK;
+	}
+
+	// Reported to the effect compiler as the BINDLESS_RENDERING option; false keeps the
+	// shaders off the bindless path this backend cannot serve.
+	bool SupportsBindlessTextures() const
+	{
+		return false;
+	}
+
+	// The native-handle accessors the Python exposure maps unconditionally, for hosting an
+	// ImGui backend inside Trinity's frame. Two of the five DX12-shaped ones have a Vulkan
+	// answer and now give it; the heaps and the command list do not exist here, and 0 is the
+	// documented "not available" value -- exactly as on dx11, metal and the stub (spec D3: a
+	// getter is named for what it returns).
+	uint64_t GetNativeCommandList() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeSrvHeap() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeSamplerHeap() const
+	{
+		return 0;
+	}
+
+	// Out-of-line, for GetNativeBackBufferFormat's reason: they read the owner, which this
+	// header cannot dereference.
+	uint64_t GetNativeDevice() const;         // VkDevice
+	uint64_t GetNativeCommandQueue() const;   // the graphics VkQueue
+
+	// Vulkan-only, and 0 on every other backend. ImGui_ImplVulkan_InitInfo needs all three
+	// beside the device and the queue, and none of them has a DX12 or Metal counterpart to
+	// borrow a name from.
+	uint64_t GetNativeInstance() const;       // VkInstance
+	uint64_t GetNativePhysicalDevice() const; // VkPhysicalDevice
+	uint64_t GetNativeQueueFamily() const;    // the graphics queue's family index
+
+	// Metal's two names. The encoder never exists here.
+	//
+	// GetNativeCommandBuffer is NOT a read-only getter on this backend and is not const
+	// (spec §7.4). Handing the recording buffer to something that will draw into it has two
+	// consequences the AL has to own:
+	//
+	//   1. A rendering scope must be open. The AL opens one lazily -- SetPass does it, driven
+	//      by m_dirtyPass -- so if the hosted UI is the first thing to draw after a Clear or
+	//      a SetRenderTarget, its vkCmdDraw lands outside any scope. The validation layer
+	//      says so at once, which is the good case; the bad case is a driver that tolerates
+	//      it and a frame that differs between vendors.
+	//   2. The AL's own pipeline and dynamic state are no longer what it believes. ImGui
+	//      binds its own pipeline, viewport and scissor. Without marking both dirty the AL's
+	//      next draw skips the rebind and renders with the UI's 1x1 scissor -- wrongly, and
+	//      with ZERO validation errors, which is the failure class this codebase calls the
+	//      green test that is the defect.
+	//
+	// Both are cheap and neither is optional. Re-opening the pass costs a store and a load on
+	// a tiler; the attachments' loadOp/storeOp are LOAD/STORE, so nothing the UI drew is lost.
+	uint64_t GetNativeCommandBuffer();
+
+	uint64_t GetNativeRenderEncoder() const
+	{
+		return 0;
+	}
+
+	// The swapchain's VkFormat, or 0 (VK_FORMAT_UNDEFINED) with no device. Out-of-line for
+	// dx12's reason: it reads the owner, which this header cannot dereference.
+	uint64_t GetNativeBackBufferFormat() const;
+
+	Tr2UpscalingAL::Result EnableUpscaling( Tr2UpscalingAL::Technique tech, Tr2UpscalingAL::Setting setting, bool framegeneration, uint32_t adapter )
+	{
+		return Tr2UpscalingAL::Result::OK;
+	}
+
+	Tr2UpscalingContextAL* GetUpscalingContext( uint32_t upscalingContextID )
+	{
+		return nullptr;
+	}
+
+	// The four loose parameters this used to take are now fields of UpscalingContextParams,
+	// and the engine passes the struct plus the id of a context to reuse. The answer is
+	// still nullptr -- upscaling is not implemented on this backend -- but the signature
+	// has to be the one the callers use.
+	Tr2UpscalingContextAL* CreateUpscalingContext( Tr2UpscalingAL::UpscalingContextParams params, uint32_t existingContext = Tr2UpscalingAL::INVALID_CONTEXT_ID )
+	{
+		return nullptr;
+	}
+
+	void DeleteUpscalingContext( uint32_t contextID )
+	{
+	}
+
+	std::vector<std::tuple<Tr2UpscalingAL::Technique, uint32_t, bool>> GetSupportedUpscalingTechniques( uint32_t adapter )
+	{
+		return std::vector<std::tuple<Tr2UpscalingAL::Technique, uint32_t, bool>>();
+	}
+
+	// 'temporal' was added to the out-parameters after this stub was written; NONE is not a
+	// temporal technique, so false is the right value and not a placeholder.
+	void GetUpscalingSetup( Tr2UpscalingAL::Technique& technique, Tr2UpscalingAL::Setting& setting, bool& framegeneration, bool& temporal )
+	{
+		technique = Tr2UpscalingAL::Technique::NONE;
+		setting = Tr2UpscalingAL::Setting::NATIVE;
+		framegeneration = false;
+		temporal = false;
+	}
+
+	Tr2UpscalingAL::UpscalingInfo GetUpscalingInfo( uint32_t upscalingContextID )
+	{
+		return Tr2UpscalingAL::UpscalingInfo();
+	}
+
+	void MarkFrameEvent( Tr2RenderContextEnum::FrameEvent frameEvent )
+	{
+	}
+
+private:
+	ALResult SetPass();
+
+	ALResult SetPipeline();
+	ALResult CreatePipeline( VkPipeline& pipeline );
+
+	// One bit per colour slot where sRGB write is on AND the bound texture can honour
+	// it. SetPass picks the attachment view by it, CreatePipeline declares the
+	// attachment format by it, and SetPipeline folds it into the pipeline key -- three
+	// places that must agree, so it is one function.
+	uint32_t SrgbWriteMaskVulkan() const;
+	ALResult BindConstantBuffers( VkPipelineBindPoint bindPoint );
+
+	// Four, matching Tr2VertexLayoutAL::m_streamRates. The two arrays are indexed by the
+	// same stream number and CreatePipeline reads them together.
+	static const uint32_t MAX_VERTEX_STREAMS = 4;
+
+	struct PipelineSource
+	{
+		Tr2VertexLayoutAL m_layout;
+		VkPrimitiveTopology m_topology;
+		Tr2ShaderProgramAL m_shaderProgram;
+		VkPipelineDepthStencilStateCreateInfo m_depthStencilState;
+		VkPipelineRasterizationStateCreateInfo m_rasterizationState;
+
+		VkPipelineColorBlendStateCreateInfo m_colorBlendState;
+		VkPipelineColorBlendAttachmentState m_attachmentBlend[4];
+
+		VkVertexInputBindingDescription m_streams[MAX_VERTEX_STREAMS];
+
+		size_t GetHash() const;
+	} m_pipelineSource;
+
+	// What vkCmdBindVertexBuffers / vkCmdBindIndexBuffer were last given, and the buffer it
+	// came from. A renaming Tr2BufferAL (Tr2BufferALVulkan.cpp) moves to a new slot -- or a
+	// new allocation -- on every MapForWriting, and the effect state manager does not
+	// re-apply a stream whose Tr2BufferAL handle has not changed, so SetPipeline compares
+	// these against the buffer's current handle and offset and re-binds when they differ.
+	// The shared_ptr keeps the implementation alive to be asked.
+	struct BoundVertexStream
+	{
+		std::shared_ptr<TrinityALImpl::Tr2BufferAL> buffer;
+		VkBuffer boundBuffer = VK_NULL_HANDLE;
+		VkDeviceSize boundOffset = 0;
+		uint32_t callerOffset = 0;
+	};
+	BoundVertexStream m_boundStreams[MAX_VERTEX_STREAMS];
+	struct BoundIndexBuffer
+	{
+		std::shared_ptr<TrinityALImpl::Tr2BufferAL> buffer;
+		VkBuffer boundBuffer = VK_NULL_HANDLE;
+		VkDeviceSize boundOffset = 0;
+		VkIndexType indexType = VK_INDEX_TYPE_UINT16;
+	};
+	BoundIndexBuffer m_boundIndices;
+	void RebindMovedBuffersVulkan();
+
+	// Still an array of VkAttachmentDescription even though no VkRenderPass is created
+	// from it any more: the struct carries exactly the fields dynamic rendering needs
+	// (format, samples, the four ops, the layouts), SetRenderTarget/SetDepthStencil
+	// already fill it in, and its hash doubles as the attachment half of the pipeline
+	// key. Slot 0 is the depth attachment, slots 1-4 the colour slots.
+	struct RenderPassSource
+	{
+		VkAttachmentDescription m_rt[5]; //  0 - ds
+
+		size_t GetHash() const;
+	} m_renderPassSource;
+	// The topology in the AL's own terms. m_pipelineSource.m_topology is the translated
+	// VkPrimitiveTopology, and Tr2DrawUPHelper needs the untranslated one to work out how
+	// many vertices a primitive count means.
+	Tr2RenderContextEnum::Topology m_topology;
+	TrinityALImpl::Tr2DrawUPHelper m_drawUPHelper;
+
+	// Set once anything names an alpha blend factor or operation explicitly. Until then the
+	// alpha channel follows the colour one, which is D3D9's rule and what the callers above
+	// this layer expect.
+	bool m_separateAlphaBlend;
+
+	bool m_dirtyPso;
+	bool m_dirtyPass;
+	bool m_readOnlyDepth;
+
+	// RS_SRGBWRITEENABLE. Which slots it actually takes effect on is a per-texture
+	// question -- see SrgbWriteMaskVulkan.
+	bool m_srgbWrite;
+	std::pair<uint32_t, uint32_t> m_primitiveToVertexCount;
+
+	Tr2ResourceSetAL m_resourceSet;
+
+	// Constant-buffer bindings (descriptor set 0), keyed by binding number. Set
+	// by SetConstants, written to a descriptor set and bound at SetPipeline time.
+	// What SetConstants bound, per binding number, and what the current descriptor set was
+	// last written with. The buffer is held live rather than as a VkBuffer handle because
+	// its contents MOVE: every Lock takes a fresh slot (Tr2ConstantBufferALVulkan), so the
+	// offset a descriptor has to carry is only known at bind time, and a slot that differs
+	// from the one last written is what marks the set dirty.
+	struct ConstantBinding
+	{
+		std::shared_ptr<TrinityALImpl::Tr2ConstantBufferAL> buffer;
+		VkBuffer writtenBuffer = VK_NULL_HANDLE;
+		VkDeviceSize writtenOffset = 0;
+		VkDeviceSize writtenRange = 0;
+	};
+	std::map<uint32_t, ConstantBinding> m_constantBuffers;
+	bool m_constantsDirty;
+	// How many distinct constant descriptor sets one frame may use before the pool is
+	// exhausted. Reset every BeginFrame.
+	// A frame's budget of constant descriptor sets: one per SetConstants (or per Lock of a
+	// bound buffer) that changes something. 64 was enough while every object read the same
+	// constants; with each object bound at its own slot the EVE scene needs a few hundred.
+	static const uint32_t CONSTANT_SETS_PER_FRAME = 1024;
+	VkDescriptorPool m_constantPool;
+
+	// The newest frame that allocated a set from m_constantPool. The pool cannot be reset
+	// until that frame has retired -- a single pool is shared by every frame in flight, so
+	// "this slot's fence has signalled" is not enough on its own.
+	uint64_t m_constantPoolLastUse;
+	VkDescriptorSet m_constantSet;
+	VkDescriptorSetLayout m_boundConstantLayout;
+
+	VkPipeline m_computePipeline;
+	VkPipelineLayout m_computePipelineLayout;
+public:
+	// If you need this, you're probably doing something wrong :P
+	//Tr2TextureAL&			GetDefaultBackBuffer()
+protected:
+	static const uint32_t RENDER_TARGET_COUNT = 4;
+	Tr2TextureAL m_boundRenderTargets[RENDER_TARGET_COUNT];
+	std::vector<Tr2TextureAL> m_rtStack[RENDER_TARGET_COUNT];
+
+	// Tracked even though binding one is still E_NOTIMPL, so that the push/pop pairing is
+	// already correct when SetDepthStencil grows a real implementation.
+	Tr2TextureAL m_boundDepthStencil;
+	std::vector<Tr2TextureAL> m_dsStack;
+
+	// The viewport last handed to SetViewport, in Trinity's coordinates: y down from the
+	// top left, height positive. m_viewportSet distinguishes "the caller chose this" from
+	// "nobody has asked", because the default has to track the render target's size and a
+	// stored copy would go stale the moment the target changes.
+	Tr2Viewport m_viewport;
+	bool m_viewportSet;
+	Tr2PrimaryRenderContextAL* m_owner;
+
+	// True between vkCmdBeginRendering and vkCmdEndRendering. Dynamic rendering has no
+	// handle to test the way the old VkRenderPass member doubled as one, so the state is
+	// tracked explicitly.
+	bool m_renderingActive;
+
+public:
+	// Recycle the frame's constant descriptor sets. Only safe once the frame's fence has
+	// been waited on, which is why the primary render context calls it from BeginFrame and
+	// nothing else calls it at all.
+	void ResetConstantPoolVulkan();
+
+	// Force the next draw to re-begin rendering. Needed when the images the attachments
+	// referenced have been destroyed under it -- a swapchain rebuild is the only thing
+	// that does that. With dynamic rendering nothing caches an image view between passes,
+	// so all this has to do is mark the pass dirty; it exists as a named operation because
+	// the rebuild's contract ("the next frame must not touch the old images") is easier to
+	// see at the call site than a bare flag assignment.
+	void InvalidateAttachmentsVulkan();
+
+	// Close any rendering instance that is open, so that a command which is illegal
+	// inside one can be recorded. vkCmdResetQueryPool is the case that needs it; the
+	// clear path in Tr2RenderContextVulkan.cpp does the same thing inline for
+	// vkCmdClearColorImage. Setting m_dirtyPass is what makes SetPipeline re-open the
+	// pass before the next draw -- without it the draw records outside a pass and fails.
+	//
+	// On a tiler this is a resolve and a reload, so it is not free; it is here because
+	// Vulkan 1.0 has no host-side vkResetQueryPool, which arrived in 1.2.
+	void EndRenderPassVulkan();
+	// Whether a dynamic rendering instance is open right now -- what EndRenderPassVulkan
+	// would close. Tr2BufferAL asks, so the draw log can count the pass restarts its
+	// synchronized copies cause.
+	bool IsRenderingActiveVulkan() const { return m_renderingActive; }
+
+	// TRINITY_DRAW_LOG=1 only: one draw's worth of the per-scene tally EndScene prints. A
+	// member rather than free, so it can see whether a colour target is bound -- a draw with
+	// none is the shape of a scene rendering into nothing, and telling that apart from a scene
+	// issuing no draws at all is the whole point of the counter.
+	void CountDrawForLogVulkan( uint64_t vertices );
+
+	// SetRenderTarget and SetDepthStencil reopen the pass when the bound IMAGE changes, not
+	// only when its attachment description does; this is the comparison they use.
+	bool SameImageVulkan( const Tr2TextureAL& a, const Tr2TextureAL& b ) const;
+
+	VkCommandBuffer m_commandBuffer;
+
+private:	
+
+	Tr2RenderContextAL( const Tr2RenderContextAL& ) /* = delete */;
+	Tr2RenderContextAL& operator=( const Tr2RenderContextAL& ) /* = delete */;
+
+};
+
+#endif

@@ -23,6 +23,11 @@ const char MSL_INCLUDE[] =
 #include "MSLInclude.h"
 	;
 
+// Defined here, declared in EffectCompilerMetal.h. MacOSX is the historical default:
+// every existing call site now gets it, so the macOS output is byte-identical unless a
+// caller asks otherwise (the /metal_target flag sets it once per compile-unit).
+MetalTarget g_metalTarget = MetalTarget::MacOSX;
+
 // Values below must be synchronized with (propagated from) TrinityAL/metal/MetalWorkQueue.h
 #define METAL_MAX_BOUND_BUFFERS 31
 #define METAL_MAX_BOUND_TEXTURES 31 // 31+ on iOS, 128 on macOS
@@ -4257,7 +4262,12 @@ std::string MetalTool( const char* name )
 		cmd << "\"" << programFiles << "\\Metal Developer Tools\\metal\\macos\\bin\\" << name << ".exe\"";
 	}
 #else
-	cmd << "xcrun -sdk macosx " << name;
+	// M3 §2.7: the SDK was hardcoded to macosx. The target is compile-global because the
+	// whole effect compile-unit is built for one target — no effect mixes two.
+	const char* sdk = g_metalTarget == MetalTarget::IPhoneSimulator ? "iphonesimulator"
+		: g_metalTarget == MetalTarget::IPhoneOS ? "iphoneos"
+		: "macosx";
+	cmd << "xcrun -sdk " << sdk << " " << name;
 #endif
 	return cmd.str();
 }
@@ -4583,9 +4593,17 @@ std::vector<uint8_t> CompileCode( const std::string& code, const std::vector<Mac
 
 			std::ostringstream cmd;
 			cmd << MetalTool( "metal" ) << " -x metal ";
-			if( forceOldVersion )
+			if( forceOldVersion && g_metalTarget == MetalTarget::MacOSX )
 			{
 				cmd << "-std=macos-metal2.1 -mmacos-version-min=10.14 ";
+			}
+			else if( g_metalTarget == MetalTarget::IPhoneSimulator )
+			{
+				cmd << "-std=metal3.0 -mios-simulator-version-min=17.0 ";
+			}
+			else if( g_metalTarget == MetalTarget::IPhoneOS )
+			{
+				cmd << "-std=metal3.0 -mios-version-min=17.0 ";
 			}
 			else
 			{

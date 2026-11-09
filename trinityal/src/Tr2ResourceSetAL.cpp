@@ -24,6 +24,24 @@ void HashResourcePtr( const T& resource, uint32_t& hash )
 }
 
 
+namespace
+{
+// An array register occupies registerIndex .. registerIndex + arrayCount - 1, and every element
+// gets its own slot, so that SetSrv( stage, registerIndex + k, ... ) can name element k. Until
+// this, only registerIndex was mapped: no backend could look up element k of an array through the
+// resource-set description, whatever its own layout did with arrayCount (item 12, site 4 of 4).
+// Elements past the table's end are not mapped rather than written out of bounds.
+template <typename Table, typename Count>
+void MapElements( Table& table, uint32_t stage, const Tr2ShaderRegisterAL& reg, Count& count )
+{
+	const uint32_t elements = reg.arrayCount ? reg.arrayCount : 1;
+	for( uint32_t k = 0; k < elements && reg.registerIndex + k < Tr2RegisterMapAL::MAX_RESOURCES_IN_STAGE; ++k )
+	{
+		table[stage][reg.registerIndex + k] = uint8_t( count++ );
+	}
+}
+}
+
 Tr2RegisterMapAL::Tr2RegisterMapAL() : // cppcheck-suppress uninitMemberVar
 	srvCount( 0 ),
 	uavCount( 0 ),
@@ -44,15 +62,15 @@ Tr2RegisterMapAL::Tr2RegisterMapAL( Tr2RenderContextEnum::ShaderType stage, cons
 	{
 		if( it->IsSrv() )
 		{
-			srvs[stage][it->registerIndex] = uint8_t( srvCount++ );
+			MapElements( srvs, stage, *it, srvCount );
 		}
 		else if( it->IsUav() )
 		{
-			uavs[stage][it->registerIndex] = uint8_t( uavCount++ );
+			MapElements( uavs, stage, *it, uavCount );
 		}
 		else if( it->registerType == Tr2ShaderRegisterAL::SAMPLER )
 		{
-			samplers[stage][it->registerIndex] = uint8_t( samplerCount++ );
+			MapElements( samplers, stage, *it, samplerCount );
 		}
 	}
 }
@@ -74,15 +92,15 @@ Tr2RegisterMapAL::Tr2RegisterMapAL( const Tr2ShaderAL* shaders, size_t shaderCou
 		{
 			if( it->IsSrv() )
 			{
-				srvs[shaderType][it->registerIndex] = uint8_t( srvCount++ );
+				MapElements( srvs, shaderType, *it, srvCount );
 			}
 			else if( it->IsUav() )
 			{
-				uavs[shaderType][it->registerIndex] = uint8_t( uavCount++ );
+				MapElements( uavs, shaderType, *it, uavCount );
 			}
 			else if( it->registerType == Tr2ShaderRegisterAL::SAMPLER )
 			{
-				samplers[shaderType][it->registerIndex] = uint8_t( samplerCount++ );
+				MapElements( samplers, shaderType, *it, samplerCount );
 			}
 		}
 	}
@@ -103,15 +121,15 @@ Tr2RegisterMapAL::Tr2RegisterMapAL( const Tr2RenderContextEnum::ShaderType* shad
 		{
 			if( it->IsSrv() )
 			{
-				srvs[shaders[i]][it->registerIndex] = uint8_t( srvCount++ );
+				MapElements( srvs, shaders[i], *it, srvCount );
 			}
 			else if( it->IsUav() )
 			{
-				uavs[shaders[i]][it->registerIndex] = uint8_t( uavCount++ );
+				MapElements( uavs, shaders[i], *it, uavCount );
 			}
 			else if( it->registerType == Tr2ShaderRegisterAL::SAMPLER )
 			{
-				samplers[shaders[i]][it->registerIndex] = uint8_t( samplerCount++ );
+				MapElements( samplers, shaders[i], *it, samplerCount );
 			}
 		}
 	}

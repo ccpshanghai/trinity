@@ -123,10 +123,23 @@ Tr2ShaderPtr Tr2EffectRes::GetShader( const Tr2ShaderOption* options, size_t cou
 	Tr2ShaderPtr shader;
 	shader.CreateInstance();
 
+	if( index >= m_offsetCount )
+	{
+		// The assert above is compiled out of a release build, and an index past the table
+		// read a garbage offset and then failed the Read below in silence.
+		CCP_LOGERR( "%S: permutation index %u is past the %u permutations this file carries", GetPath(), index, m_offsetCount );
+		return nullptr;
+	}
 	auto offset = m_offsets[index];
 	auto buffer = reinterpret_cast<const uint8_t*>( m_data.get() ) + offset.offset;
 	if( !shader->GetEffect().Read( buffer, offset.size, m_version, m_stringTable, m_stringTableSize, CW2A( GetPath() ) ) )
 	{
+		// Every caller turns this nullptr into a material with no shader state, and a material
+		// with no shader state is a draw that is skipped without a word -- the tonemapper on
+		// the S23 (2026-09-11), and with it the whole frame. Read has its own detail logging;
+		// this names the file and the permutation so the two can be matched up.
+		CCP_LOGERR( "%S: permutation %u (of %u, %u bytes at offset %u) failed to read; the effect has no shader",
+					GetPath(), index, m_offsetCount, uint32_t( offset.size ), uint32_t( offset.offset ) );
 		return nullptr;
 	}
 	shader->ProcessEffect();

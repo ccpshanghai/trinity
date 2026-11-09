@@ -11,6 +11,25 @@
 struct Raytracing : public WithValidRenderContext
 {
 };
+
+// CreateDevice() (Tr2RenderContextMetal.mm) computes m_caps.m_supportsRaytracing from
+// MTLDevice.supportsRaytracing && an Apple-Silicon family check. On the iOS Simulator the
+// virtual "Apple iOS simulator GPU" device answers supportsFamily: false for every family in
+// that check (Mac2 down through Apple3) and supportsRaytracing false too -- confirmed by
+// instrumenting CreateDevice()/RefreshDisplays() and reading a simulator run's stderr
+// (device name "Apple iOS simulator GPU", every supportsFamily query 0). This is a genuine
+// Simulator-Metal-device limitation, independent of the host Mac's real GPU: the compile-time
+// TRINITY_PLATFORM_SUPPORTS_RAY_TRACING gate (this file's top `#if`) only says the platform
+// *class* can support raytracing, not that this particular device instance does. Not a
+// regression from Tasks 6-11's iOS bring-up work.
+#define ENSURE_RAYTRACING_OR_SKIP                                                                            \
+	if( !renderContext->GetCaps().SupportsRaytracing() )                                                     \
+	{                                                                                                         \
+		GTEST_SKIP() << "Test Skipped: renderContext->GetCaps().SupportsRaytracing() is false on this "      \
+						 "device (the iOS Simulator's Metal device reports no supported GPU family and "    \
+						 "no raytracing support).";                                                          \
+	}
+
 namespace
 {
 struct Vector3
@@ -93,6 +112,8 @@ TEST_F( Raytracing, BLASIsInvalidBeforeCreation )
 
 TEST_F( Raytracing, BLASIsValidAfterCreation )
 {
+	ENSURE_RAYTRACING_OR_SKIP;
+
 	Tr2BufferAL vb, ib;
 	// UNSURE ABOUT CPUUSAGE AND HOW TO NAVIGATE THAT ONE, need to have leave it like this for now because of possible metal bug w. buffers
 #if TRINITY_PLATFORM == TRINITY_METAL
@@ -112,6 +133,8 @@ TEST_F( Raytracing, BLASIsValidAfterCreation )
 
 TEST_F( Raytracing, BLASIsValidAfterUpdate )
 {
+	ENSURE_RAYTRACING_OR_SKIP;
+
 	Tr2BufferAL vb, ib;
 	// UNSURE ABOUT CPUUSAGE AND HOW TO NAVIGATE THAT ONE, need to have leave it like this for now because of possible metal bug w. buffers
 #if TRINITY_PLATFORM == TRINITY_METAL
@@ -140,6 +163,8 @@ TEST_F( Raytracing, TLASIsInvalidBeforeCreation )
 
 TEST_F( Raytracing, TLASIsValidAfterCreation )
 {
+	ENSURE_RAYTRACING_OR_SKIP;
+
 	Tr2BufferAL vb, ib;
 	// UNSURE ABOUT CPUUSAGE AND HOW TO NAVIGATE THAT ONE, need to have leave it like this for now because of possible metal bug w. buffers
 #if TRINITY_PLATFORM == TRINITY_METAL
@@ -170,6 +195,8 @@ TEST_F( Raytracing, TLASIsValidAfterCreation )
 
 TEST_F( Raytracing, CanCreateStateObject )
 {
+	ENSURE_RAYTRACING_OR_SKIP;
+
 	uint8_t rayGenCode[] = {
 #include INCLUDE_SHADER_CODE( RayGen.rs )
 	};
@@ -200,6 +227,8 @@ TEST_F( Raytracing, CanCreateStateObject )
 
 TEST_F( Raytracing, CanCreateShaderTable )
 {
+	ENSURE_RAYTRACING_OR_SKIP;
+
 	uint8_t rayGenCode[] = {
 #include INCLUDE_SHADER_CODE( RayGen.rs )
 	};
@@ -238,6 +267,8 @@ TEST_F( Raytracing, CanCreateShaderTable )
 
 TEST_F( Raytracing, ShaderTableCreationFailsWithInvalidShaderName )
 {
+	ENSURE_RAYTRACING_OR_SKIP;
+
 	uint8_t rayGenCode[] = {
 #include INCLUDE_SHADER_CODE( RayGen.rs )
 	};
@@ -440,6 +471,8 @@ void Transpose( float viewMatrix[4][4] )
 
 TEST_F( Raytracing, TraceRays )
 {
+	ENSURE_RAYTRACING_OR_SKIP;
+
 	uint8_t rayGenCode[] = {
 #include INCLUDE_SHADER_CODE( RayGen.rs )
 	};
@@ -566,6 +599,8 @@ TEST_F( Raytracing, TraceRays )
 
 TEST_F( Raytracing, CanUpdateBlas )
 {
+	ENSURE_RAYTRACING_OR_SKIP;
+
 	uint8_t rayGenCode[] = {
 #include INCLUDE_SHADER_CODE( RayGen.rs )
 	};
@@ -709,6 +744,8 @@ TEST_F( Raytracing, CanUpdateBlas )
 
 TEST_F( Raytracing, CanUseLocalConstants )
 {
+	ENSURE_RAYTRACING_OR_SKIP;
+
 	uint8_t rayGenCode[] = {
 #include INCLUDE_SHADER_CODE( RayGen.rs )
 	};
@@ -878,6 +915,8 @@ struct PerObjectData
 
 TEST_F( Raytracing, CanUsePerObjectData )
 {
+	ENSURE_RAYTRACING_OR_SKIP;
+
 	uint8_t rayGenCode[] = {
 #include INCLUDE_SHADER_CODE( RayGen.rs )
 	};
@@ -970,7 +1009,7 @@ TEST_F( Raytracing, CanUsePerObjectData )
 	ASSERT_HRESULT_SUCCEEDED( blas.Create( { Tr2RtPositionStreamAL( vb ), Tr2RtIndicesStreamAL( ib ) }, Tr2RtBlasGeometryFlags::OPAQUE_GEOMETRY, Tr2RtBuildFlags::PREFER_FAST_TRACE, *renderContext ) );
 
 	Tr2RtInstanceAL instances[2];
-	instances[0].blas = blas;
+	instances[0].blas = blas.TrinityALImpl_GetObject();
 	memset( instances[0].transform, 0, sizeof( instances[0].transform ) );
 	instances[0].transform[0][0] = 0.5f;
 	instances[0].transform[1][1] = 0.5f;
@@ -978,7 +1017,7 @@ TEST_F( Raytracing, CanUsePerObjectData )
 	instances[0].transform[0][3] = -0.6f;
 	instances[0].materialIndex = 0;
 
-	instances[1].blas = blas;
+	instances[1].blas = blas.TrinityALImpl_GetObject();
 	memset( instances[1].transform, 0, sizeof( instances[1].transform ) );
 	instances[1].transform[0][0] = 0.5f;
 	instances[1].transform[1][1] = 0.5f;

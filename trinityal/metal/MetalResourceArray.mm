@@ -3,7 +3,9 @@
 #if TRINITY_PLATFORM == TRINITY_METAL
 
 #include "MetalResourceArray.h"
+#include "MetalUtils.h"
 #import <Foundation/Foundation.h>
+#include <TargetConditionals.h>
 
 
 namespace TrinityALImpl
@@ -39,7 +41,14 @@ uint32_t ResourceArrayArgumentBuffer::Allocate( GpuResourceID gpuResourceID )
 	m_free.pop_back();
 	m_data[index] = gpuResourceID;
 	reinterpret_cast<GpuResourceID*>( m_buffer.contents )[index] = gpuResourceID;
-	[m_buffer didModifyRange:NSMakeRange( index * sizeof( GpuResourceID ), sizeof( GpuResourceID ) )];
+	// CPU writes m_buffer.contents directly above; sync it here. Managed needs the
+	// explicit call, Shared (spec D7) is a no-op, and didModifyRange is macOS-only API.
+#if TARGET_OS_OSX
+	if( m_buffer.storageMode == MTLStorageModeManaged )
+	{
+		[m_buffer didModifyRange:NSMakeRange( index * sizeof( GpuResourceID ), sizeof( GpuResourceID ) )];
+	}
+#endif
 	return index;
 }
 
@@ -64,10 +73,12 @@ void ResourceArrayArgumentBuffer::Grow( uint32_t size )
 		m_free.push_back( i - 1 );
 	}
 	m_data.resize( size );
+	// This buffer is subsequently CPU-written directly via m_buffer.contents in
+	// Allocate() above, which pairs with the guarded didModifyRange there.
 	id<MTLBuffer> buffer;
 	buffer = [m_device newBufferWithBytes:m_data.data()
 								   length:size * sizeof( GpuResourceID )
-								  options:MTLResourceStorageModeManaged];
+								  options:MetalDefaultUploadStorageMode( m_device )];
 	m_buffer = buffer;
 	m_size = size;
 }

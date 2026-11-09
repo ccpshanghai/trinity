@@ -16,6 +16,7 @@
 #define TRINITY_PLATFORM_SUPPORTS_HEAP_VIEW 1
 #define TRINITY_PLATFORM_SUPPORTS_SHADER_PROGRAM_SAMPLERS 1
 #define TRINITY_PLATFORM_SUPPORTS_RAY_TRACING 1
+#define TRINITY_PLATFORM_SUPPORTS_ASTC_TEXTURES 0
 
 
 class Tr2CapsAL
@@ -68,6 +69,15 @@ public:
 	bool SupportsRaytracing() const
 	{
 		return m_supportsDxr;
+	}
+	// ASTC sampling, the one M3 asks about. A capability, not a platform (spec D7): the answer
+	// differs between two Metal devices, so a compile-time #if would be wrong even here.
+	bool SupportsAstcTextures() const
+	{
+		// No rows in this backend's format table, so the answer is no and the tests that ask
+		// skip. M6 owns the desktop table; reporting yes here would mean uploading blocks the
+		// driver cannot read.
+		return false;
 	}
 
 private:

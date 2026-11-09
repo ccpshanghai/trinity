@@ -98,6 +98,32 @@ Be::VarChooser EffectFileChooser[] = {
 };
 
 
+#if BLUE_WITH_PYTHON
+// ---------------------------------------------------------------
+// PyGetActualEffectPath
+//
+// The path the engine will actually open for a given ".fx" res path, or None when the rewrite
+// cannot be done (the path is not under /effect/). A module function rather than a method
+// because the caller asks it BEFORE building an effect -- "is this staged for this backend?" --
+// and there is no Tr2Effect yet to ask.
+// ---------------------------------------------------------------
+static PyObject* PyGetActualEffectPath( PyObject* self, PyObject* args )
+{
+	const char* path = NULL;
+	if( !PyArg_ParseTuple( args, "s", &path ) )
+	{
+		return NULL;
+	}
+
+	std::string actualPath;
+	if( !Tr2Effect::ActualEffectPath( path, actualPath ) )
+	{
+		Py_RETURN_NONE;
+	}
+	return PyUnicode_FromStringAndSize( actualPath.c_str(), actualPath.size() );
+}
+#endif
+
 const Be::ClassInfo* Tr2Effect::ExposeToBlue()
 {
 	EXPOSURE_BEGIN( Tr2Effect, "" )
@@ -188,3 +214,19 @@ const Be::ClassInfo* Tr2Effect::ExposeToBlue()
 
 	EXPOSURE_END()
 }
+
+#if BLUE_WITH_PYTHON
+MAP_FUNCTION(
+	"GetActualEffectPath",
+	PyGetActualEffectPath,
+	"The path the engine will actually open for an effect, given its .fx res path.\n"
+	"\n"
+	"'/effect/' becomes '/effect.<platform>/' and the extension becomes the current shader\n"
+	"model's ('.sm_hi', '.sm_lo', '.sm_depth'). Both halves are the engine's -- the platform\n"
+	"token is a compile-time constant that differs per Apple SDK, and the shader model is live\n"
+	"renderer state -- so a caller wanting to know whether its effect is staged has to ask\n"
+	"rather than reproduce the rewrite.\n"
+	":param path: the .fx res path\n"
+	":type path: str\n"
+	":rtype: str | None" );
+#endif

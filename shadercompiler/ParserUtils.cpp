@@ -1,6 +1,7 @@
 // Copyright © 2023 CCP ehf.
 
 #include "stdafx.h"
+#include "FXAnalyzer.h"
 #include "ParserUtils.h"
 #include "SymbolTable.h"
 #include "ASTNode.h"
@@ -896,6 +897,70 @@ void AssignRegisters( ASTNode* root, int32_t stage, const std::vector<GlobalInpu
 	AssignRegisters( root, InputStageType( stage ), registers, globalInput, globalInputRegisters );
 }
 
+bool ForceVulkanRegisterSpaces( ASTNode* root, VulkanRegisterSpaceReject& reject )
+{
+	if( !root )
+	{
+		return true;
+	}
+	switch( root->GetNodeType() )
+	{
+	case NT_CBUFFER:
+	case NT_NAME_DECLARATION:
+		if( root->GetSymbol() && root->GetSymbol()->used )
+		{
+			for( auto& r : root->GetSymbol()->registerSpecifier )
+			{
+				switch( r.second.registerType )
+				{
+				case 't':
+				case 's':
+				case 'u':
+					// space is the descriptor set, and the ABI has exactly two: constant
+					// buffers alone in set 0, every t/s/u in set 1. So only space0 and
+					// space1 can be honoured -- space0 by this rewrite, space1 because it
+					// is already right.
+					//
+					// Anything above that has to be refused rather than moved. The
+					// isArray branch of AssignRegisters gives each array declaration a
+					// space of its own out of a counter seeded with 0, and allocates it a
+					// single register slot -- so a stage's second resource array arrives
+					// here on space2, and rewriting it to space1 would overlap the first
+					// array's range, which dxc rejects outright. Passing it through was
+					// worse than either: -fvk-{t,s,u}-shift names space 1 and nothing
+					// else, so the shift silently did not apply and the module ended up
+					// on a set the AL never builds, with no diagnostic anywhere.
+					if( r.second.space > 1 )
+					{
+						reject.name = root->GetSymbol()->name;
+						reject.space = r.second.space;
+						reject.registerType = r.second.registerType;
+						return false;
+					}
+					r.second.space = 1;
+					break;
+				default:
+					break;
+				}
+			}
+		}
+		break;
+	case NT_PROGRAM:
+	case NT_VAR_DECLARATION_LIST:
+		for( size_t i = 0; i < root->GetChildrenCount(); ++i )
+		{
+			if( !ForceVulkanRegisterSpaces( root->GetChild( i ), reject ) )
+			{
+				return false;
+			}
+		}
+		break;
+	default:
+		break;
+	}
+	return true;
+}
+
 int GetNodeOrder( ASTNode* t )
 {
 	switch( t->GetNodeType() )
@@ -918,6 +983,19 @@ int GetNodeOrder( ASTNode* t )
 		if( GetRegisterType( t->GetType() ) )
 		{
 			return 2;
+		}
+		else if( t->GetType().storageClass == OP_STATIC )
+		{
+			// After the globals and the resources, before the functions: a `static const`
+			// global is a compile-time constant, not a constant-buffer member, and
+			// CreateGlobalsCB below sweeps a contiguous run of order-1 declarations into the
+			// generated `cbuffer Globals`. Sorted in with them, `static const float4 c[16] =
+			// {...}` became a cbuffer member with an initializer -- which DXIL tolerates and
+			// which DXC's SPIR-V back end answers with "cbuffer member initializer ignored"
+			// and then invalid SPIR-V (OpAccessChain out of bounds / non-composite type):
+			// M6 item 9's "static-const-misclassified" class, 27 of 30 EVE effects that
+			// declare one, tonemapping and shadowdepth among them (2026-09-10).
+			return 3;
 		}
 		else
 		{
@@ -948,6 +1026,76 @@ void SortProgramNodes( ASTNode* root )
 			auto pB = GetNodeOrder( b );
 			return pA < pB;
 		} );
+}
+
+namespace
+{
+// One scalar-or-vector value of `type` into `out`, as floats or 32-bit ints; `capacity` bytes.
+bool WriteInitializerValue( ParserState& state, ASTNode* initializer, const Type& type, void* out, size_t capacity )
+{
+	if( type.IsMatrix() )
+	{
+		return false;
+	}
+	Type expectedType = type;
+	ExpressionValue value;
+	if( !EvaluateInitializer( state, initializer, expectedType, value, nullptr ) )
+	{
+		return false;
+	}
+	const size_t count = std::min( value.size(), size_t( type.width * type.height ) );
+	if( count * sizeof( float ) > capacity )
+	{
+		return false;
+	}
+	if( type.builtInType == OP_FLOAT )
+	{
+		float* floats = static_cast<float*>( out );
+		for( size_t i = 0; i < count; ++i )
+		{
+			floats[i] = float( value[i].floatValue );
+		}
+		return true;
+	}
+	if( type.builtInType == OP_INT || type.builtInType == OP_UINT || type.builtInType == OP_BOOL )
+	{
+		int32_t* ints = static_cast<int32_t*>( out );
+		for( size_t i = 0; i < count; ++i )
+		{
+			ints[i] = int32_t( value[i].intValue );
+		}
+		return true;
+	}
+	return false;
+}
+}
+
+bool FillDefaultValueFromInitializer( ParserState& state, ASTNode* initializer, const Type& type, void* out, size_t outSize, uint32_t elements )
+{
+	if( !initializer || !out || outSize == 0 )
+	{
+		return false;
+	}
+	if( type.arrayDimensions == 0 )
+	{
+		return WriteInitializerValue( state, initializer, type, out, outSize );
+	}
+	if( type.arrayDimensions != 1 )
+	{
+		return false;
+	}
+	// `T name[N] = { a, b, ... }`: one child per element, each at D3D's 16-byte array stride.
+	Type elementType = type;
+	elementType.arrayDimensions = 0;
+	const size_t stride = 16;
+	bool wrote = false;
+	const size_t available = std::min( size_t( initializer->GetChildrenCount() ), size_t( elements ) );
+	for( size_t i = 0; i < available && i * stride < outSize; ++i )
+	{
+		wrote |= WriteInitializerValue( state, initializer->GetChild( i ), elementType,
+			static_cast<uint8_t*>( out ) + i * stride, outSize - i * stride );
+	}
+	return wrote;
 }
 
 void CreateGlobalsCB( ParserState& state )
@@ -985,7 +1133,10 @@ void CreateGlobalsCB( ParserState& state )
 					continue;
 				}
 			}
-			if( !GetRegisterType( child->GetType() ) )
+			// Not a resource, and not `static`: statics sort after this range (GetNodeOrder),
+			// so they cannot fall inside it, but the rule is stated here too so that a
+			// reordering elsewhere cannot silently put them back into the cbuffer.
+			if( !GetRegisterType( child->GetType() ) && child->GetType().storageClass != OP_STATIC )
 			{
 				varStart = std::min( varStart, i );
 				varEnd = std::max( varEnd, i );

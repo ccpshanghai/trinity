@@ -3491,7 +3491,14 @@ TEST_F( Rendering, CanUsePsUavs )
 	ASSERT_HRESULT_SUCCEEDED( vertexLayout.Create( definition, *renderContext ) );
 
 	Tr2TextureAL rwTexture;
-	ASSERT_HRESULT_SUCCEEDED( rwTexture.Create( Tr2BitmapDimensions( 64, 64, 1, PIXEL_FORMAT_B8G8R8A8_UNORM ), Tr2GpuUsage::SHADER_RESOURCE | Tr2GpuUsage::UNORDERED_ACCESS, *renderContext ) );
+	// R8G8B8A8, not B8G8R8A8: the Vulkan spec's mandatory storage-image formats are the
+	// RGBA orderings, and the Adreno 740 offers STORAGE_IMAGE on this one and not on the
+	// BGRA sibling. The format is incidental to what this test is about -- a pixel shader
+	// writing a UAV -- so it takes the one every device must support rather than skipping
+	// the feature on devices that fully support it. Raytracing.cpp does the same for its
+	// UAV result textures. Nothing here reads bytes: the clear colour is float RGBA and the
+	// shader writes .rgba, both channel-semantic, not byte-order-dependent.
+	ASSERT_HRESULT_SUCCEEDED( rwTexture.Create( Tr2BitmapDimensions( 64, 64, 1, PIXEL_FORMAT_R8G8B8A8_UNORM ), Tr2GpuUsage::SHADER_RESOURCE | Tr2GpuUsage::UNORDERED_ACCESS, *renderContext ) );
 
 	Tr2ResourceSetAL uavResourceSet;
 	{
