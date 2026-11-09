@@ -98,5 +98,6 @@ private:
 };
 
 TYPEDEF_BLUECLASS( EveLocalPositionCurve );
+BLUE_INVOKE_CANONICAL_NAME( EveLocalPositionCurve::LocalPositionBehavior, "EveLocalPositionCurve::LocalPositionBehavior" );
 
 #endif
