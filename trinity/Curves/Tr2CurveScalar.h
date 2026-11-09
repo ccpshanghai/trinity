@@ -17,6 +17,7 @@ enum Type
 	HERMITE = 2,
 };
 }
+BLUE_INVOKE_CANONICAL_NAME( Tr2CurveInterpolation::Type, "Tr2CurveInterpolation::Type" );
 
 
 namespace Tr2CurveTangentType
@@ -33,6 +34,7 @@ enum Type
 	FREE_SPLIT = 3,
 };
 }
+BLUE_INVOKE_CANONICAL_NAME( Tr2CurveTangentType::Type, "Tr2CurveTangentType::Type" );
 
 
 namespace Tr2CurveExtrapolation
@@ -49,6 +51,7 @@ enum Type
 	LINEAR = 3,
 };
 }
+BLUE_INVOKE_CANONICAL_NAME( Tr2CurveExtrapolation::Type, "Tr2CurveExtrapolation::Type" );
 
 
 struct Tr2CurveScalarKey
