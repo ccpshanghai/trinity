@@ -24,6 +24,7 @@ enum Type
 	_COUNT,
 };
 }
+BLUE_INVOKE_CANONICAL_NAME( Tr2WindowMode::Type, "Tr2WindowMode::Type" );
 
 
 namespace Tr2WindowShowState
