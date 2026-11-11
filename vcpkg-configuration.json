@@ -34,7 +34,7 @@
         "directx-dxc"
       ],
       "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
-      "reference": "mobile-exp",
+      "reference": "carbon-bind",
       "baseline": "df11087fa9e48a1c21865c077677483c140e499a"
     }
   ]
