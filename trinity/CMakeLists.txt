@@ -9,9 +9,10 @@ endif()
 project(trinity VERSION 1.0.0)
 
 # Public headers live in Include/, but quoted includes say include/. Those are
-# different directories on Linux, so the build tree carries an include -> Include
-# link and every target below searches it. The source tree is left untouched.
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+# different directories on a case-sensitive (Linux) host, whatever the target (Android
+# included), so the build tree carries an include -> Include link and every target below
+# searches it. The source tree is left untouched.
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
     set(_trinity_case_include_root "${CMAKE_CURRENT_BINARY_DIR}/case-include")
     if(NOT EXISTS "${_trinity_case_include_root}/include")
         file(MAKE_DIRECTORY "${_trinity_case_include_root}")
