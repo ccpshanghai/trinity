@@ -130,6 +130,18 @@
       }
     },
     {
+      "name": "arm64-android-vulkan-engine-windows",
+      "displayName": "M6 Android Vulkan engine library (_trinity_vulkan.so) -- Windows host",
+      "inherits": "arm64-android-release-windows",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "BUILD_VULKAN": "ON",
+        "BUILD_TESTING": "OFF",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "OFF",
+        "ANDROID_STL": "c++_shared"
+      }
+    },
+    {
       "name": "arm64-osx-metal",
       "displayName": "M3 Metal verification (Release, AL tests)",
       "inherits": "arm64-osx-release",
@@ -384,6 +396,21 @@
         "CMAKE_BUILD_TYPE": "Release",
         "VCPKG_TARGET_TRIPLET": "arm64-android-release",
         "VCPKG_HOST_TRIPLET": "x64-linux"
+      },
+      "hidden": true
+    },
+    {
+      "name": "arm64-android-release-windows",
+      "inherits": "arm64-android",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VCPKG_TARGET_TRIPLET": "arm64-android-release",
+        "VCPKG_HOST_TRIPLET": "x64-windows-release"
       },
       "hidden": true
     },
