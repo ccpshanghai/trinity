@@ -35,7 +35,7 @@
       ],
       "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
       "reference": "carbon-bind",
-      "baseline": "df11087fa9e48a1c21865c077677483c140e499a"
+      "baseline": "be3f5d7c3691fe1fac92e0302919774d241774a3"
     }
   ]
 }
