@@ -292,14 +292,15 @@ void Tr2RenderContextAL::Destroy() throw( )
 	// has already vkDestroyDevice'd -- and Tr2ShaderAL::Destroy() destroys its
 	// VkShaderModule directly against m_owner->m_device, so leaving the program
 	// for the destructor means destroying the module against a null device.
-	m_pipelineSource.m_shaderProgram = Tr2ShaderProgramAL();
-	// The bindings hold references to textures and buffers, and their descriptor pools are
-	// device objects: both have to go while the device is live, for the reason above.
+	// The bindings first: they hold references to textures and buffers and a raw pointer to
+	// the program below, and their descriptor pools are device objects -- all of it has to go
+	// while the device and the program are live, for the reason above.
 	m_bindings.Discard();
 	if( m_owner )
 	{
 		m_bindings.Release( *m_owner );
 	}
+	m_pipelineSource.m_shaderProgram = Tr2ShaderProgramAL();
 	m_drawUPHelper.Destroy();
 
 	// The bound attachments and the push/pop stacks hold texture references too, and for
@@ -674,6 +675,10 @@ ALResult Tr2RenderContextAL::SetTopology( Tr2RenderContextEnum::Topology topolog
 
 ALResult Tr2RenderContextAL::SetShaderProgram( const Tr2ShaderProgramAL& shader ) throw( )
 {
+	// The bindings are slots of the program's register map; a different program drops them.
+	// First, while m_pipelineSource still holds the old program: dropping its slots reads its
+	// register map, and the assignment below may release the last reference to it.
+	m_bindings.SetProgram( shader.IsValid() ? shader.TrinityALImpl_GetObject() : nullptr );
 	if( !( m_pipelineSource.m_shaderProgram == shader ) )
 	{
 		// The constant descriptor set/pool belong to the old program's layout, which
@@ -692,8 +697,6 @@ ALResult Tr2RenderContextAL::SetShaderProgram( const Tr2ShaderProgramAL& shader 
 		m_pipelineSource.m_shaderProgram = shader;
 		m_dirtyPso = true;
 	}
-	// The bindings are slots of this program's register map; a different program drops them.
-	m_bindings.SetProgram( shader.IsValid() ? shader.TrinityALImpl_GetObject() : nullptr );
 	return S_OK;
 }
 

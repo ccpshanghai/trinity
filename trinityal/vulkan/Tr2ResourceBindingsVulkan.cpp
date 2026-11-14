@@ -106,7 +106,13 @@ ALResult Tr2ResourceBindings::Reset() throw()
 // --------------------------------------------------------------------------------------
 void Tr2ResourceBindings::Discard() throw()
 {
-	Clear();
+	// Every slot, not Clear()'s current-program range: Discard runs at teardown, when the
+	// program may already be gone (or null after SetProgram( nullptr )), and a slot left
+	// holding a texture keeps its image alive past vkDestroyDevice
+	// (VUID-vkDestroyDevice-device-05137, seen on the first run of the suite).
+	std::fill( std::begin( m_srvs ), std::end( m_srvs ), Resource() );
+	std::fill( std::begin( m_uavs ), std::end( m_uavs ), Resource() );
+	std::fill( std::begin( m_samplers ), std::end( m_samplers ), Sampler() );
 	m_program = nullptr;
 	m_committed = false;
 	m_sealed = false;
