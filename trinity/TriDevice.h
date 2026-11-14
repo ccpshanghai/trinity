@@ -9,6 +9,10 @@
 #include "TriViewport.h"
 #include <upscaling/Tr2UpscalingAL.h>
 
+// Invoke canonical names of AL enums in hooked signatures (trinityal cannot include Blue).
+BLUE_INVOKE_CANONICAL_NAME( Tr2UpscalingAL::Technique, "Tr2UpscalingAL::Technique" );
+BLUE_INVOKE_CANONICAL_NAME( Tr2UpscalingAL::Setting, "Tr2UpscalingAL::Setting" );
+
 BLUE_DECLARE_INTERFACE( ITr2Scene );
 BLUE_DECLARE_INTERFACE( ITr2Updateable );
 

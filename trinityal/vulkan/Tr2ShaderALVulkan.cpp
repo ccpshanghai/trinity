@@ -7,6 +7,7 @@
 #include "Tr2ShaderALVulkan.h"
 #include "Tr2PrimaryRenderContextVulkan.h"
 #include "UtilitiesVulkan.h"
+#include "SpirvReflectVulkan.h"
 
 
 namespace
@@ -37,71 +38,31 @@ namespace
 	}
 
 	// The name of the module's OpEntryPoint for `executionModel`, or "" if the module cannot be
-	// read. Walking the words is enough and pulls in no SPIRV-Tools dependency: the header is
-	// five words, every instruction after it starts with ( wordCount << 16 ) | opcode, and
-	// OpEntryPoint (opcode 15) carries the execution model, the entry point's id, and then the
-	// name as a null-terminated string packed four bytes to a word.
+	// read.
 	//
-	// dxc emits exactly one entry point per module, so the execution-model match is a check
-	// rather than a search -- but it is worth making, because what it guards against is binding
-	// a fragment entry point to a vertex stage, which validation reports under the same VUID as
-	// the bug this function exists to fix.
+	// dxc emits exactly one entry point per module for a pass shader, so the execution-model
+	// match is a check rather than a search -- but it is worth making, because what it guards
+	// against is binding a fragment entry point to a vertex stage, which validation reports under
+	// the same VUID as the bug this function exists to fix.
 	std::string FindEntryPointName( const void* bytecode, size_t size, uint32_t executionModel )
 	{
-		const uint32_t k_magic = 0x07230203u;
-		const uint32_t k_opEntryPoint = 15u;
-		const size_t k_headerWords = 5;
-
-		if( !bytecode || size < ( k_headerWords + 1 ) * sizeof( uint32_t )
-			|| ( size % sizeof( uint32_t ) ) != 0 )
+		// What a malformed module yielded before the fault is still worth a look, as before.
+		SpirvReflectVulkan::SpirvReflection reflection;
+		SpirvReflectVulkan::ReflectSpirv( bytecode, size, reflection );
+		for( auto it = begin( reflection.entryPoints ); it != end( reflection.entryPoints ); ++it )
 		{
-			return std::string();
-		}
-
-		const uint32_t* words = reinterpret_cast<const uint32_t*>( bytecode );
-		const size_t wordCount = size / sizeof( uint32_t );
-
-		// Native-endian SPIR-V only. A byte-reversed module would need every word swapped, and
-		// nothing in this pipeline produces one -- dxc writes the host's order.
-		if( words[0] != k_magic )
-		{
-			return std::string();
-		}
-
-		std::string firstFound;
-		for( size_t i = k_headerWords; i < wordCount; )
-		{
-			const uint32_t instructionWords = words[i] >> 16;
-			const uint32_t opcode = words[i] & 0xffffu;
-			if( instructionWords == 0 || i + instructionWords > wordCount )
+			if( it->executionModel == executionModel )
 			{
-				break;  // Malformed. Reporting nothing beats reading past the end.
+				return it->name;
 			}
-
-			if( opcode == k_opEntryPoint && instructionWords >= 4 )
-			{
-				const char* name = reinterpret_cast<const char*>( &words[i + 3] );
-				const size_t available = ( instructionWords - 3 ) * sizeof( uint32_t );
-				const size_t length = strnlen( name, available );
-				if( words[i + 1] == executionModel )
-				{
-					return std::string( name, length );
-				}
-				if( firstFound.empty() )
-				{
-					firstFound.assign( name, length );
-				}
-			}
-			i += instructionWords;
 		}
-		return firstFound;
+		return reflection.entryPoints.empty() ? std::string() : reflection.entryPoints.front().name;
 	}
 }
 
 
 namespace TrinityALImpl
 {
-
 	Tr2ShaderAL::Tr2ShaderAL()
 		:m_shader( 0 ),
 		m_owner( nullptr )
@@ -180,7 +141,6 @@ namespace TrinityALImpl
 			m_bytecode.clear();
 			m_type = Tr2RenderContextEnum::INVALID_SHADER;
 			m_signature = Tr2ShaderSignatureAL();
-			m_type = Tr2RenderContextEnum::INVALID_SHADER;
 			m_entryPoint.clear();
 		}
 	}
@@ -195,11 +155,11 @@ namespace TrinityALImpl
 		return this == &shader;
 	}
 
-	Tr2RenderContextEnum::ShaderType Tr2ShaderAL::GetType() const 
-	{ 
+	Tr2RenderContextEnum::ShaderType Tr2ShaderAL::GetType() const
+	{
 		return m_type;
 	}
-	
+
 	ALResult Tr2ShaderAL::GetBytecode( Tr2ShaderBytecodeAL& bytecode ) const
 	{
 		if( !IsValid() )
@@ -217,9 +177,9 @@ namespace TrinityALImpl
 		return m_signature;
 	}
 
-	Tr2ALMemoryType Tr2ShaderAL::GetMemoryClass() const 
-	{ 
-		return AL_MEMORY_MANAGED; 
+	Tr2ALMemoryType Tr2ShaderAL::GetMemoryClass() const
+	{
+		return AL_MEMORY_MANAGED;
 	}
 
 	void Tr2ShaderAL::SetNullShaderType( Tr2RenderContextEnum::ShaderType type )
@@ -237,6 +197,5 @@ namespace TrinityALImpl
 	{
 		return E_NOTIMPL;
 	}
-
 }
 #endif

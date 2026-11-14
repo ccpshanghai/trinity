@@ -130,6 +130,18 @@
       }
     },
     {
+      "name": "arm64-android-vulkan-engine-windows",
+      "displayName": "M6 Android Vulkan engine library (_trinity_vulkan.so) -- Windows host",
+      "inherits": "arm64-android-release-windows",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "BUILD_VULKAN": "ON",
+        "BUILD_TESTING": "OFF",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "OFF",
+        "ANDROID_STL": "c++_shared"
+      }
+    },
+    {
       "name": "arm64-osx-metal",
       "displayName": "M3 Metal verification (Release, AL tests)",
       "inherits": "arm64-osx-release",
@@ -331,6 +343,48 @@
       "hidden": true
     },
     {
+      "name": "linux",
+      "inherits": "common",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "hidden": true
+    },
+    {
+      "name": "x64-linux",
+      "inherits": "linux",
+      "cacheVariables": {
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/vendor/github.com/carbonengine/vcpkg-registry/toolchains/x64-linux-carbon.cmake"
+      },
+      "hidden": true
+    },
+    {
+      "name": "x64-linux-vulkan",
+      "displayName": "Native Linux desktop Vulkan (GCC, Release)",
+      "inherits": "x64-linux",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/.cmake-build-x64-linux-vulkan",
+      "description": "Desktop Wayland on this machine. Not the Android cross preset: that one keeps the upstream x64-linux host triplet. BUILD_TESTING stays OFF so the DX12 AL suite and vulkan-tests are not pulled into this triplet. VCPKG_OVERLAY_PORTS is linux-overlay-ports: the registry checkout's portfiles (python3's versions database lists git-trees that are not in the remote) plus the Linux edits. Several carbon-* portfiles there copy files from ../external/<repo> over the pinned REF; vcpkg does not hash those files, so an edit there rebuilds nothing until the portfile itself changes.",
+      "environment": {
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/linux-overlay-ports"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-release",
+        "VCPKG_HOST_TRIPLET": "x64-linux-release",
+        "BUILD_VULKAN": "ON",
+        "BUILD_SHADER_COMPILER": "ON",
+        "BUILD_DX11": "OFF",
+        "BUILD_DX12": "OFF",
+        "BUILD_METAL": "OFF",
+        "BUILD_TESTING": "OFF",
+        "BUILD_SHADER_COMPILER_TESTS": "ON",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "OFF"
+      }
+    },
+    {
       "name": "arm64-android-release-linux",
       "inherits": "arm64-android",
       "condition": {
@@ -342,6 +396,21 @@
         "CMAKE_BUILD_TYPE": "Release",
         "VCPKG_TARGET_TRIPLET": "arm64-android-release",
         "VCPKG_HOST_TRIPLET": "x64-linux"
+      },
+      "hidden": true
+    },
+    {
+      "name": "arm64-android-release-windows",
+      "inherits": "arm64-android",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VCPKG_TARGET_TRIPLET": "arm64-android-release",
+        "VCPKG_HOST_TRIPLET": "x64-windows-release"
       },
       "hidden": true
     },

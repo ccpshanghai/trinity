@@ -42,7 +42,8 @@ struct GradientTextureConstructor : public IBlueDynamicResourceConstructor
 		return tex.Detach();
 	}
 };
-GradientTextureConstructor s_gradientTextureConstructor;
+// On the heap because BlueResMan owns what is registered; see SolidColorTexture.cpp.
+[[maybe_unused]] const bool s_gradientTextureConstructorRegistered = ( new GradientTextureConstructor(), true );
 
 
 bool IsGradientTexturePath( const std::string_view& path )

@@ -47,6 +47,27 @@ namespace TrinityALImpl
 		// re-binds before a draw when it has moved.
 		VkDeviceSize GetOffsetVulkan() const { return VkDeviceSize( m_slot ) * m_slotStride; }
 
+		// The address of m_buffer's first byte, for acceleration structure builds; add
+		// GetOffsetVulkan() for where the current contents start. 0 for a buffer created
+		// without SHADER_DEVICE_ADDRESS usage, which is every buffer on a device whose
+		// caps report no ray tracing. Not cached: a renaming buffer that grows its ring
+		// moves to a new VkBuffer.
+		VkDeviceAddress GetDeviceAddressVulkan() const;
+
+		// The acceleration structure built over this buffer, for a buffer created with
+		// Tr2GpuUsage::ACCELERATION_STRUCTURE: the TLAS (Tr2RtTopLevelAccelerationStructureAL)
+		// creates it and hands it here, because the engine binds the TLAS as this buffer
+		// (an SRV) and the resource set has to name the structure, not the buffer. Owned:
+		// Destroy queues it ahead of the buffer.
+		VkAccelerationStructureKHR GetAccelerationStructureVulkan() const
+		{
+			return m_accelerationStructure;
+		}
+		void SetAccelerationStructureVulkan( VkAccelerationStructureKHR accelerationStructure )
+		{
+			m_accelerationStructure = accelerationStructure;
+		}
+
 	private:
 		VkBuffer m_buffer;
 		VkDeviceMemory m_memory;
@@ -61,6 +82,7 @@ namespace TrinityALImpl
 		// and its unmap. VK_NULL_HANDLE while a non-synchronized map (or none) is outstanding.
 		VkBuffer m_stagingBuffer;
 		VkDeviceSize m_stagingOffset;
+		VkAccelerationStructureKHR m_accelerationStructure;
 
 		// The renaming ring for a synchronized vertex/index buffer: m_slotCount slots of
 		// m_slotStride bytes in one allocation, the current contents in m_slot, and the

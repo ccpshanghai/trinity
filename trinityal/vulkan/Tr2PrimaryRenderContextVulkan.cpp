@@ -5,6 +5,7 @@
 #if TRINITY_PLATFORM == TRINITY_VULKAN
 
 #include "Tr2PrimaryRenderContextVulkan.h"
+#include "Tr2RtUtilitiesVulkan.h"
 #include "Tr2VideoAdapterInfoALVulkan.h"
 #include "ALLog.h"
 #include "VkResult.h"
@@ -486,6 +487,34 @@ namespace
 			reinterpret_cast<ANativeWindow*>( window )
 		};
 		CR_RETURN_HR( Vk2Al( vkCreateAndroidSurfaceKHR( instance, &surfacecreateInfo, nullptr, &surface ) ) );
+#elif defined( VK_USE_PLATFORM_WAYLAND_KHR )
+		// The shell owns this for the SDL window's lifetime and passes its address
+		// as Tr2WindowHandle. Layout is wl_display* then wl_surface*. Trinity reads
+		// the pointers and does not free them. window == 0 is handled above.
+		struct CarbonWaylandWindow
+		{
+			struct wl_display* display;
+			struct wl_surface* surface;
+		};
+		const auto* wayland = reinterpret_cast<const CarbonWaylandWindow*>( static_cast<uintptr_t>( window ) );
+		if( !wayland || !wayland->display || !wayland->surface )
+		{
+			surface = VK_NULL_HANDLE;
+			return E_FAIL;
+		}
+		VkWaylandSurfaceCreateInfoKHR surfacecreateInfo = {
+			VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR,
+			nullptr,
+			0,
+			wayland->display,
+			wayland->surface
+		};
+		const VkResult created = vkCreateWaylandSurfaceKHR( instance, &surfacecreateInfo, nullptr, &surface );
+		if( created != VK_SUCCESS )
+		{
+			CCP_AL_LOGERR( "vkCreateWaylandSurfaceKHR failed (%d); VK_KHR_wayland_surface was rejected. Not creating an X11 surface.", int( created ) );
+			return Vk2Al( created );
+		}
 #else
 		static_assert( false, "Define swapchain creation for this platform here" );
 #endif
@@ -711,27 +740,109 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	// it rather than failing device creation. Its dependencies (maintenance2,
 	// image_format_list) are core from 1.2, which every device past the two required
 	// features has.
-	bool swapChainMutableFormat = false;
+	std::vector<VkExtensionProperties> availableExtensions;
 	{
 		uint32_t extensionCount = 0;
 		vkEnumerateDeviceExtensionProperties( physicalDevice.device, nullptr, &extensionCount, nullptr );
-		std::vector<VkExtensionProperties> availableExtensions( extensionCount );
+		availableExtensions.resize( extensionCount );
 		if( extensionCount )
 		{
 			vkEnumerateDeviceExtensionProperties( physicalDevice.device, nullptr, &extensionCount, availableExtensions.data() );
 		}
+	}
+	auto hasExtension = [&availableExtensions]( const char* name ) {
 		for( auto it = begin( availableExtensions ); it != end( availableExtensions ); ++it )
 		{
-			if( strcmp( it->extensionName, VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME ) == 0 )
+			if( strcmp( it->extensionName, name ) == 0 )
 			{
-				swapChainMutableFormat = physicalDevice.properties.apiVersion >= VK_API_VERSION_1_2;
-				break;
+				return true;
 			}
 		}
-	}
+		return false;
+	};
+
+	const bool swapChainMutableFormat = hasExtension( VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME ) && physicalDevice.properties.apiVersion >= VK_API_VERSION_1_2;
 	if( swapChainMutableFormat )
 	{
 		extensions.push_back( VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME );
+	}
+
+	// Ray tracing: optional, and all or nothing. Three extensions, three features and (after
+	// vkCreateDevice) every entry point, or the cap stays false. When it is false nothing below
+	// adds an extension, a feature struct or a flag, so vkCreateDevice gets exactly the
+	// arguments it got before this backend knew about ray tracing -- that is the path the S23
+	// takes (it has acceleration_structure and ray_query but no ray_tracing_pipeline).
+	// buffer_device_address, descriptor_indexing and spirv_1_4, which the two KHR extensions
+	// depend on, are core from 1.2, hence the version floor; no extension name is needed for
+	// them.
+	//
+	// raytracingMissing is the reason the cap is false, for the one log line below; null means on.
+	// TRINITY_VULKAN_RAYTRACING=0 forces the cap off on a device that has everything, so the
+	// no-ray-tracing device can be exercised on a desktop GPU. A TRINITY_* name like the AL's
+	// other switches (TRINITY_PIPELINE_CACHE_DIR, TRINITY_SERIALIZE): it is read here, in the
+	// AL, because the app shell has no C++ path into this extension module (see
+	// PipelineCacheDirectory above) and device creation is the only place the answer is used.
+	const char* raytracingMissing = nullptr;
+	{
+		const char* forced = getenv( "TRINITY_VULKAN_RAYTRACING" );
+		if( forced && strcmp( forced, "0" ) == 0 )
+		{
+			raytracingMissing = "forced off by TRINITY_VULKAN_RAYTRACING=0";
+		}
+		else if( physicalDevice.properties.apiVersion < VK_API_VERSION_1_2 )
+		{
+			raytracingMissing = "device API version below 1.2";
+		}
+		else if( !hasExtension( VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME ) )
+		{
+			raytracingMissing = "no " VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME;
+		}
+		else if( !hasExtension( VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME ) )
+		{
+			raytracingMissing = "no " VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME;
+		}
+		else if( !hasExtension( VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME ) )
+		{
+			raytracingMissing = "no " VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME;
+		}
+	}
+	// Feature and property structs of an extension may only be chained once the device is
+	// known to have it, so both queries wait for the extension check above.
+	VkPhysicalDeviceRayTracingPipelinePropertiesKHR rayTracingPipelineProperties = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR };
+	VkPhysicalDeviceAccelerationStructurePropertiesKHR accelerationStructureProperties = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR };
+	if( !raytracingMissing )
+	{
+		VkPhysicalDeviceBufferDeviceAddressFeatures supportedBufferDeviceAddress = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES };
+		VkPhysicalDeviceAccelerationStructureFeaturesKHR supportedAccelerationStructure = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR, &supportedBufferDeviceAddress };
+		VkPhysicalDeviceRayTracingPipelineFeaturesKHR supportedRayTracingPipeline = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR, &supportedAccelerationStructure };
+		VkPhysicalDeviceFeatures2 supportedRaytracingFeatures = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &supportedRayTracingPipeline };
+		vkGetPhysicalDeviceFeatures2( physicalDevice.device, &supportedRaytracingFeatures );
+		if( !supportedAccelerationStructure.accelerationStructure )
+		{
+			raytracingMissing = "no accelerationStructure feature";
+		}
+		else if( !supportedRayTracingPipeline.rayTracingPipeline )
+		{
+			raytracingMissing = "no rayTracingPipeline feature";
+		}
+		else if( !supportedBufferDeviceAddress.bufferDeviceAddress )
+		{
+			raytracingMissing = "no bufferDeviceAddress feature";
+		}
+		else
+		{
+			rayTracingPipelineProperties.pNext = &accelerationStructureProperties;
+			VkPhysicalDeviceProperties2 properties2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &rayTracingPipelineProperties };
+			vkGetPhysicalDeviceProperties2( physicalDevice.device, &properties2 );
+			rayTracingPipelineProperties.pNext = nullptr;
+			accelerationStructureProperties.pNext = nullptr;
+		}
+	}
+	if( !raytracingMissing )
+	{
+		extensions.push_back( VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME );
+		extensions.push_back( VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME );
+		extensions.push_back( VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME );
 	}
 
 	VkPhysicalDeviceShaderDemoteToHelperInvocationFeatures enabledDemote = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES };
@@ -773,9 +884,18 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	// Tr2PipelineStatsQueryAL cannot be implemented at all without this.
 	enabledFeatures.pipelineStatisticsQuery = physicalDevice.features.pipelineStatisticsQuery;
 
+	// Chained in front of the existing features only when every ray-tracing requirement above
+	// was met; otherwise pNext is &enabledDynamicRendering, as it always was.
+	VkPhysicalDeviceBufferDeviceAddressFeatures enabledBufferDeviceAddress = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES, &enabledDynamicRendering };
+	enabledBufferDeviceAddress.bufferDeviceAddress = VK_TRUE;
+	VkPhysicalDeviceAccelerationStructureFeaturesKHR enabledAccelerationStructure = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR, &enabledBufferDeviceAddress };
+	enabledAccelerationStructure.accelerationStructure = VK_TRUE;
+	VkPhysicalDeviceRayTracingPipelineFeaturesKHR enabledRayTracingPipeline = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR, &enabledAccelerationStructure };
+	enabledRayTracingPipeline.rayTracingPipeline = VK_TRUE;
+
 	VkDeviceCreateInfo device_create_info = {
 		VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-		&enabledDynamicRendering,
+		raytracingMissing ? static_cast<const void*>( &enabledDynamicRendering ) : static_cast<const void*>( &enabledRayTracingPipeline ),
 		0,
 		uint32_t( queueCreateInfos.size() ),
 		&queueCreateInfos[0],
@@ -815,6 +935,56 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	{
 		CCP_AL_LOGERR( "dynamic rendering / synchronization2 entry points not resolvable despite the features" );
 		return E_FAIL;
+	}
+
+	// The ray-tracing entry points, through vkGetDeviceProcAddr for the reason the members give:
+	// Android's libvulkan exports no KHR prototypes, so a direct call would not even link there.
+	// A device that took the extensions and then fails to resolve one keeps the extensions (the
+	// device exists) but reports no ray tracing, so no buffer ever asks for a device address.
+	RaytracingEntryPointsVulkan raytracingEntryPoints;
+	if( !raytracingMissing )
+	{
+		raytracingEntryPoints.getAccelerationStructureBuildSizes = reinterpret_cast<PFN_vkGetAccelerationStructureBuildSizesKHR>( vkGetDeviceProcAddr( device, "vkGetAccelerationStructureBuildSizesKHR" ) );
+		raytracingEntryPoints.createAccelerationStructure = reinterpret_cast<PFN_vkCreateAccelerationStructureKHR>( vkGetDeviceProcAddr( device, "vkCreateAccelerationStructureKHR" ) );
+		raytracingEntryPoints.destroyAccelerationStructure = reinterpret_cast<PFN_vkDestroyAccelerationStructureKHR>( vkGetDeviceProcAddr( device, "vkDestroyAccelerationStructureKHR" ) );
+		raytracingEntryPoints.cmdBuildAccelerationStructures = reinterpret_cast<PFN_vkCmdBuildAccelerationStructuresKHR>( vkGetDeviceProcAddr( device, "vkCmdBuildAccelerationStructuresKHR" ) );
+		raytracingEntryPoints.getAccelerationStructureDeviceAddress = reinterpret_cast<PFN_vkGetAccelerationStructureDeviceAddressKHR>( vkGetDeviceProcAddr( device, "vkGetAccelerationStructureDeviceAddressKHR" ) );
+		raytracingEntryPoints.createRayTracingPipelines = reinterpret_cast<PFN_vkCreateRayTracingPipelinesKHR>( vkGetDeviceProcAddr( device, "vkCreateRayTracingPipelinesKHR" ) );
+		raytracingEntryPoints.getRayTracingShaderGroupHandles = reinterpret_cast<PFN_vkGetRayTracingShaderGroupHandlesKHR>( vkGetDeviceProcAddr( device, "vkGetRayTracingShaderGroupHandlesKHR" ) );
+		raytracingEntryPoints.cmdTraceRays = reinterpret_cast<PFN_vkCmdTraceRaysKHR>( vkGetDeviceProcAddr( device, "vkCmdTraceRaysKHR" ) );
+		// Core 1.2, KHR alias second, like the dynamic rendering entry points above.
+		raytracingEntryPoints.getBufferDeviceAddress = reinterpret_cast<PFN_vkGetBufferDeviceAddress>( vkGetDeviceProcAddr( device, "vkGetBufferDeviceAddress" ) );
+		if( !raytracingEntryPoints.getBufferDeviceAddress )
+		{
+			raytracingEntryPoints.getBufferDeviceAddress = reinterpret_cast<PFN_vkGetBufferDeviceAddress>( vkGetDeviceProcAddr( device, "vkGetBufferDeviceAddressKHR" ) );
+		}
+		// The level wanted is PIPELINE, and nothing uses ACCELERATION_STRUCTURE alone (see
+		// RaytracingLevelVulkan), so either group missing turns ray tracing off.
+		if( !raytracingEntryPoints.HasAccelerationStructureEntryPoints() )
+		{
+			raytracingMissing = "an acceleration structure entry point did not resolve";
+		}
+		else if( !raytracingEntryPoints.HasPipelineEntryPoints() )
+		{
+			raytracingMissing = "a ray tracing pipeline entry point did not resolve";
+		}
+		if( raytracingMissing )
+		{
+			raytracingEntryPoints = RaytracingEntryPointsVulkan();
+		}
+	}
+	const RaytracingLevelVulkan raytracingLevel = raytracingMissing ? RaytracingLevelVulkan::NONE : RaytracingLevelVulkan::PIPELINE;
+	if( raytracingMissing )
+	{
+		CCP_AL_LOG( "vulkan: ray tracing off (%s)", raytracingMissing );
+	}
+	else
+	{
+		CCP_AL_LOG( "vulkan: ray tracing on (level=pipeline shaderGroupHandleSize=%u shaderGroupBaseAlignment=%u maxRayRecursionDepth=%u minAccelerationStructureScratchOffsetAlignment=%u)",
+					rayTracingPipelineProperties.shaderGroupHandleSize,
+					rayTracingPipelineProperties.shaderGroupBaseAlignment,
+					rayTracingPipelineProperties.maxRayRecursionDepth,
+					accelerationStructureProperties.minAccelerationStructureScratchOffsetAlignment );
 	}
 
 	Tr2DisplayModeInfo actualMode = presentationParameters.mode;
@@ -898,6 +1068,12 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	m_vkCmdEndRendering = endRendering;
 	m_vkCmdPipelineBarrier2 = pipelineBarrier2;
 	m_vkQueueSubmit2 = queueSubmit2;
+	// Before anything below creates a buffer: Tr2BufferAL::Create reads the cap to decide its
+	// usage bits, and m_zeroBuffer / the dummy texture are created further down.
+	m_caps.m_raytracingLevel = raytracingLevel;
+	m_raytracing = raytracingEntryPoints;
+	m_rayTracingPipelineProperties = rayTracingPipelineProperties;
+	m_accelerationStructureProperties = accelerationStructureProperties;
 	// Before AssignFromSwapChainVulkan below, which reads it to decide whether the back
 	// buffer gets sRGB views.
 	m_swapChainMutableFormat = swapChainMutableFormat;
@@ -1016,6 +1192,12 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 			Tr2GpuUsage::SHADER_RESOURCE,
 			&dummyData,
 			*this );
+		Tr2SubresourceData dummyLayers[2] = { dummyData, dummyData };
+		m_dummyTextureArray.Create(
+			Tr2BitmapDimensions( Tr2RenderContextEnum::TEX_TYPE_2D, Tr2RenderContextEnum::PIXEL_FORMAT_B8G8R8A8_UNORM, 1, 1, 1, 1, 2 ),
+			Tr2GpuUsage::SHADER_RESOURCE,
+			dummyLayers,
+			*this );
 
 		VkSamplerCreateInfo dummySamplerInfo = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
 		dummySamplerInfo.magFilter = VK_FILTER_NEAREST;
@@ -1024,6 +1206,16 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		// draws a best-practices advisory per device; the dummy has one mip either way.
 		dummySamplerInfo.maxLod = VK_LOD_CLAMP_NONE;
 		vkCreateSampler( m_device, &dummySamplerInfo, nullptr, &m_dummySampler );
+
+		// Submitted here rather than with the first frame: the shell's first
+		// SetPresentParameters ends this command buffer unsubmitted and BeginFrame moves on
+		// to the next slot, so the dummies' uploads were dropped and both stayed UNDEFINED
+		// and unwritten -- unnoticed until the froxel fog sampled one
+		// (VUID-vkCmdDispatch-None-09600 on every dispatch that read it).
+		if( m_commandBufferRecording )
+		{
+			FlushAndSyncVulkan();
+		}
 	}
 
 	if( m_events )
@@ -1054,7 +1246,14 @@ void Tr2PrimaryRenderContextAL::Destroy()
 	}
 	m_pipelines.clear();
 
+	for( auto& layout : m_rtResourceLayouts )
+	{
+		vkDestroyDescriptorSetLayout( m_device, layout.second, nullptr );
+	}
+	m_rtResourceLayouts.clear();
+
 	m_dummyTexture = Tr2TextureAL();
+	m_dummyTextureArray = Tr2TextureAL();
 	if( m_dummySampler != VK_NULL_HANDLE )
 	{
 		vkDestroySampler( m_device, m_dummySampler, nullptr );
@@ -1071,6 +1270,7 @@ void Tr2PrimaryRenderContextAL::Destroy()
 		m_zeroBufferMemory = VK_NULL_HANDLE;
 	}
 	DestroyUploadVulkan();
+	DestroyRtScratchVulkan();
 	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
 	{
 		if( m_frameData[i].commandBuffer != VK_NULL_HANDLE )
@@ -1158,6 +1358,10 @@ void Tr2PrimaryRenderContextAL::Destroy()
 		vkDestroyDevice( m_device, nullptr );
 		m_device = VK_NULL_HANDLE;
 	}
+	// After the device and everything destroyed with it: a pending destroy above may still
+	// call through one of these entry points.
+	m_caps.m_raytracingLevel = RaytracingLevelVulkan::NONE;
+	m_raytracing = RaytracingEntryPointsVulkan();
 	m_graphicsQueue = VK_NULL_HANDLE;
 	m_presentQueue = VK_NULL_HANDLE;
 	m_graphicsQueueFamilyIndex = 0xffffffffu;
@@ -1401,6 +1605,11 @@ VkImageView Tr2PrimaryRenderContextAL::GetDummyImageViewVulkan() const
 		: VK_NULL_HANDLE;
 }
 
+VkImageView Tr2PrimaryRenderContextAL::GetDummyArrayImageViewVulkan() const
+{
+	return m_dummyTextureArray.IsValid() ? m_dummyTextureArray.m_texture->GetImageView( Tr2RenderContextEnum::COLOR_SPACE_LINEAR ) : VK_NULL_HANDLE;
+}
+
 ALResult Tr2PrimaryRenderContextAL::Present()
 {
 	if( !IsValid() )
@@ -1613,6 +1822,35 @@ ALResult Tr2PrimaryRenderContextAL::FlushAndSyncVulkan()
 	return S_OK;
 }
 
+ALResult Tr2PrimaryRenderContextAL::AcquireRtResourceLayoutVulkan( std::vector<VkDescriptorSetLayoutBinding> bindings, VkDescriptorSetLayout& layout )
+{
+	layout = VK_NULL_HANDLE;
+	std::sort( bindings.begin(), bindings.end(), []( const VkDescriptorSetLayoutBinding& a, const VkDescriptorSetLayoutBinding& b ) { return a.binding < b.binding; } );
+	std::vector<uint32_t> key;
+	key.reserve( bindings.size() * 4 );
+	for( auto& binding : bindings )
+	{
+		if( binding.pImmutableSamplers )
+		{
+			// Not part of the key, and nothing on this path uses them.
+			return E_INVALIDARG;
+		}
+		key.insert( key.end(), { binding.binding, uint32_t( binding.descriptorType ), binding.descriptorCount, uint32_t( binding.stageFlags ) } );
+	}
+	auto found = m_rtResourceLayouts.find( key );
+	if( found != m_rtResourceLayouts.end() )
+	{
+		layout = found->second;
+		return S_OK;
+	}
+	VkDescriptorSetLayoutCreateInfo layoutInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+	layoutInfo.bindingCount = uint32_t( bindings.size() );
+	layoutInfo.pBindings = bindings.data();
+	CR_RETURN_HR( Vk2Al( vkCreateDescriptorSetLayout( m_device, &layoutInfo, nullptr, &layout ) ) );
+	m_rtResourceLayouts[key] = layout;
+	return S_OK;
+}
+
 uint64_t Tr2PrimaryRenderContextAL::GetRecordingFrameNumber() const
 {
 	return m_recordingFrame;
@@ -1620,10 +1858,35 @@ uint64_t Tr2PrimaryRenderContextAL::GetRecordingFrameNumber() const
 
 ALResult Tr2PrimaryRenderContextAL::AllocateUploadVulkan( VkDeviceSize size, VkBuffer& buffer, VkDeviceSize& offset, void*& mapped )
 {
+	return AllocateUploadChunkVulkan( size, 0, buffer, offset, mapped );
+}
+
+ALResult Tr2PrimaryRenderContextAL::AllocateUploadVulkan( VkDeviceSize size, VkDeviceSize alignment, VkDeviceAddress& address, void*& mapped )
+{
+	address = 0;
+	mapped = nullptr;
+	if( !m_caps.SupportsAccelerationStructuresVulkan() )
+	{
+		return E_INVALIDCALL;
+	}
+	VkBuffer buffer = VK_NULL_HANDLE;
+	VkDeviceSize offset = 0;
+	FORWARD_HR( AllocateUploadChunkVulkan( size, std::max<VkDeviceSize>( alignment, 1 ), buffer, offset, mapped ) );
+	address = m_upload[m_frameIndex].address + offset;
+	return S_OK;
+}
+
+ALResult Tr2PrimaryRenderContextAL::AllocateUploadChunkVulkan( VkDeviceSize size, VkDeviceSize addressAlignment, VkBuffer& buffer, VkDeviceSize& offset, void*& mapped )
+{
 	UploadChunk& chunk = m_upload[m_frameIndex];
 	// 16-byte aligned starts: nothing a vkCmdCopyBuffer source needs, everything a caller
-	// writing vectors through the pointer is happier with.
-	VkDeviceSize start = ( chunk.used + 15 ) & ~VkDeviceSize( 15 );
+	// writing vectors through the pointer is happier with. An address the GPU reads is aligned
+	// as an address, not as an offset: the chunk's own address is only as aligned as its memory
+	// requirements say, which need not cover a shader binding table's base alignment.
+	auto startIn = [addressAlignment]( const UploadChunk& c ) -> VkDeviceSize {
+		return addressAlignment ? TrinityALImpl::AlignUpVulkan( c.address + c.used, addressAlignment ) - c.address : ( c.used + 15 ) & ~VkDeviceSize( 15 );
+	};
+	VkDeviceSize start = startIn( chunk );
 	if( chunk.buffer == VK_NULL_HANDLE || start + size > chunk.size )
 	{
 		// The chunk retires with this frame, not now: copies recorded earlier this frame
@@ -1638,9 +1901,21 @@ ALResult Tr2PrimaryRenderContextAL::AllocateUploadVulkan( VkDeviceSize size, VkB
 		// Doubling, from a megabyte: a frame's synchronized writes are a few screen quads and
 		// a light buffer, and a chunk that was too small once is replaced by one that will
 		// not be for that frame's shape again.
-		VkDeviceSize wanted = std::max<VkDeviceSize>( VkDeviceSize( 1 ) << 20, size * 2 );
+		VkDeviceSize wanted = std::max<VkDeviceSize>( VkDeviceSize( 1 ) << 20, ( size + addressAlignment ) * 2 );
 		wanted = std::max( wanted, chunk.size * 2 );
-		FORWARD_HR( TrinityALImpl::CreateBuffer( chunk.buffer, chunk.memory, size_t( wanted ), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		// Ray tracing reads its per-frame data from here too (shader binding tables, TLAS
+		// instance descriptors), by device address; a device without acceleration structures
+		// keeps the transfer-source chunk it always had.
+		VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+		if( m_caps.SupportsAccelerationStructuresVulkan() )
+		{
+			usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+		}
+		if( m_caps.SupportsRaytracing() )
+		{
+			usage |= VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR;
+		}
+		FORWARD_HR( TrinityALImpl::CreateBuffer( chunk.buffer, chunk.memory, size_t( wanted ), usage,
 			VkMemoryPropertyFlagBits( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ), *this ) );
 		void* base = nullptr;
 		const ALResult mappedResult = Vk2Al( vkMapMemory( m_device, chunk.memory, 0, VK_WHOLE_SIZE, 0, &base ) );
@@ -1651,16 +1926,79 @@ ALResult Tr2PrimaryRenderContextAL::AllocateUploadVulkan( VkDeviceSize size, VkB
 			chunk = UploadChunk();
 			return mappedResult;
 		}
+		if( usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT )
+		{
+			VkBufferDeviceAddressInfo addressInfo = { VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO };
+			addressInfo.buffer = chunk.buffer;
+			chunk.address = m_raytracing.getBufferDeviceAddress( m_device, &addressInfo );
+		}
 		chunk.mapped = static_cast<uint8_t*>( base );
 		chunk.size = wanted;
 		chunk.used = 0;
-		start = 0;
+		start = startIn( chunk );
 	}
 	buffer = chunk.buffer;
 	offset = start;
 	mapped = chunk.mapped + start;
 	chunk.used = start + size;
 	return S_OK;
+}
+
+ALResult Tr2PrimaryRenderContextAL::AllocateRtScratchVulkan( VkDeviceSize size, VkDeviceAddress& address )
+{
+	address = 0;
+	if( !m_caps.SupportsAccelerationStructuresVulkan() )
+	{
+		return E_INVALIDCALL;
+	}
+	// A refit may need no scratch (updateScratchSize 0 is legal); it still gets an address
+	// inside the arena rather than a failed build.
+	size = std::max<VkDeviceSize>( size, 1 );
+	const VkDeviceSize alignment = std::max<VkDeviceSize>( m_accelerationStructureProperties.minAccelerationStructureScratchOffsetAlignment, 1 );
+	RtScratchArena& arena = m_rtScratch[m_frameIndex];
+	// Aligned as an address, not as an offset: the buffer's own address is only as aligned as
+	// its memory requirements say, which need not cover the scratch alignment.
+	VkDeviceAddress start = ( arena.address + arena.used + alignment - 1 ) / alignment * alignment;
+	if( arena.buffer == VK_NULL_HANDLE || start + size > arena.address + arena.size )
+	{
+		// Builds recorded earlier this frame still use the old arena; it goes when this slot's
+		// fence has passed.
+		const VkDeviceSize retired = arena.size;
+		if( arena.buffer != VK_NULL_HANDLE )
+		{
+			DestroyLaterVulkan( arena.buffer, &vkDestroyBuffer );
+			DestroyLaterVulkan( arena.memory, &vkFreeMemory );
+			arena = RtScratchArena();
+		}
+		VkDeviceSize wanted = std::max<VkDeviceSize>( VkDeviceSize( 1 ) << 20, size + alignment );
+		wanted = std::max( wanted, retired * 2 );
+		FORWARD_HR( TrinityALImpl::CreateBuffer( arena.buffer, arena.memory, size_t( wanted ), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, *this ) );
+		VkBufferDeviceAddressInfo addressInfo = { VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO };
+		addressInfo.buffer = arena.buffer;
+		arena.address = m_raytracing.getBufferDeviceAddress( m_device, &addressInfo );
+		arena.size = wanted;
+		arena.used = 0;
+		start = ( arena.address + alignment - 1 ) / alignment * alignment;
+		// A handful of lines over a run: the arena only grows, and by doubling.
+		CCP_AL_LOG( "vulkan: ray tracing scratch arena for frame slot %u is now %llu KiB", m_frameIndex, (unsigned long long)( wanted >> 10 ) );
+	}
+	address = start;
+	arena.used = start + size - arena.address;
+	return S_OK;
+}
+
+void Tr2PrimaryRenderContextAL::DestroyRtScratchVulkan()
+{
+	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
+	{
+		RtScratchArena& arena = m_rtScratch[i];
+		if( arena.buffer != VK_NULL_HANDLE )
+		{
+			vkDestroyBuffer( m_device, arena.buffer, nullptr );
+			vkFreeMemory( m_device, arena.memory, nullptr );
+		}
+		arena = RtScratchArena();
+	}
 }
 
 void Tr2PrimaryRenderContextAL::DestroyUploadVulkan()
@@ -1798,6 +2136,10 @@ ALResult Tr2PrimaryRenderContextAL::BeginFrame()
 	// flight and the sets it used can be handed out again -- and so can its upload memory.
 	ResetConstantPoolVulkan();
 	m_upload[m_frameIndex].used = 0;
+	m_rtScratch[m_frameIndex].used = 0;
+	// The open batch's "before" barrier, if any, is in the last frame's command buffer, and
+	// whatever that frame recorded after it is not ordered before this frame's first build.
+	m_asBatch.open = false;
 
 	m_defaultBackBuffer.m_texture->SetCurrentImageVulkan( m_currentImage );
 

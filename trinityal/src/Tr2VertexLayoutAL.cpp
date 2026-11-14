@@ -2,7 +2,7 @@
 
 #include "StdAfx.h"
 #include "../include/Tr2VertexLayoutAL.h"
-#include TRINITY_AL_PLATFORM_INCLUDE( Tr2VertexLayoutAL )
+#include TRINITY_AL_PLATFORM_INCLUDE(Tr2VertexLayoutAL)
 
 namespace
 {

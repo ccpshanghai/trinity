@@ -29,3 +29,4 @@ public:
 };
 
 TYPEDEF_BLUECLASS( Tr2PlatformInfo );
+BLUE_INVOKE_CANONICAL_NAME( Tr2PlatformInfo::StaticCap, "Tr2PlatformInfo::StaticCap" );

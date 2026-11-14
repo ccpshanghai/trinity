@@ -8,7 +8,7 @@
 #include "../include/Tr2CapsAL.h"
 
 
-#include TRINITY_AL_PLATFORM_INCLUDE( Tr2ResourceSetAL )
+#include TRINITY_AL_PLATFORM_INCLUDE(Tr2ResourceSetAL)
 
 
 namespace

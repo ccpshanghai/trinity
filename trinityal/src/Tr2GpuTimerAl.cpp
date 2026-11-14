@@ -3,7 +3,7 @@
 #include "StdAfx.h"
 #include "../include/Tr2GpuTimerAL.h"
 
-#include TRINITY_AL_PLATFORM_INCLUDE( Tr2GpuTimerAL )
+#include TRINITY_AL_PLATFORM_INCLUDE(Tr2GpuTimerAL)
 
 bool g_gpuTimersEnabled = true;
 

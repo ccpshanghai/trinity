@@ -1,0 +1,17 @@
+diff --git a/Lib/sysconfig/__init__.py b/Lib/sysconfig/__init__.py
+index ebe371182..e351df7da 100644
+--- a/Lib/sysconfig/__init__.py
++++ b/Lib/sysconfig/__init__.py
+@@ -51,10 +51,10 @@
+     'nt': {
+         'stdlib': '{installed_base}/Lib',
+         'platstdlib': '{base}/Lib',
+         'purelib': '{base}/Lib/site-packages',
+         'platlib': '{base}/Lib/site-packages',
+-        'include': '{installed_base}/Include',
+-        'platinclude': '{installed_base}/Include',
++        'include': '{installed_base}/../../include/python{py_version_short}{abiflags}',
++        'platinclude': '{installed_base}/../../include/python{py_version_short}{abiflags}',
+         'scripts': '{base}/Scripts',
+         'data': '{base}',
+         },

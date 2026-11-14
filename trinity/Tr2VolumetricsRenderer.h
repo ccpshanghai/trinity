@@ -216,6 +216,14 @@ private:
 
 	Tr2EffectPtr m_updateMieEnvironmentMap;
 
+	// The ray-traced fog's last failure (no pipeline, no shader table) has been logged; cleared by
+	// the next trace, so a failure that persists is one line, not one per frame.
+	bool m_rtFogFailureLogged = false;
+
+	// FroxelPerObjectData in Fog.fxh, member for member: the froxel kernels read it at b3, and on
+	// Vulkan the ray-traced kernel's shader record is a byte copy of it. A newer Carbon opens the
+	// struct with two projection matrices (2432 bytes); EVE's 2026-COW content is brought back to
+	// this layout by a res-patch in the parent repository (fog.fxh.patch), so the size is pinned.
 	struct FogPerObjectData
 	{
 		uint32_t ResolutionX;
@@ -276,6 +284,7 @@ private:
 
 		CcpMath::Sphere planets[2];
 	};
+	static_assert( sizeof( FogPerObjectData ) == 2304, "FogPerObjectData must match FroxelPerObjectData in Fog.fxh" );
 
 	void UpdatePerObjectData( FogPerObjectData * data, const Matrix& view, const Matrix& projection, const Matrix& viewLast, const Matrix& projectionLast, const Vector3d& origin, const Vector3d& originShift, const Vector3& sunDirection, const Color& sunColor, uint32_t width, uint32_t height, uint32_t depth, const Vector3& jitter, const Tr2ShadowMap* cascadedShadowMap );
 
