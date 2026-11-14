@@ -9,6 +9,8 @@
 
 class Tr2RenderContextAL;
 
+class Tr2ResourceBindings;
+
 namespace TrinityALImpl
 {
 	class Tr2BufferAL : public Tr2DeviceResourceAL<Tr2BufferAL>
@@ -83,7 +85,7 @@ namespace TrinityALImpl
 		// names a new TrinityALImpl::Tr2RenderContextAL instead of the global class --
 		// MSVC resolved it to the global anyway, clang does not.
 		friend class ::Tr2RenderContextAL;
-		friend class Tr2ResourceSetAL;
+		friend class ::Tr2ResourceBindings;
 	};
 }
 

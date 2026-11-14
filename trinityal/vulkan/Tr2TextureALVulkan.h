@@ -12,16 +12,42 @@
 
 class Tr2RenderContextAL;
 
-namespace TrinityALImpl
-{
-	class Tr2ResourceSetAL;
-}
+class Tr2ResourceBindings;
 
 struct Tr2DisplayModeInfo;
 
 
 namespace TrinityALImpl
 {
+	// Upstream #96's asynchronous texture readback. CreateReadback records a copy of the region
+	// into a host-visible buffer on the frame being recorded and returns at once; the copy is
+	// ready once GetRenderedFrameNumber reaches that frame, and Map hands out the pointer.
+	// Same shape as Tr2ReadbackAL in the Metal backend. The engine uses it for picking
+	// (EveSpaceScene), where a stall per click is what MapForReading would cost.
+	class Tr2ReadbackAL : public Tr2DeviceResourceAL<Tr2ReadbackAL>
+	{
+	public:
+		Tr2ReadbackAL( Tr2PrimaryRenderContextAL& owner, VkBuffer buffer, VkDeviceMemory memory, uint32_t rowPitch, uint64_t frameNumber );
+		~Tr2ReadbackAL();
+
+		bool IsReady( Tr2PrimaryRenderContextAL& renderContext ) const;
+		ALResult Map( const void*& pointer, uint32_t& rowPitch, Tr2PrimaryRenderContextAL& renderContext ) const;
+
+		void Destroy();
+		void Describe( Tr2DeviceResourceDescriptionAL& description ) const;
+		Tr2ALMemoryType GetMemoryClass() const;
+		bool IsValid() const;
+
+	private:
+		Tr2PrimaryRenderContextAL* m_owner;
+		VkBuffer m_buffer;
+		VkDeviceMemory m_memory;
+		// Mapped on the first Map and kept until Destroy; HOST_COHERENT, so no invalidate.
+		mutable void* m_mapped;
+		uint32_t m_rowPitch;
+		uint64_t m_frameNumber;
+	};
+
 	class Tr2TextureAL : public Tr2DeviceResourceAL<Tr2TextureAL>
 	{
 	public:
@@ -57,6 +83,7 @@ namespace TrinityALImpl
 		// optimally-tiled image is not a thing the application may know.
 		ALResult MapForReading( const Tr2TextureSubresource& region, bool synchronize, const void*& data, uint32_t& pitch, Tr2RenderContextAL& renderContext );
 		void UnmapForReading( Tr2RenderContextAL& renderContext );
+		std::shared_ptr<Tr2ReadbackAL> CreateReadback( const Tr2TextureSubresource& region, Tr2PrimaryRenderContextAL& renderContext );
 		ALResult MapForWriting( const Tr2TextureSubresource& region, void*& data, uint32_t& pitch, Tr2RenderContextAL& renderContext );
 		void UnmapForWriting( Tr2RenderContextAL& renderContext );
 
@@ -196,7 +223,7 @@ namespace TrinityALImpl
 		// names a new TrinityALImpl::Tr2RenderContextAL instead of the global class --
 		// MSVC resolved it to the global anyway, clang does not.
 		friend class ::Tr2RenderContextAL;
-		friend class TrinityALImpl::Tr2ResourceSetAL;
+		friend class ::Tr2ResourceBindings;
 	};
 }
 

@@ -12,7 +12,7 @@
 #include "../Tr2RenderContextEnum.h"
 #include "../Tr2DrawUPHelper.h"
 #include "../include/Tr2ConstantBufferAL.h"
-#include "../include/Tr2ResourceSetAL.h"
+#include "Tr2ResourceBindingsVulkan.h"
 #include "../include/Tr2TextureAL.h"
 #include "../include/Tr2VertexLayoutAL.h"
 #include "../include/Tr2ShaderProgramAL.h"
@@ -28,6 +28,7 @@ class Tr2ShaderAL;
 class Tr2SamplerStateAL;
 class Tr2BufferAL;
 struct Tr2Viewport;
+class Tr2RtPipelineStateAL;
 class Tr2RtShaderTableAL;
 class Tr2RtTopLevelAccelerationStructureAL;
 
@@ -126,7 +127,26 @@ public:
 	ALResult ClearUav( const Tr2TextureAL& rt, uint32_t mip, const float values[4] ) throw( );
 	ALResult ClearUav( const Tr2TextureAL& rt, uint32_t mip, const uint32_t values[4] ) throw( );
 
-	ALResult SetResourceSet( const Tr2ResourceSetAL& resourceSet ) throw( );
+	// Upstream #90's direct binding model (Tr2ResourceBindingsVulkan). Resources are held by
+	// register slot of the current program and written into descriptor set 1 when a draw or
+	// dispatch commits them. There is no bindless path on this backend
+	// (SupportsBindlessTextures() is false), so the heap views are E_INVALIDCALL, as on dx11.
+	ALResult SetSrv( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2BufferAL& buffer ) throw();
+	ALResult SetSrv( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2TextureAL& texture, Tr2RenderContextEnum::ColorSpace colorSpace = Tr2RenderContextEnum::COLOR_SPACE_LINEAR ) throw();
+	ALResult SetUav( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2BufferAL& buffer ) throw();
+	ALResult SetUav( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2TextureAL& texture, uint32_t mip = 0 ) throw();
+	ALResult SetSrvHeapView( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex ) throw();
+	ALResult SetUavHeapView( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex ) throw();
+	ALResult SetSamplerHeapView( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex ) throw();
+	ALResult SetSampler( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2SamplerStateAL& sampler ) throw();
+	ALResult ResetResourceBindings() throw();
+
+	// The direct model's CPU cost since the last call (sets and descriptors written, sets
+	// reused, time spent writing), for M2's descriptor-overhead measurement.
+	Tr2ResourceBindings::Stats TakeResourceBindingStatsVulkan() throw()
+	{
+		return m_bindings.TakeStats();
+	}
 	
 	ALResult DrawIndexedPrimitive(
 		uint32_t numVertices,
@@ -540,7 +560,7 @@ private:
 	bool m_srgbWrite;
 	std::pair<uint32_t, uint32_t> m_primitiveToVertexCount;
 
-	Tr2ResourceSetAL m_resourceSet;
+	Tr2ResourceBindings m_bindings;
 
 	// Constant-buffer bindings (descriptor set 0), keyed by binding number. Set
 	// by SetConstants, written to a descriptor set and bound at SetPipeline time.

@@ -334,8 +334,8 @@ set(_SOURCES
     vulkan/Tr2PrimaryRenderContextVulkan.h
     vulkan/Tr2RenderContextVulkan.cpp
     vulkan/Tr2RenderContextVulkan.h
-    vulkan/Tr2ResourceSetALVulkan.cpp
-    vulkan/Tr2ResourceSetALVulkan.h
+    vulkan/Tr2ResourceBindingsVulkan.cpp
+    vulkan/Tr2ResourceBindingsVulkan.h
     vulkan/Tr2SamplerStateALVulkan.cpp
     vulkan/Tr2SamplerStateALVulkan.h
     vulkan/Tr2ShaderALVulkan.cpp

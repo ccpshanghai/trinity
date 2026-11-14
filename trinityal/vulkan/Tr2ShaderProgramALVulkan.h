@@ -8,12 +8,19 @@
 
 #include "../include/Tr2ShaderProgramAL.h"
 #include "../include/Tr2ShaderAL.h"
-#include "../include/Tr2ResourceSetAL.h"
+#include "../include/Tr2RegisterMapAL.h"
 
 class Tr2RenderContextAL;
 
+class Tr2ResourceBindings;
+
 namespace TrinityALImpl
 {
+	// The descriptor type a register of this type takes in set 1 (or set 0 for a constant
+	// buffer). One answer for the layout (Tr2ShaderProgramALVulkan) and the writer
+	// (Tr2ResourceBindingsVulkan), so the two cannot drift.
+	VkDescriptorType DescriptorTypeVulkan( Tr2ShaderRegisterAL::RegisterType registerType );
+
 	class Tr2ShaderProgramAL : public Tr2DeviceResourceAL<Tr2ShaderProgramAL>
 	{
 	public:
@@ -85,7 +92,7 @@ namespace TrinityALImpl
 		// names a new TrinityALImpl::Tr2RenderContextAL instead of the global class --
 		// MSVC resolved it to the global anyway, clang does not.
 		friend class ::Tr2RenderContextAL;
-		friend class TrinityALImpl::Tr2ResourceSetAL;
+		friend class ::Tr2ResourceBindings;
 	};
 }
 #endif

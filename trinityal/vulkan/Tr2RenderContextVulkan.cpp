@@ -8,7 +8,6 @@
 #include "Tr2BufferALVulkan.h"
 #include "Tr2ShaderProgramALVulkan.h"
 #include "Tr2PrimaryRenderContextVulkan.h"
-#include "Tr2ResourceSetALVulkan.h"
 #include "Tr2VertexLayoutALVulkan.h"
 #include "Tr2TextureALVulkan.h"
 #include "Tr2ConstantBufferALVulkan.h"
@@ -294,7 +293,13 @@ void Tr2RenderContextAL::Destroy() throw( )
 	// VkShaderModule directly against m_owner->m_device, so leaving the program
 	// for the destructor means destroying the module against a null device.
 	m_pipelineSource.m_shaderProgram = Tr2ShaderProgramAL();
-	m_resourceSet = Tr2ResourceSetAL();
+	// The bindings hold references to textures and buffers, and their descriptor pools are
+	// device objects: both have to go while the device is live, for the reason above.
+	m_bindings.Discard();
+	if( m_owner )
+	{
+		m_bindings.Release( *m_owner );
+	}
 	m_drawUPHelper.Destroy();
 
 	// The bound attachments and the push/pop stacks hold texture references too, and for
@@ -687,13 +692,54 @@ ALResult Tr2RenderContextAL::SetShaderProgram( const Tr2ShaderProgramAL& shader 
 		m_pipelineSource.m_shaderProgram = shader;
 		m_dirtyPso = true;
 	}
+	// The bindings are slots of this program's register map; a different program drops them.
+	m_bindings.SetProgram( shader.IsValid() ? shader.TrinityALImpl_GetObject() : nullptr );
 	return S_OK;
 }
 
-ALResult Tr2RenderContextAL::SetResourceSet( const Tr2ResourceSetAL& resourceSet ) throw( )
+ALResult Tr2RenderContextAL::SetSrv( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2BufferAL& buffer ) throw()
 {
-	m_resourceSet = resourceSet;
-	return S_OK;
+	return m_bindings.SetSrv( stage, registerIndex, buffer );
+}
+
+ALResult Tr2RenderContextAL::SetSrv( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2TextureAL& texture, Tr2RenderContextEnum::ColorSpace colorSpace ) throw()
+{
+	return m_bindings.SetSrv( stage, registerIndex, texture, colorSpace );
+}
+
+ALResult Tr2RenderContextAL::SetUav( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2BufferAL& buffer ) throw()
+{
+	return m_bindings.SetUav( stage, registerIndex, buffer );
+}
+
+ALResult Tr2RenderContextAL::SetUav( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2TextureAL& texture, uint32_t mip ) throw()
+{
+	return m_bindings.SetUav( stage, registerIndex, texture, mip );
+}
+
+ALResult Tr2RenderContextAL::SetSrvHeapView( Tr2RenderContextEnum::ShaderType, uint32_t ) throw()
+{
+	return E_INVALIDCALL;
+}
+
+ALResult Tr2RenderContextAL::SetUavHeapView( Tr2RenderContextEnum::ShaderType, uint32_t ) throw()
+{
+	return E_INVALIDCALL;
+}
+
+ALResult Tr2RenderContextAL::SetSamplerHeapView( Tr2RenderContextEnum::ShaderType, uint32_t ) throw()
+{
+	return E_INVALIDCALL;
+}
+
+ALResult Tr2RenderContextAL::SetSampler( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2SamplerStateAL& sampler ) throw()
+{
+	return m_bindings.SetSampler( stage, registerIndex, sampler );
+}
+
+ALResult Tr2RenderContextAL::ResetResourceBindings() throw()
+{
+	return m_bindings.Reset();
 }
 
 ALResult Tr2RenderContextAL::SetConstants( const Tr2ConstantBufferAL& buffer, Tr2RenderContextEnum::ShaderType constantType, uint32_t registerIndex, uint32_t ) throw( )
@@ -1440,10 +1486,7 @@ ALResult Tr2RenderContextAL::SetPass()
 	// declares its attachment layouts, so the attachments have to win, or
 	// vkCmdBeginRenderPass finds SHADER_READ_ONLY_OPTIMAL where it promised
 	// DEPTH_STENCIL_ATTACHMENT_OPTIMAL (VUID-vkCmdBeginRenderPass-initialLayout-00900).
-	if( m_resourceSet.IsValid() )
-	{
-		m_resourceSet.m_resourceSet->TransitionImagesVulkan( m_commandBuffer );
-	}
+	m_bindings.TransitionImages( m_commandBuffer );
 	if( m_boundDepthStencil.IsValid() )
 	{
 		m_boundDepthStencil.m_texture->TransitionVulkan( m_commandBuffer, m_readOnlyDepth
@@ -1580,8 +1623,8 @@ ALResult Tr2RenderContextAL::SetPipeline()
 	// Checked before the m_dirtyPass test rather than folded into SetPass, because a
 	// resource set can change without the pass source changing at all. Asking the set
 	// first means a pass only restarts when an image genuinely has to move -- marking the
-	// pass dirty on every SetResourceSet would restart it on almost every draw.
-	if( m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->NeedsTransitionVulkan() )
+	// pass dirty on every Set* of a binding would restart it on almost every draw.
+	if( m_bindings.NeedsTransition() )
 	{
 		EndRenderPassVulkan();
 	}
@@ -1621,40 +1664,12 @@ ALResult Tr2RenderContextAL::SetPipeline()
 	}
 	vkCmdBindPipeline( m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline );
 
-	auto* program = m_pipelineSource.m_shaderProgram.m_program.get();
-	// The layout comparison is load-bearing: the AL's state machine carries a bound
-	// resource set across shader program changes, and a set is only legal with the
-	// layout it was allocated against. Drawing CanSampleVolumeTexture's set with
-	// CanSampleUnassignedTexture's 2D-sampling program was this suite's one flaky test.
-	if( m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet && program && program->m_resourceLayout
-		&& m_resourceSet.m_resourceSet->m_layout == program->m_resourceLayout )
+	// Descriptor set 1: whatever SetSrv/SetUav/SetSampler put in the current program's slots,
+	// written into a fresh set if anything changed since the last draw. Unbound 2D texture and
+	// sampler slots read the dummies, which is what the old default resource set was for.
+	if( m_bindings.GetProgram() )
 	{
-		vkCmdBindDescriptorSets( 
-			m_commandBuffer, 
-			VK_PIPELINE_BIND_POINT_GRAPHICS, 
-			program->m_pipelineLayout, 
-			1, 
-			1,
-			&m_resourceSet.m_resourceSet->m_descriptorSet, 0, nullptr );
-	}
-	else if( program && program->m_resourceLayout )
-	{
-		// The program statically uses set 1 and the caller bound nothing. Without this
-		// the draw consumed whatever the recycled pool last held -- a stale set from an
-		// unrelated test, surfacing as viewType-07752 / layout-08600 at a rate that made
-		// Rendering.CanSampleUnassignedTexture the suite's one flaky test. The default
-		// set binds the dummies, so sampling an unassigned slot reads opaque black.
-		VkDescriptorSet defaultSet = program->GetDefaultResourceSetVulkan( *m_owner );
-		if( defaultSet != VK_NULL_HANDLE )
-		{
-			vkCmdBindDescriptorSets(
-				m_commandBuffer,
-				VK_PIPELINE_BIND_POINT_GRAPHICS,
-				program->m_pipelineLayout,
-				1,
-				1,
-				&defaultSet, 0, nullptr );
-		}
+		FORWARD_HR( m_bindings.Commit( *m_owner, m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS ) );
 	}
 
 	FORWARD_HR( BindConstantBuffers( VK_PIPELINE_BIND_POINT_GRAPHICS ) );
@@ -1899,10 +1914,7 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 	// shippreview frame on the S23 (2026-09-10). A barrier cannot be recorded inside a render
 	// pass, so an open pass ends first, exactly as SetPass does it.
 	EndRenderPassVulkan();
-	if( m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->NeedsTransitionVulkan() )
-	{
-		m_resourceSet.m_resourceSet->TransitionImagesVulkan( m_commandBuffer );
-	}
+	m_bindings.TransitionImages( m_commandBuffer );
 
 	// Memory ordering around the dispatch, for everything the layout transitions above do
 	// not cover: a buffer written by this shader through a UAV and read by the next draw's
@@ -1924,15 +1936,9 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 
 	vkCmdBindPipeline( m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_computePipeline );
 
-	if( m_resourceSet.IsValid() && m_resourceSet.m_resourceSet->m_descriptorSet && program->m_resourceLayout )
+	if( m_bindings.GetProgram() )
 	{
-		vkCmdBindDescriptorSets(
-			m_commandBuffer,
-			VK_PIPELINE_BIND_POINT_COMPUTE,
-			program->m_pipelineLayout,
-			1,
-			1,
-			&m_resourceSet.m_resourceSet->m_descriptorSet, 0, nullptr );
+		FORWARD_HR( m_bindings.Commit( *m_owner, m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE ) );
 	}
 
 	FORWARD_HR( BindConstantBuffers( VK_PIPELINE_BIND_POINT_COMPUTE ) );

@@ -71,6 +71,11 @@ namespace
 
 namespace TrinityALImpl
 {
+	VkDescriptorType DescriptorTypeVulkan( Tr2ShaderRegisterAL::RegisterType registerType )
+	{
+		return GetDescriptorType( registerType );
+	}
+
 	Tr2ShaderProgramAL::Tr2ShaderProgramAL()
 		:m_owner( nullptr ),
 		m_resourceLayout( VK_NULL_HANDLE ),

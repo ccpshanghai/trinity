@@ -234,12 +234,6 @@ TEST_F( Ktx2Astc, TheLoadedTextureSamplesAsTheImageItWas )
 	ASSERT_HRESULT_SUCCEEDED( sampl.Create(
 		Tr2SamplerDescription( TF_POINT, TA_CLAMP, 1, 0.0f, 0.0f ), *renderContext ) );
 
-	Tr2ResourceSetDescriptionAL desc( sp );
-	desc.SetSrv( PIXEL_SHADER, 0, tex );
-	desc.SetSampler( PIXEL_SHADER, 0, sampl );
-	Tr2ResourceSetAL resourceSet;
-	ASSERT_HRESULT_SUCCEEDED( resourceSet.Create( desc, sp, *renderContext ) );
-
 	Tr2TextureAL rt;
 	ASSERT_HRESULT_SUCCEEDED( rt.Create(
 		Tr2BitmapDimensions( FIXTURE_WIDTH, FIXTURE_HEIGHT, 1, PIXEL_FORMAT_B8G8R8A8_UNORM ),
@@ -260,7 +254,10 @@ TEST_F( Ktx2Astc, TheLoadedTextureSamplesAsTheImageItWas )
 	ASSERT_HRESULT_SUCCEEDED( renderContext->SetRenderState( RS_ZENABLE, 0 ) );
 	ASSERT_HRESULT_SUCCEEDED( renderContext->SetRenderState( RS_ALPHABLENDENABLE, 0 ) );
 	ASSERT_HRESULT_SUCCEEDED( renderContext->SetRenderState( RS_CULLMODE, CULLMODE_NONE ) );
-	ASSERT_HRESULT_SUCCEEDED( renderContext->SetResourceSet( resourceSet ) );
+	// The direct binding model (upstream #90): bound after the program, whose register map
+	// names the slots.
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetSrv( PIXEL_SHADER, 0, tex ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetSampler( PIXEL_SHADER, 0, sampl ) );
 	ASSERT_HRESULT_SUCCEEDED( renderContext->SetTopology( TOP_TRIANGLE_STRIP ) );
 	ASSERT_HRESULT_SUCCEEDED( renderContext->DrawPrimitive( 0, 2 ) );
 	ASSERT_HRESULT_SUCCEEDED( renderContext->PopDepthStencil() );
