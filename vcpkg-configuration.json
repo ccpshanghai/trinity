@@ -1,22 +1,23 @@
 {
   "default-registry": {
     "kind": "git",
-    "baseline": "242ac6932a9cd2607332969129e9572516f28d65",
+    "baseline": "afa249f12f52ed8a3b919f195495ba8b330288d1",
     "repository": "https://github.com/microsoft/vcpkg.git"
   },
   "registries": [
     {
       "kind": "git",
+      "repository": "https://github.com/ccpshanghai/vcpkg-registry.git",
+      "reference": "feat/mobile-exp-v8-upgrade",
+      "baseline": "4fb79a5039858de896b7982f77d68c9110eb1dce",
       "packages": [
-        "curl",
-        "imgui",
         "python3",
         "carbon-*",
         "tracy",
         "greenlet",
-        "mpdecimal",
         "ccp-debug-info",
         "crashpad",
+        "directx-dxc",
         "zlib",
         "re2c",
         "amd-fidelityfx",
@@ -29,13 +30,10 @@
         "nvidia-aftermath",
         "nvidia-streamline",
         "openvdb",
-        "protobuf",
-        "tbb",
-        "directx-dxc"
-      ],
-      "repository": "git@github.com:ccpshanghai/vcpkg-registry.git",
-      "reference": "mobile-exp",
-      "baseline": "df11087fa9e48a1c21865c077677483c140e499a"
+        "imgui",
+        "mpdecimal",
+        "tbb"
+      ]
     }
   ]
 }

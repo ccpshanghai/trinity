@@ -180,7 +180,7 @@ unsigned TriTextureRes::ComputeMipSkipCount()
 
 void TriTextureRes::RasterizeProceduralTexture( const wchar_t* data, void ( *Rastrization )( const std::string_view&, ImageIO::HostBitmap& ) )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	m_isGood = false;
 	m_isPrepared = false;
@@ -637,7 +637,7 @@ bool TriTextureRes::DoOpenStream()
 // Called on background thread
 BlueAsyncRes::LoadingResult TriTextureRes::DoLoad()
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	BeTimer t;
 
@@ -729,7 +729,7 @@ BlueAsyncRes::LoadingResult TriTextureRes::DoLoad()
 // Called on main thread
 bool TriTextureRes::DoPrepare()
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	if( m_lodEnabled )
 	{
@@ -844,7 +844,7 @@ void TriTextureRes::ProcessLodRequest( const Tr2TextureLodUpdateRequest& request
 {
 	if( request.cachedInRam )
 	{
-		CCP_STATS_ZONE( "CreateTexture" );
+		TRINITY_STATS_ZONE( "CreateTexture" );
 
 		USE_MAIN_THREAD_RENDER_CONTEXT();
 

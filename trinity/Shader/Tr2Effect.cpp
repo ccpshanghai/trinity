@@ -308,7 +308,7 @@ bool Tr2Effect::OnPrepareResources()
 
 bool Tr2Effect::ActualEffectPath( const std::string& path, std::string& actualPath )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	// TRINITY_EFFECT_PLATFORM_NAME, not TRINITY_PLATFORM_NAME: on Apple one renderer has three
 	// effect directories, one per SDK, because a metallib is compiled per SDK and the three
@@ -383,7 +383,7 @@ bool Tr2Effect::ActualEffectPath( const std::string& path, std::string& actualPa
 // ---------------------------------------------------------------
 bool Tr2Effect::Initialize()
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	for( auto it = begin( m_resources ); it != end( m_resources ); ++it )
 	{
@@ -630,13 +630,13 @@ void Tr2Effect::RebuildSamplerOverrides()
 
 	USE_MAIN_THREAD_RENDER_CONTEXT();
 
-	auto UpdateSamplers = [&]( ShaderType shaderType, const Tr2EffectStageInput& stage, Tr2ResourceSetDescriptionAL& resourceSetDesc ) {
+	auto UpdateSamplers = [&]( ShaderType shaderType, const Tr2EffectStageInput& stage, Tr2StaticResourceBindings& staticBindings ) {
 		bool modified = false;
 		for( auto& samplerOverride : m_samplerOverrides )
 		{
 			if( auto sampler = FindSamplerByName( stage.samplers, samplerOverride.name.c_str() ) )
 			{
-				modified |= resourceSetDesc.SetSampler( shaderType, sampler->first, samplerOverride.sampler );
+				modified |= staticBindings.SetSampler( shaderType, sampler->first, samplerOverride.sampler );
 			}
 		}
 		return modified;
@@ -658,7 +658,7 @@ void Tr2Effect::RebuildSamplerOverrides()
 					continue;
 				}
 
-				if( UpdateSamplers( ShaderType( i ), stage, pp.m_resourceSetDesc ) )
+				if( UpdateSamplers( ShaderType( i ), stage, pp.m_staticBindings ) )
 				{
 					pp.m_compatibleWithGdr = false;
 					m_compatibleWithGdr = false;
@@ -669,7 +669,7 @@ void Tr2Effect::RebuildSamplerOverrides()
 		{
 			auto& pp = *m_parametersForPasses[technique].libraries[passIx];
 
-			UpdateSamplers( Tr2RenderContextEnum::COMPUTE_SHADER, desc.techniques[technique].libraries[passIx].globalInput, pp.m_globalResourceSetDesc );
+			UpdateSamplers( Tr2RenderContextEnum::COMPUTE_SHADER, desc.techniques[technique].libraries[passIx].globalInput, pp.m_globalStaticBindings );
 		}
 	}
 }
@@ -692,7 +692,7 @@ void Tr2Effect::RebuildCachedDataInternal()
 		m_shader = m_effectResource->GetShader( m_options.empty() ? nullptr : &m_options[0], m_options.size() );
 		if( m_shader )
 		{
-			CCP_STATS_ZONE( __FUNCTION__ );
+			TRINITY_STATS_ZONE( __FUNCTION__ );
 			USE_MAIN_THREAD_RENDER_CONTEXT();
 
 			for( auto& over : m_samplerOverrides )
@@ -715,9 +715,7 @@ void Tr2Effect::RebuildCachedDataInternal()
 				{
 					m_parametersForPasses[technique].passes[passIx].reset( CCP_NEW( "Tr2EffectPassParameters" ) Tr2EffectPassParameters() );
 					Tr2EffectPassParameters& pp = *m_parametersForPasses[technique].passes[passIx];
-					pp.m_resourceSetDesc = desc.techniques[technique].passes[passIx].resourceSetDesc;
-					pp.m_resourceSetHash = 0;
-					pp.m_resourceSetDirty = true;
+					pp.m_staticBindings = desc.techniques[technique].passes[passIx].staticBindings;
 					pp.m_compatibleWithGdr = true;
 
 					uint32_t stageCount = 0;
@@ -762,8 +760,7 @@ void Tr2Effect::RebuildCachedDataInternal()
 					m_parametersForPasses[technique].libraries[libIx].reset( CCP_NEW( "Tr2EffectLibraryParameters" ) Tr2EffectLibraryParameters() );
 
 					auto& lib = *m_parametersForPasses[technique].libraries[libIx];
-					lib.m_globalResourceSetDesc = desc.techniques[technique].libraries[libIx].globalResourceSetDesc;
-					lib.m_globalResourceSetDirty = true;
+					lib.m_globalStaticBindings = desc.techniques[technique].libraries[libIx].globalStaticBindings;
 
 
 					bool compatibleWithGdr = true; //we don't care
@@ -832,7 +829,7 @@ void Tr2Effect::RebuildCachedDataInternal()
 
 void Tr2Effect::RebuildCachedData( BlueAsyncRes* p )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	CCP_ASSERT( p == m_effectResource );
 	if( p == m_effectResource )
@@ -874,7 +871,7 @@ const char* Tr2Effect::DescribeShaderResolution() const
 
 void Tr2Effect::ReleaseCachedData( BlueAsyncRes* p )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 	CCP_ASSERT( p == m_effectResource );
 	if( p == m_effectResource )
 	{
@@ -903,7 +900,7 @@ void Tr2Effect::ReleaseCachedData( BlueAsyncRes* p )
 // ---------------------------------------------------------------
 bool Tr2Effect::OnModified( Be::Var* value )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 	// m_effectFilePath is the only attribute with a notify flag
 
 	Initialize();
@@ -933,7 +930,7 @@ void Tr2Effect::EndUpdate()
 // ---------------------------------------------------------------
 void Tr2Effect::OnListModified( long event, ssize_t key, ssize_t key2, IRoot* currvalue, const IList* theList )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	if( ( event & BELIST_LOADING ) == 0 )
 	{
@@ -973,7 +970,7 @@ void Tr2Effect::OnListModified( long event, ssize_t key, ssize_t key2, IRoot* cu
 // ---------------------------------------------------------------
 bool Tr2Effect::PopulateParameters()
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	if( !m_shader )
 	{
@@ -1109,7 +1106,7 @@ bool Tr2Effect::PopulateParameters()
 // ---------------------------------------------------------------
 bool Tr2Effect::PruneParameters()
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	if( !m_shader )
 	{
@@ -1255,7 +1252,7 @@ const char* Tr2Effect::GetEffectPathName() const
 
 ITriEffectParameter* Tr2Effect::GetParameterByName( const char* name ) const
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	ITriEffectParameter* result = FindParameterByName( name );
 
@@ -1468,7 +1465,7 @@ bool ExtractLodingAnnotations( std::array<float, ITriEffectTextureParameter::UV_
 
 void Tr2Effect::MapPassResources( const Tr2EffectResourceMap& resources, Tr2EffectParamVector& pv, bool& compatibleWithGdr )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	for( auto it = resources.begin(); it != resources.end(); ++it )
 	{
@@ -1523,7 +1520,7 @@ void Tr2Effect::MapPassResources( const Tr2EffectResourceMap& resources, Tr2Effe
 
 void Tr2Effect::Render( IRenderCallback* cb, Tr2RenderContext& renderContext )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	auto effectResource = GetShaderStateInterface();
 
@@ -1582,9 +1579,42 @@ unsigned Tr2Effect::GetHashValue() const
 	return hash;
 }
 
+uint32_t Tr2Effect::GetNonBlendableHashValue() const
+{
+	unsigned hash = 0;
+	if( m_effectResource )
+	{
+		hash = CcpHashFNV1( m_effectResource->GetPath(), wcslen( m_effectResource->GetPath() ) * sizeof( wchar_t ) );
+	}
+	for( auto& option : m_options )
+	{
+		hash = CcpHashFNV1( &option, sizeof( option ), hash );
+	}
+	for( auto it = m_constParameters.begin(); it != m_constParameters.end(); ++it )
+	{
+		auto name = it->name.c_str();
+		// looks scary, but it's a constant string, so the pointer is unique
+		hash = CcpHashFNV1( &name, sizeof( name ), hash );
+		hash = CcpHashFNV1( &it->value, sizeof( it->value ), hash );
+	}
+	for( auto it = m_parameters.begin(); it != m_parameters.end(); ++it )
+	{
+		if( GetBool( m_shader, ( *it )->GetParameterName(), "IsBlendable", false ) )
+		{
+			continue;
+		}
+		hash = ( *it )->GetHashValue( hash );
+	}
+	for( auto it = m_resources.begin(); it != m_resources.end(); ++it )
+	{
+		hash = ( *it )->GetHashValue( hash );
+	}
+	return hash;
+}
+
 ITriEffectParameter* Tr2Effect::FindParameterByName( const char* name ) const
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	for( auto it = m_parameters.cbegin(); it != m_parameters.cend(); ++it )
 	{
@@ -1601,7 +1631,7 @@ ITriEffectParameter* Tr2Effect::FindParameterByName( const char* name ) const
 
 ITriEffectParameter* Tr2Effect::GetResourceByName( const char* name ) const
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	for( auto it = m_resources.cbegin(); it != m_resources.cend(); ++it )
 	{
@@ -1623,7 +1653,7 @@ ITriEffectParameter* Tr2Effect::GetResourceByName( const char* name ) const
 // -------------------------------------------------------------------------------------
 bool Tr2Effect::HasSamplerOverride( const char* name ) const
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	for( auto it = m_samplerOverrides.begin(); it != m_samplerOverrides.end(); ++it )
 	{
@@ -1643,7 +1673,7 @@ bool Tr2Effect::HasSamplerOverride( const char* name ) const
 // -------------------------------------------------------------------------------------
 bool Tr2Effect::HasParameter( const char* name ) const
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	for( auto it = m_constParameters.begin(); it != m_constParameters.end(); ++it )
 	{
@@ -1670,7 +1700,7 @@ bool Tr2Effect::HasParameter( const char* name ) const
 // -------------------------------------------------------------------------------------
 bool GetBool( const Tr2EffectParameterAnnotationMap* map, const char* annotationName, bool defaultValue )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	if( !map || !annotationName )
 	{
@@ -1700,7 +1730,7 @@ bool GetBool( const Tr2EffectParameterAnnotationMap* map, const char* annotation
 // -------------------------------------------------------------------------------------
 bool GetBool( const Tr2Shader* shaderState, const char* paramName, const char* annotationName, bool defaultValue )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	return ( shaderState && paramName ) ? GetBool( shaderState->GetParameterAnnotations( paramName ), annotationName, defaultValue ) : defaultValue;
 }
@@ -1760,7 +1790,7 @@ void Tr2Effect::MapPassParameters(
 	const Tr2EffectDescription& descriptionDesc,
 	Tr2RenderContext& renderContext )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	static const size_t MAX_PARAMS = 128;
 

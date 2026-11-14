@@ -7,7 +7,7 @@
 #if WITH_GRANNY
 #include "granny.h"
 #endif
-#include "Include/ITr2AnimationUpdater.h"
+#include "include/ITr2AnimationUpdater.h"
 #include "GrannyBoneOffset.h"
 #include <BlueAsyncRes.h>
 
@@ -70,6 +70,7 @@ public:
 	bool PlayAnimation( const Tr2GrannyAnimation* grannyAnimation, const char* animName, bool replace, int loopCount, float delay, float speed, bool clearWhenDone );
 	void QueueAnimation( const char* animName, bool replace, int loopCount, float delay, float speed, bool clearWhenDone );
 	void EndAnimation();
+	void StopAnimations( float delay );
 	void ClearAnimations();
 	float GetAnimationChainCompleteTime();
 	float GetAnimationRemainingTime();

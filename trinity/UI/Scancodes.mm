@@ -20,7 +20,7 @@
 #include <string>
 #include <cstdint>
 #include <map>
-#include <CCPLog.h>
+#include <CcpLog.h>
 
 namespace
 {
