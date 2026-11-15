@@ -90,11 +90,13 @@ public:
 	/** Hand every descriptor pool to the owner's deferred destruction */
 	void Release( Tr2PrimaryRenderContextAL& owner ) throw();
 
-	// What the direct model costs on the CPU, for M2's measurement: descriptor sets written,
-	// descriptors written into them, commits that reused the frame's last set, and the time
-	// spent allocating and writing. Read and cleared by whoever is measuring.
+	// What the direct model costs on the CPU, for M2's measurement: commits (one per draw or
+	// dispatch that reached the bindings), descriptor sets written, descriptors written into
+	// them, commits that reused the frame's last set, and the time spent allocating and
+	// writing. Read and cleared by whoever is measuring.
 	struct Stats
 	{
+		uint64_t commits = 0;
 		uint64_t setsWritten = 0;
 		uint64_t descriptorsWritten = 0;
 		uint64_t setsReused = 0;

@@ -1401,11 +1401,74 @@ VkImageView Tr2PrimaryRenderContextAL::GetDummyImageViewVulkan() const
 		: VK_NULL_HANDLE;
 }
 
+// TRINITY_BINDING_STATS=<frames>: the direct binding model's CPU cost, sampled once per Present
+// and summarised every <frames> frames in one log line (M2 of the v8 upgrade measures it once on
+// a device; it gates nothing). Off unless asked for, read once. Each frame contributes the
+// time Commit spent allocating and writing set 1 (vkCmdBindDescriptorSets is not in it), the
+// sets and descriptors it wrote, the sets it reused and the commits, i.e. the draws and
+// dispatches that reached the bindings. Only this, the primary render context's, bindings are
+// counted -- the one every frame of the samples is recorded on.
+namespace
+{
+uint32_t BindingStatsWindow()
+{
+	static const uint32_t frames = []{
+		const char* value = getenv( "TRINITY_BINDING_STATS" );
+		const long parsed = value ? strtol( value, nullptr, 10 ) : 0;
+		return parsed > 0 ? uint32_t( parsed ) : uint32_t( 0 );
+	}();
+	return frames;
+}
+
+template <typename T>
+T Percentile( std::vector<T> values, double fraction )
+{
+	if( values.empty() )
+	{
+		return T();
+	}
+	std::sort( values.begin(), values.end() );
+	const size_t index = std::min( values.size() - 1, size_t( fraction * double( values.size() - 1 ) + 0.5 ) );
+	return values[index];
+}
+
+void NoteBindingStats( const Tr2ResourceBindings::Stats& stats, uint32_t window )
+{
+	static std::vector<uint64_t> writeNs, sets, descriptors, reused, commits;
+	static uint64_t windows = 0;
+	writeNs.push_back( stats.writeNanoseconds );
+	sets.push_back( stats.setsWritten );
+	descriptors.push_back( stats.descriptorsWritten );
+	reused.push_back( stats.setsReused );
+	commits.push_back( stats.commits );
+	if( writeNs.size() < window )
+	{
+		return;
+	}
+	++windows;
+	CCP_LOG( "binding stats: window=%llu frames=%u write_us p50=%.1f p95=%.1f max=%.1f | per frame p50: commits=%llu sets_written=%llu descriptors=%llu sets_reused=%llu",
+			 (unsigned long long)windows, unsigned( writeNs.size() ),
+			 Percentile( writeNs, 0.5 ) / 1000.0, Percentile( writeNs, 0.95 ) / 1000.0, Percentile( writeNs, 1.0 ) / 1000.0,
+			 (unsigned long long)Percentile( commits, 0.5 ), (unsigned long long)Percentile( sets, 0.5 ),
+			 (unsigned long long)Percentile( descriptors, 0.5 ), (unsigned long long)Percentile( reused, 0.5 ) );
+	writeNs.clear();
+	sets.clear();
+	descriptors.clear();
+	reused.clear();
+	commits.clear();
+}
+}
+
 ALResult Tr2PrimaryRenderContextAL::Present()
 {
 	if( !IsValid() )
 	{
 		return E_INVALIDCALL;
+	}
+
+	if( const uint32_t window = BindingStatsWindow() )
+	{
+		NoteBindingStats( TakeResourceBindingStatsVulkan(), window );
 	}
 
 	if( !m_commandBufferRecording )

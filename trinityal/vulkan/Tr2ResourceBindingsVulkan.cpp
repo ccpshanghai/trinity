@@ -625,6 +625,7 @@ ALResult Tr2ResourceBindings::Commit( Tr2PrimaryRenderContextAL& owner, VkComman
 	{
 		return E_INVALIDCALL;
 	}
+	++m_stats.commits;
 	VkDescriptorSetLayout layout = m_program->m_resourceLayout;
 	if( layout == VK_NULL_HANDLE )
 	{
