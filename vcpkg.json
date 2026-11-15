@@ -75,6 +75,18 @@
     {
       "name": "carbon-mesh",
       "version>=": "1.0.1"
+    },
+    {
+      "$comment": "carbon-bind's visible desktop window and its input (CB_DEVICE_WINDOW). Desktop Linux and Windows only: vcpkg's linux is VCPKG_CMAKE_SYSTEM_NAME Linux, which the Android triplets (Android) do not match, as the vulkan-loader row relies on; osx and ios match neither. Wayland only on Linux, without the default ibus and x11 features (trinity's Linux backend is Wayland-only; no D-Bus, carbon-trinity-mobile records a dbus/systemd trap). SDL builds libdecor support (title bar on GNOME) when the build host has libdecor-0-dev. carbon-bind builds 3.4.20 from its own overlay port.",
+      "name": "sdl3",
+      "default-features": false,
+      "features": [
+        {
+          "name": "wayland",
+          "platform": "linux"
+        }
+      ],
+      "platform": "linux | windows"
     }
   ],
   "features": {

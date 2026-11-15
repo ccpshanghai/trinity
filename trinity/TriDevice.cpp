@@ -1062,6 +1062,45 @@ bool TriDevice::SetOutputWindow( Tr2WindowHandle window )
 	return true;
 }
 
+bool TriDevice::SetBackBufferSize( int32_t width, int32_t height )
+{
+	if( width <= 0 || height <= 0 )
+	{
+		CCP_LOGERR( "SetBackBufferSize: %dx%d is not a size", int( width ), int( height ) );
+		return false;
+	}
+	if( !DeviceExists() )
+	{
+		CCP_LOGERR( "SetBackBufferSize: no device" );
+		return false;
+	}
+	if( uint32_t( width ) == mPresentParam.mode.width && uint32_t( height ) == mPresentParam.mode.height &&
+		width == mWidth && height == mHeight )
+	{
+		return true;
+	}
+
+	Tr2PresentParametersAL pp = mPresentParam;
+	pp.mode.width = uint32_t( width );
+	pp.mode.height = uint32_t( height );
+
+	ReleaseDeviceResources( TRISTORAGE_ALL );
+	if( !SetPresentParameters( mAdapter, pp ) )
+	{
+		// Back to the size the record still describes, so the device keeps presenting.
+		SetPresentParameters( mAdapter, mPresentParam );
+		PrepareDeviceResources();
+		return false;
+	}
+	mPresentParam = pp;
+	mWidth = width;
+	mHeight = height;
+	mViewport.width = int( mWidth );
+	mViewport.height = int( mHeight );
+	PrepareDeviceResources();
+	return true;
+}
+
 #if BLUE_WITH_PYTHON
 PyObject* TriDevice::PySetOutputWindow( PyObject* args )
 {
