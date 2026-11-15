@@ -256,6 +256,15 @@ private:
 	// same-handle rebuild -- a resize's cost, and no more.
 	bool SetOutputWindow( Tr2WindowHandle window );
 
+	// Rebuild presentation at a new back buffer size on the same window. A Wayland surface
+	// dictates no extent (currentExtent 0xFFFFFFFF), so the Vulkan AL takes the swapchain's size
+	// from the present parameters (Tr2PrimaryRenderContextVulkan.cpp, ChooseSwapChainExtent) and
+	// only this call makes the back buffer follow the window. Where the surface dictates the
+	// extent (Win32, Android) it keeps width/height and size-derived resources in step. The
+	// sequence is RefreshDeviceResources' (release, SetPresentParameters, prepare); the record
+	// (present parameters, width, height, viewport) changes only on success.
+	bool SetBackBufferSize( int32_t width, int32_t height );
+
 	static void LogAllLiveResources( Tr2ALMemoryTypes flags = AL_MEMORY_VIDEO | AL_MEMORY_MANAGED );
 
 	bool ShouldSkipFrame() const;

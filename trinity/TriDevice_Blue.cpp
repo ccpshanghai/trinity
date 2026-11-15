@@ -353,6 +353,23 @@ const Be::ClassInfo* TriDevice::ExposeToBlue()
 			":param handle: the native window handle, as _carbonshell.native_handle() returns it\n"
 			":type handle: int\n"
 			":rtype: bool -- True on success; the device keeps its previous window on failure" )
+		MAP_METHOD_AND_WRAP(
+			"SetBackBufferSize",
+			SetBackBufferSize,
+			"Rebuild presentation at a new back buffer size on the same window: releases the\n"
+			"device resources, sets the present parameters' mode to the size, prepares them again\n"
+			"(the sequence RefreshDeviceResources runs). For a resizable window: a Wayland surface\n"
+			"dictates no size, so the swapchain follows the present parameters and only this call\n"
+			"makes the back buffer follow the window; where the surface dictates the size (Win32,\n"
+			"Android) it keeps width, height and size-derived resources in step.\n"
+			"On success width, height and viewport are the new size. A size of 0 (a minimised\n"
+			"window), no device, or a failed rebuild returns False and leaves the device at its\n"
+			"previous size.\n"
+			":param width: back buffer width in pixels, > 0\n"
+			":type width: int\n"
+			":param height: back buffer height in pixels, > 0\n"
+			":type height: int\n"
+			":rtype: bool -- True when the device presents at that size" )
 #if BLUE_WITH_PYTHON
 		MAP_METHOD_AND_WRAP(
 			"Render",
