@@ -549,7 +549,10 @@ std::shared_ptr<Tr2ReadbackAL> Tr2TextureAL::CreateReadback( const Tr2TextureSub
 	auto mipPitch = m_desc.GetMipPitch( readMipLevel );
 	auto bufferSize = m_desc.GetMipSize( readMipLevel );
 
-	id<MTLBuffer> mtlReadbackBuffer = metalContext->CreateMetalBuffer(renderContext.GetMetalWorkQueue(), bufferSize, MTLResourceStorageModeManaged, nil );
+	// Upstream #96 asked for Managed storage, which is macOS-only SDK surface; the GPU-written,
+	// CPU-read buffer takes the same per-platform mode MapForReading's readback buffer does
+	// (Managed on macOS, Shared on iOS, spec D7 of the fork's M3).
+	id<MTLBuffer> mtlReadbackBuffer = metalContext->CreateMetalBuffer( renderContext.GetMetalWorkQueue(), bufferSize, MetalDefaultUploadStorageMode( metalContext->GetDevice() ), nil );
 
 	renderContext.GetMetalWorkQueue()->CopyTextureToMTLBuffer( m_mtlTexture,
                                                                mtlReadbackBuffer,
