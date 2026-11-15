@@ -215,6 +215,14 @@ public:
 		return E_FAIL;
 	}
 
+	// Upstream #123 (83ae21a5) binds the ray-gen program ahead of DispatchRays so material data
+	// can be applied to it. Vulkan has no ray tracing (TRINITY_PLATFORM_SUPPORTS_RAY_TRACING is
+	// off), so this fails like DispatchRays does and like the stub back end's.
+	ALResult SetRtPipelineState( Tr2RtPipelineStateAL&, const wchar_t* )
+	{
+		return E_FAIL;
+	}
+
 	ALResult SetRenderState( Tr2RenderContextEnum::RenderState state, uint32_t value ) throw( );
 	ALResult SetRenderStates( const uint32_t* stateValuePairs, uint32_t count ) throw( );
 
