@@ -529,14 +529,21 @@ ALResult Tr2ResourceBindings::WriteSet( Tr2PrimaryRenderContextAL& owner, VkDesc
 					complete = false;
 					break;
 				}
-				if( r->mip != 0 )
-				{
-					CCP_AL_LOGWARN_LIMITED( "Vulkan: a storage image bound at mip %u is bound at mip 0 (no per-mip storage views yet); stage %u, register %u", r->mip, input.stage, reg );
-				}
 				VkDescriptorImageInfo info = {};
-				// The storage view, not the shader-resource one: for a cube texture they differ
-				// in dim (2D_ARRAY against CUBE), and the descriptor has to match the shader.
-				info.imageView = r->texture.TrinityALImpl_GetObject()->GetStorageViewVulkan();
+				// The storage view of the mip SetUav named, not the shader-resource view: a
+				// storage descriptor writes its view's base level, so the shader-resource view
+				// (base 0) sent every mip's writes to mip 0; and for a cube texture the two
+				// differ in dim too (2D_ARRAY against CUBE), and the descriptor has to match
+				// what the shader declared.
+				info.imageView = r->texture.TrinityALImpl_GetObject()->GetStorageViewVulkan( r->mip );
+				if( info.imageView == VK_NULL_HANDLE )
+				{
+					// dx11 binds a null UAV for a mip the texture lacks; a Vulkan descriptor
+					// cannot be null without nullDescriptor, so the commit is incomplete.
+					CCP_AL_LOGWARN_LIMITED( "Vulkan: no storage view of mip %u for stage %u, register %u", r->mip, input.stage, reg );
+					complete = false;
+					break;
+				}
 				info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 				imageInfos.push_back( info );
 				break;
