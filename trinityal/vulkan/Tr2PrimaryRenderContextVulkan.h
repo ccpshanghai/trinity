@@ -292,8 +292,9 @@ private:
 
 	// Set when the swapchain has to be thrown away and built again: a present that reported
 	// OUT_OF_DATE (or SUBOPTIMAL when a rebuild would change the swapchain -- Present says
-	// why that qualifier exists), a submit that failed, or SetPresentParameters. Acted on in
-	// BeginFrame, which is the one place that is between frames by construction.
+	// why that qualifier exists), a submit that failed, or a rebuild that met a zero-sized
+	// surface (a minimised window, whether Present or SetPresentParameters asked for it).
+	// Acted on in BeginFrame, which is the one place that is between frames by construction.
 	//
 	// Recovery is deliberately one action for all of those causes. A failed submit leaves
 	// the acquire semaphore signalled with nothing to wait on it, and Vulkan has no
@@ -303,7 +304,7 @@ private:
 	bool m_needsSwapChainRebuild;
 
 	// The last RebuildSwapChainVulkan found a zero-sized surface (see
-	// IsPresentationSuspendedVulkan). Set and cleared there only.
+	// IsPresentationSuspendedVulkan). Set and cleared there, and cleared by CreateDevice.
 	bool m_presentationSuspended = false;
 	uint32_t m_currentImage;
 
