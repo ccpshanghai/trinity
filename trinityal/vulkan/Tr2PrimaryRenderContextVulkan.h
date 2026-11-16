@@ -37,6 +37,16 @@ public:
 		
 	ALResult Present();
 
+	// True while the window's surface has a zero extent (a minimised Win32 window): no
+	// swapchain can exist, so no frame is being recorded and nothing rendered now could be
+	// presented. BeginFrame keeps trying every frame, and the first one that builds a
+	// swapchain again clears it. TriDevice skips the frame's rendering while it is set, so
+	// render jobs do not record into a frame that does not exist.
+	bool IsPresentationSuspendedVulkan() const
+	{
+		return m_presentationSuspended;
+	}
+
 	bool IsValid() const;
 
 	// The swapchain's format, which the default back buffer already carries -- it is set
@@ -335,6 +345,10 @@ private:
 	// the sync objects along with the swapchain. Trying to un-signal a semaphore, or to
 	// carry on from a half-submitted frame, is what makes this look like it needs cleverness.
 	bool m_needsSwapChainRebuild;
+
+	// The last RebuildSwapChainVulkan found a zero-sized surface (see
+	// IsPresentationSuspendedVulkan). Set and cleared there only.
+	bool m_presentationSuspended = false;
 	uint32_t m_currentImage;
 
 	// One binary semaphore per swapchain image, NOT per virtual frame. It is signalled by
