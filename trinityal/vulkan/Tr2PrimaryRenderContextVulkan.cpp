@@ -1091,6 +1091,9 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	// detection and the surface rebuild it drives would work off a value nobody used.
 	m_presentParameters.outputWindow = focusWindow;
 	m_needsSwapChainRebuild = false;
+	// A device re-created after one whose window was minimised starts with a swapchain, so
+	// with nothing suspended (see IsPresentationSuspendedVulkan).
+	m_presentationSuspended = false;
 
 	// The pipeline cache, loaded before anything can build a pipeline. Every failure here
 	// is non-fatal by design: a missing, stale or corrupt blob costs a cold start, and a
@@ -1427,9 +1430,15 @@ ALResult Tr2PrimaryRenderContextAL::RebuildSwapChainVulkan( bool alreadyQuiesced
 	}
 	if( built == S_FALSE )
 	{
-		// A zero-sized surface: the window is minimised. Leave the flag set and try again
-		// next frame rather than tearing down what is still there.
+		// A zero-sized surface: the window is minimised. Try again next frame rather than
+		// tearing down what is still there. The rebuild flag is set here, not only left set:
+		// SetPresentParameters (TriDevice::SetBackBufferSize while minimised) reaches this
+		// with it clear and has already quiesced the old swapchain's state, so without it
+		// BeginFrame would acquire from that swapchain, no later frame would rebuild, and
+		// presentation would stay suspended after the restore. With it, every Present
+		// retries through BeginFrame, as when Present found the zero extent itself.
 		m_presentationSuspended = true;
+		m_needsSwapChainRebuild = true;
 		return S_FALSE;
 	}
 	m_presentationSuspended = false;
