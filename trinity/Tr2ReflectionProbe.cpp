@@ -8,6 +8,9 @@
 #include "Shader/Tr2Effect.h"
 #include "Resources/TriTextureRes.h"
 #include "Shader/Parameter/Tr2RuntimeTextureParameter.h"
+#include "Tr2GpuStructuredBuffer.h"
+#include "Tr2ReflectionFilterCoefficients.h"
+#include <cstring>
 #include <sstream>
 
 using namespace Tr2RenderContextEnum;
@@ -221,6 +224,9 @@ void Tr2ReflectionProbe::SetBackLightContrast( float contrast )
 void Tr2ReflectionProbe::ReleaseResources( TriStorage s )
 {
 	m_initialized = false;
+	// Its contents are uploaded once, by PrepareFilterCoefficients: a buffer the device
+	// re-creates by itself would come back empty, so the probe makes and fills a new one.
+	m_filterCoefficients = nullptr;
 }
 
 bool Tr2ReflectionProbe::OnPrepareResources()
@@ -273,6 +279,15 @@ bool Tr2ReflectionProbe::DoPrepareResources( ImageIO::PixelFormat rtFormat, Tr2P
 		m_hasData = false;
 	}
 
+	if( !m_filterCoefficients || !m_filterCoefficients->IsValid() )
+	{
+		if( !PrepareFilterCoefficients( renderContext ) )
+		{
+			return false;
+		}
+		m_initialized = false; // bind the new buffer below
+	}
+
 	if( !m_initialized )
 	{
 		m_filterEffect->SetEffectPathName( "res:/graphics/effect/managed/space/System/Reflection/ReflectionFilterActivision128.fx" );
@@ -290,6 +305,9 @@ bool Tr2ReflectionProbe::DoPrepareResources( ImageIO::PixelFormat rtFormat, Tr2P
 		}
 
 		m_filterEffect->SetParameter( BlueSharedString( "tex_in" ), m_preFilterTarget );
+		// An effect whose shader declares no `coeffs` (an older build that holds the table as
+		// a static array) leaves the resource unbound and unused.
+		m_filterEffect->SetParameter( BlueSharedString( "coeffs" ), m_filterCoefficients );
 
 		for( int i = 0; i < MIP_COUNT; i++ )
 		{
@@ -317,6 +335,33 @@ bool Tr2ReflectionProbe::DoPrepareResources( ImageIO::PixelFormat rtFormat, Tr2P
 		m_initialized = true;
 	}
 
+	return true;
+}
+
+// The main filter's coefficients, uploaded into a new buffer. They used to be a static array in
+// the filter shader, indexed at run time: on Vulkan, DXC's SPIR-V copies such a table
+// into per-invocation scratch memory, and the reflection pass cost ~23 ms of every frame on an
+// RTX 2070 SUPER (about 0.36 ms with the table in this buffer; carbon-bind, 2026-11-16).
+bool Tr2ReflectionProbe::PrepareFilterCoefficients( Tr2PrimaryRenderContext& renderContext )
+{
+	Tr2GpuStructuredBufferPtr buffer;
+	buffer.CreateInstance();
+	if( FAILED( buffer->Create( REFLECTION_FILTER_COEFFICIENT_COUNT, sizeof( s_reflectionFilterCoefficients[0] ), Tr2GpuStructuredBuffer::CPU_WRITABLE ) ) )
+	{
+		CCP_LOGERR( "Tr2ReflectionProbe: cannot create the filter's coefficient buffer" );
+		return false;
+	}
+	buffer->SetName( "Reflection filter coefficients" );
+	Tr2BufferAL* al = buffer->GetGpuBuffer( 0 );
+	void* data = nullptr;
+	if( !al || FAILED( al->MapForWriting( data, renderContext ) ) )
+	{
+		CCP_LOGERR( "Tr2ReflectionProbe: cannot write the filter's coefficient buffer" );
+		return false;
+	}
+	memcpy( data, s_reflectionFilterCoefficients, sizeof( s_reflectionFilterCoefficients ) );
+	al->UnmapForWriting( renderContext );
+	m_filterCoefficients = buffer;
 	return true;
 }
 
