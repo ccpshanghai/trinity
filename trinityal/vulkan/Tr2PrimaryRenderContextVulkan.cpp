@@ -1231,6 +1231,7 @@ ALResult Tr2PrimaryRenderContextAL::RebuildSwapChainVulkan( bool alreadyQuiesced
 	{
 		// Windowless: there is no swapchain to rebuild and nothing to recover from.
 		m_needsSwapChainRebuild = false;
+		m_presentationSuspended = false;
 		return S_OK;
 	}
 
@@ -1252,8 +1253,10 @@ ALResult Tr2PrimaryRenderContextAL::RebuildSwapChainVulkan( bool alreadyQuiesced
 	{
 		// A zero-sized surface: the window is minimised. Leave the flag set and try again
 		// next frame rather than tearing down what is still there.
+		m_presentationSuspended = true;
 		return S_FALSE;
 	}
+	m_presentationSuspended = false;
 
 	VkSwapchainKHR oldSwapChain = m_swapChain;
 	m_swapChain = created.swapChain;
