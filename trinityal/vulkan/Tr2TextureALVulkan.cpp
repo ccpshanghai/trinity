@@ -797,6 +797,123 @@ namespace TrinityALImpl
 		m_mapMemory = VK_NULL_HANDLE;
 	}
 
+	std::shared_ptr<Tr2ReadbackAL> Tr2TextureAL::CreateReadback( const Tr2TextureSubresource& region, Tr2PrimaryRenderContextAL& renderContext )
+	{
+		if( !IsValid() || !m_owner || m_currentIndex >= m_images.size() )
+		{
+			return nullptr;
+		}
+
+		VkOffset3D offset;
+		VkExtent3D extent;
+		uint32_t pitch = 0;
+		VkDeviceSize size = 0;
+		DescribeMappedRegion( region, m_desc, offset, extent, pitch, size );
+		if( size == 0 )
+		{
+			return nullptr;
+		}
+
+		VkBuffer buffer = VK_NULL_HANDLE;
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		if( FAILED( CreateBuffer(
+				buffer,
+				memory,
+				size_t( size ),
+				VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+				VkMemoryPropertyFlagBits( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ),
+				*m_owner ) ) )
+		{
+			return nullptr;
+		}
+
+		// The same copy MapForReading records, without the stall: it runs with the frame being
+		// recorded, and the readback reports ready once that frame has rendered.
+		Tr2RenderContextAL& context = renderContext;
+		context.EndRenderPassVulkan();
+		TransitionVulkan( context.m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
+		VkBufferImageCopy copy = {
+			0,
+			0, // tightly packed, so let the extent decide
+			0,
+			{ GetAspectMaskVulkan( m_format ), region.m_startMipLevel, region.m_startFace, 1 },
+			offset,
+			extent
+		};
+		vkCmdCopyImageToBuffer( context.m_commandBuffer, m_images[m_currentIndex], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy );
+
+		return std::make_shared<Tr2ReadbackAL>( renderContext, buffer, memory, pitch, renderContext.GetRecordingFrameNumber() );
+	}
+
+	Tr2ReadbackAL::Tr2ReadbackAL( Tr2PrimaryRenderContextAL& owner, VkBuffer buffer, VkDeviceMemory memory, uint32_t rowPitch, uint64_t frameNumber )
+		: m_owner( &owner ),
+		m_buffer( buffer ),
+		m_memory( memory ),
+		m_mapped( nullptr ),
+		m_rowPitch( rowPitch ),
+		m_frameNumber( frameNumber )
+	{
+	}
+
+	Tr2ReadbackAL::~Tr2ReadbackAL()
+	{
+		Destroy();
+	}
+
+	bool Tr2ReadbackAL::IsReady( Tr2PrimaryRenderContextAL& renderContext ) const
+	{
+		return renderContext.GetRenderedFrameNumber() >= m_frameNumber;
+	}
+
+	ALResult Tr2ReadbackAL::Map( const void*& pointer, uint32_t& rowPitch, Tr2PrimaryRenderContextAL& renderContext ) const
+	{
+		pointer = nullptr;
+		rowPitch = 0;
+		if( !IsValid() || !IsReady( renderContext ) )
+		{
+			return E_INVALIDCALL;
+		}
+		if( !m_mapped )
+		{
+			CR_RETURN_HR( Vk2Al( vkMapMemory( m_owner->m_device, m_memory, 0, VK_WHOLE_SIZE, 0, &m_mapped ) ) );
+		}
+		pointer = m_mapped;
+		rowPitch = m_rowPitch;
+		return S_OK;
+	}
+
+	void Tr2ReadbackAL::Destroy()
+	{
+		if( m_owner && m_buffer != VK_NULL_HANDLE )
+		{
+			if( m_mapped )
+			{
+				vkUnmapMemory( m_owner->m_device, m_memory );
+				m_mapped = nullptr;
+			}
+			m_owner->DestroyLaterVulkan( m_buffer, &vkDestroyBuffer );
+			m_owner->DestroyLaterVulkan( m_memory, &vkFreeMemory );
+		}
+		m_buffer = VK_NULL_HANDLE;
+		m_memory = VK_NULL_HANDLE;
+		m_owner = nullptr;
+	}
+
+	void Tr2ReadbackAL::Describe( Tr2DeviceResourceDescriptionAL& description ) const
+	{
+		description["type"] = "Tr2ReadbackAL";
+	}
+
+	Tr2ALMemoryType Tr2ReadbackAL::GetMemoryClass() const
+	{
+		return AL_MEMORY_MANAGED;
+	}
+
+	bool Tr2ReadbackAL::IsValid() const
+	{
+		return m_buffer != VK_NULL_HANDLE;
+	}
+
 	ALResult Tr2TextureAL::MapForWriting( const Tr2TextureSubresource& region, void*& data, uint32_t& pitch, Tr2RenderContextAL& renderContext )
 	{
 		data = nullptr;

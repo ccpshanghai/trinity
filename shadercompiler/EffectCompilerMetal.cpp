@@ -4259,7 +4259,7 @@ std::string MetalTool( const char* name )
 		size_t programFilesSize;
 		getenv_s( &programFilesSize, programFiles, "PROGRAMFILES" );
 
-		cmd << "\"" << programFiles << "\\Metal Developer Tools\\metal\\macos\\bin\\" << name << ".exe\"";
+		cmd << "\"" << std::string( programFiles ) << "\\Metal Developer Tools\\metal\\macos\\bin\\" << name << ".exe\"";
 	}
 #else
 	// M3 §2.7: the SDK was hardcoded to macosx. The target is compile-global because the

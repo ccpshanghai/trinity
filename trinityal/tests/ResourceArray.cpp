@@ -2,10 +2,10 @@
 
 #include "StdAfx.h"
 
-// Vulkan-only for now. DX12 sizes its descriptor ranges by arrayCount but writes one descriptor
-// per register (Tr2ResourceSetALDx12.cpp walks m_srvRegisters, one entry per register), so this
-// test would fail there for a reason nobody on this branch can build to see; the gap is recorded
-// in the Plan 1 ledger rather than hidden behind a passing guard.
+// Vulkan-only for now. Whether the other backends bind every element of an array register under
+// the direct binding model has not been checked on this branch (the fork's per-element register
+// map is shared; what each backend's Commit does with arrayCount is not), so the test stays where
+// it can be built and run rather than hidden behind a passing guard elsewhere.
 #if TRINITY_PLATFORM == TRINITY_VULKAN
 
 #include "WithValidRenderContextFixture.h"
@@ -105,17 +105,15 @@ TEST_F( ResourceArray, FourTexturesBehindOneArrayBindingEachReachTheirColumn )
 	Tr2SamplerStateAL sampl;
 	ASSERT_HRESULT_SUCCEEDED( sampl.Create( Tr2SamplerDescription( TF_POINT, TA_CLAMP, 1, 0.0f, 0.0f ), *renderContext ) );
 
-	Tr2ResourceSetDescriptionAL desc( sp );
+	// Element k of the array at t0 is register t(0 + k), and it needs a slot of its own in the
+	// program's register map: that is site 4 (Tr2RegisterMapAL maps every element). Under the
+	// direct binding model SetSrv on a register with no slot is silently ignored, as on every
+	// backend, so the slot is asserted here rather than through SetSrv's result.
+	const Tr2RegisterMapAL& registerMap = sp.GetRegisterMap();
 	for( uint32_t k = 0; k < 4; ++k )
 	{
-		// Element k of the array at t0 is register t(0 + k). That the description accepts k > 0
-		// at all is site 4 (Tr2RegisterMapAL maps every element); before it, SetSrv returned
-		// false here for k = 1..3.
-		ASSERT_TRUE( desc.SetSrv( PIXEL_SHADER, k, tex[k] ) ) << "element " << k << " has no register slot";
+		ASSERT_LT( uint32_t( registerMap.srvs[PIXEL_SHADER][k] ), registerMap.srvCount ) << "element " << k << " has no register slot";
 	}
-	ASSERT_TRUE( desc.SetSampler( PIXEL_SHADER, 0, sampl ) );
-	Tr2ResourceSetAL resourceSet;
-	ASSERT_HRESULT_SUCCEEDED( resourceSet.Create( desc, sp, *renderContext ) );
 
 	Tr2TextureAL rt;
 	ASSERT_HRESULT_SUCCEEDED( rt.Create( Tr2BitmapDimensions( RT_WIDTH, RT_HEIGHT, 1, PIXEL_FORMAT_B8G8R8A8_UNORM ),
@@ -136,7 +134,11 @@ TEST_F( ResourceArray, FourTexturesBehindOneArrayBindingEachReachTheirColumn )
 	ASSERT_HRESULT_SUCCEEDED( renderContext->SetRenderState( RS_ZENABLE, 0 ) );
 	ASSERT_HRESULT_SUCCEEDED( renderContext->SetRenderState( RS_ALPHABLENDENABLE, 0 ) );
 	ASSERT_HRESULT_SUCCEEDED( renderContext->SetRenderState( RS_CULLMODE, CULLMODE_NONE ) );
-	ASSERT_HRESULT_SUCCEEDED( renderContext->SetResourceSet( resourceSet ) );
+	for( uint32_t k = 0; k < 4; ++k )
+	{
+		ASSERT_HRESULT_SUCCEEDED( renderContext->SetSrv( PIXEL_SHADER, k, tex[k] ) ) << "element " << k;
+	}
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetSampler( PIXEL_SHADER, 0, sampl ) );
 	ASSERT_HRESULT_SUCCEEDED( renderContext->SetTopology( TOP_TRIANGLE_STRIP ) );
 	ASSERT_HRESULT_SUCCEEDED( renderContext->DrawPrimitive( 0, 2 ) );
 	ASSERT_HRESULT_SUCCEEDED( renderContext->PopDepthStencil() );

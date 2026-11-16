@@ -11,14 +11,15 @@ struct Compute : public WithValidRenderContext
 
 using namespace Tr2RenderContextEnum;
 
-// The Metal AL's buffer slot IS the register index — one shared namespace, and
+// The Metal AL's buffer slot IS the register index -- one shared namespace, and
 // production's EffectCompilerMetal assigns absolute slots the same way, so the
 // runtime offsets cannot change (they broke here once: SRV/UAV 0 are the same
 // slot, the April-2025 register reallocation zeroed the offsets but never
 // updated these tests). Slots 0-3 are vertex streams and 4-23 constant buffers;
 // Shaders.metal/MetalDefines.h already declares SRV(i) at buffer(4+i) and
 // UAV(i) at buffer(24+i), so the Metal arm pins the compute registers to those
-// slots. Identity on every other backend.
+// slots. Identity on every other backend. (The fork's fix, re-applied after
+// upstream #90 moved these tests from resource sets to SetSrv/SetUav.)
 #if ( TRINITY_PLATFORM == TRINITY_METAL )
 #define METAL_COMPUTE_SRV_REGISTER( i ) ( 4 + ( i ) )
 #define METAL_COMPUTE_UAV_REGISTER( i ) ( 24 + ( i ) )
@@ -47,17 +48,12 @@ TEST_F( Compute, CanReadCSResult )
 	Tr2BufferAL output;
 	ASSERT_HRESULT_SUCCEEDED( output.Create( PIXEL_FORMAT_R32G32B32A32_FLOAT, 1, Tr2GpuUsage::UNORDERED_ACCESS, Tr2CpuUsage::READ, nullptr, *renderContext ) );
 
-	Tr2ResourceSetDescriptionAL desc( sp );
-	desc.SetUav( Tr2RenderContextEnum::COMPUTE_SHADER, METAL_COMPUTE_UAV_REGISTER( 0 ), output );
-	Tr2ResourceSetAL resourceSet;
-	ASSERT_HRESULT_SUCCEEDED( resourceSet.Create( desc, sp, *renderContext ) );
-
-	ASSERT_HRESULT_SUCCEEDED( renderContext->SetResourceSet( resourceSet ) );
 	ASSERT_HRESULT_SUCCEEDED( renderContext->SetShaderProgram( sp ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetUav( Tr2RenderContextEnum::COMPUTE_SHADER, METAL_COMPUTE_UAV_REGISTER( 0 ), output ) );
 
 	ASSERT_HRESULT_SUCCEEDED( renderContext->RunComputeShader( 1, 1, 1 ) );
 
-	ASSERT_HRESULT_SUCCEEDED( renderContext->SetResourceSet( Tr2ResourceSetAL() ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->ResetResourceBindings() );
 
 	const float* data;
 	ASSERT_HRESULT_SUCCEEDED( output.MapForReading( data, *renderContext ) );
@@ -100,21 +96,14 @@ TEST_F( Compute, DISABLED_CanAddInCS )
 	Tr2BufferAL output;
 	ASSERT_HRESULT_SUCCEEDED( output.Create( PIXEL_FORMAT_R32G32B32A32_FLOAT, 1, Tr2GpuUsage::UNORDERED_ACCESS, Tr2CpuUsage::READ, nullptr, *renderContext ) );
 
-	Tr2ResourceSetDescriptionAL desc( sp );
-	desc.SetSrv( Tr2RenderContextEnum::COMPUTE_SHADER, 0, arg1 );
-	desc.SetSrv( Tr2RenderContextEnum::COMPUTE_SHADER, 1, arg2 );
-	desc.SetUav( Tr2RenderContextEnum::COMPUTE_SHADER, 0, output );
-
-	Tr2ResourceSetAL resourceSet;
-	ASSERT_HRESULT_SUCCEEDED( resourceSet.Create( desc, sp, *renderContext ) );
-
-
-	ASSERT_HRESULT_SUCCEEDED( renderContext->SetResourceSet( resourceSet ) );
 	ASSERT_HRESULT_SUCCEEDED( renderContext->SetShaderProgram( sp ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetSrv( Tr2RenderContextEnum::COMPUTE_SHADER, 0, arg1 ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetSrv( Tr2RenderContextEnum::COMPUTE_SHADER, 1, arg2 ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetUav( Tr2RenderContextEnum::COMPUTE_SHADER, 0, output ) );
 
 	ASSERT_HRESULT_SUCCEEDED( renderContext->RunComputeShader( 1, 1, 1 ) );
 
-	ASSERT_HRESULT_SUCCEEDED( renderContext->SetResourceSet( Tr2ResourceSetAL() ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->ResetResourceBindings() );
 
 	const float* data;
 	ASSERT_HRESULT_SUCCEEDED( output.MapForReading( data, *renderContext ) );
@@ -162,23 +151,15 @@ TEST_F( Compute, CanAddConstantInCS )
 	Tr2BufferAL output;
 	ASSERT_HRESULT_SUCCEEDED( output.Create( PIXEL_FORMAT_R32G32B32A32_FLOAT, 1, Tr2GpuUsage::UNORDERED_ACCESS, Tr2CpuUsage::READ, nullptr, *renderContext ) );
 
-	Tr2ResourceSetDescriptionAL desc( sp );
-	desc.SetSrv( Tr2RenderContextEnum::COMPUTE_SHADER, METAL_COMPUTE_SRV_REGISTER( 0 ), arg1 );
-	desc.SetUav( Tr2RenderContextEnum::COMPUTE_SHADER, METAL_COMPUTE_UAV_REGISTER( 0 ), output );
-
-	Tr2ResourceSetAL resourceSet;
-	ASSERT_HRESULT_SUCCEEDED( resourceSet.Create( desc, sp, *renderContext ) );
-
-
-	ASSERT_HRESULT_SUCCEEDED( renderContext->SetResourceSet( resourceSet ) );
-
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetShaderProgram( sp ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetSrv( Tr2RenderContextEnum::COMPUTE_SHADER, METAL_COMPUTE_SRV_REGISTER( 0 ), arg1 ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetUav( Tr2RenderContextEnum::COMPUTE_SHADER, METAL_COMPUTE_UAV_REGISTER( 0 ), output ) );
 
 	ASSERT_HRESULT_SUCCEEDED( renderContext->SetConstants( arg2, COMPUTE_SHADER, 1 ) );
-	ASSERT_HRESULT_SUCCEEDED( renderContext->SetShaderProgram( sp ) );
 
 	ASSERT_HRESULT_SUCCEEDED( renderContext->RunComputeShader( 1, 1, 1 ) );
 
-	ASSERT_HRESULT_SUCCEEDED( renderContext->SetResourceSet( Tr2ResourceSetAL() ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->ResetResourceBindings() );
 
 	const float* readData = nullptr;
 	ASSERT_HRESULT_SUCCEEDED( output.MapForReading( readData, *renderContext ) );
@@ -238,21 +219,14 @@ TEST_F( Compute, DISABLED_CanRead2DTextureInCS )
 	Tr2BufferAL output;
 	ASSERT_HRESULT_SUCCEEDED( output.Create( PIXEL_FORMAT_R32G32B32A32_FLOAT, 1, Tr2GpuUsage::UNORDERED_ACCESS, Tr2CpuUsage::READ, nullptr, *renderContext ) );
 
-	Tr2ResourceSetDescriptionAL desc( sp );
-	desc.SetSrv( Tr2RenderContextEnum::COMPUTE_SHADER, 0, input );
-	desc.SetSampler( Tr2RenderContextEnum::COMPUTE_SHADER, 0, sampl );
-	desc.SetUav( Tr2RenderContextEnum::COMPUTE_SHADER, 0, output );
-
-	Tr2ResourceSetAL resourceSet;
-	ASSERT_HRESULT_SUCCEEDED( resourceSet.Create( desc, sp, *renderContext ) );
-
-
-	ASSERT_HRESULT_SUCCEEDED( renderContext->SetResourceSet( resourceSet ) );
 	ASSERT_HRESULT_SUCCEEDED( renderContext->SetShaderProgram( sp ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetSrv( Tr2RenderContextEnum::COMPUTE_SHADER, 0, input ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetSampler( Tr2RenderContextEnum::COMPUTE_SHADER, 0, sampl ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetUav( Tr2RenderContextEnum::COMPUTE_SHADER, 0, output ) );
 
 	ASSERT_HRESULT_SUCCEEDED( renderContext->RunComputeShader( 1, 1, 1 ) );
 
-	ASSERT_HRESULT_SUCCEEDED( renderContext->SetResourceSet( Tr2ResourceSetAL() ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->ResetResourceBindings() );
 
 	const float* data;
 	ASSERT_HRESULT_SUCCEEDED( output.MapForReading( data, *renderContext ) );
@@ -283,19 +257,12 @@ TEST_F( Compute, CanDispatchCSGroups )
 	Tr2BufferAL output;
 	ASSERT_HRESULT_SUCCEEDED( output.Create( PIXEL_FORMAT_R32_UINT, 1, Tr2GpuUsage::UNORDERED_ACCESS, Tr2CpuUsage::READ, nullptr, *renderContext ) );
 
-	Tr2ResourceSetDescriptionAL desc( sp );
-	desc.SetUav( Tr2RenderContextEnum::COMPUTE_SHADER, METAL_COMPUTE_UAV_REGISTER( 0 ), output );
-
-	Tr2ResourceSetAL resourceSet;
-	ASSERT_HRESULT_SUCCEEDED( resourceSet.Create( desc, sp, *renderContext ) );
-
-
-	ASSERT_HRESULT_SUCCEEDED( renderContext->SetResourceSet( resourceSet ) );
 	ASSERT_HRESULT_SUCCEEDED( renderContext->SetShaderProgram( sp ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->SetUav( Tr2RenderContextEnum::COMPUTE_SHADER, METAL_COMPUTE_UAV_REGISTER( 0 ), output ) );
 
 	ASSERT_HRESULT_SUCCEEDED( renderContext->RunComputeShader( 2, 2, 2 ) );
 
-	ASSERT_HRESULT_SUCCEEDED( renderContext->SetResourceSet( Tr2ResourceSetAL() ) );
+	ASSERT_HRESULT_SUCCEEDED( renderContext->ResetResourceBindings() );
 
 	const uint32_t* data;
 	ASSERT_HRESULT_SUCCEEDED( output.MapForReading( data, *renderContext ) );

@@ -356,7 +356,7 @@ void Tr2CurveLineSet::WriteParticleVerticesToBuffer(
 // ------------------------------------------------------------------------------------------------------
 bool Tr2CurveLineSet::FillVertexBuffer()
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	USE_MAIN_THREAD_RENDER_CONTEXT();
 
@@ -371,8 +371,17 @@ bool Tr2CurveLineSet::FillVertexBuffer()
 	// catch zero size, so we don't need to worry about empty arrays
 	if( m_lines.size() )
 	{
-		// can the big vertexbuffer handle this?
 		int currentNumOfLines = GetNumOfLines();
+
+		size_t byteSize = size_t( currentNumOfLines ) * 6 * sizeof( LineVertex );
+		auto buffer = Tr2Renderer::GetPoolAllocator()->Allocate( byteSize );
+		if( !buffer )
+		{
+			m_vertexBuffer = {};
+			return false;
+		}
+
+		// can the big vertexbuffer handle this?
 		if( !m_vertexBuffer.IsValid() || ( currentNumOfLines > m_vertexBufferSize ) )
 		{
 			// release old and create new
@@ -392,8 +401,6 @@ bool Tr2CurveLineSet::FillVertexBuffer()
 			m_vertexBufferSize = currentNumOfLines;
 		}
 
-		size_t byteSize = m_vertexBufferSize * 6 * sizeof( LineVertex );
-		auto buffer = Tr2Renderer::GetPoolAllocator()->Allocate( byteSize );
 		LineVertex* vertexBuffer = reinterpret_cast<LineVertex*>( buffer );
 
 		for( unsigned int i = 0; i < m_lines.size(); ++i )

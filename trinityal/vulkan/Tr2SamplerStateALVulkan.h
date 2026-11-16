@@ -6,6 +6,8 @@
 
 #include "../include/Tr2SamplerStateAL.h"
 
+class Tr2ResourceBindings;
+
 namespace TrinityALImpl
 {
 	class Tr2SamplerStateAL : public Tr2DeviceResourceAL<Tr2SamplerStateAL>
@@ -27,7 +29,7 @@ namespace TrinityALImpl
 		VkSampler m_sampler;
 		Tr2PrimaryRenderContextAL* m_owner;
 
-		friend class TrinityALImpl::Tr2ResourceSetAL;
+		friend class ::Tr2ResourceBindings;
 	};
 
 }

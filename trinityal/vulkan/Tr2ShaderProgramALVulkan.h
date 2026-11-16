@@ -8,12 +8,19 @@
 
 #include "../include/Tr2ShaderProgramAL.h"
 #include "../include/Tr2ShaderAL.h"
-#include "../include/Tr2ResourceSetAL.h"
+#include "../include/Tr2RegisterMapAL.h"
 
 class Tr2RenderContextAL;
 
+class Tr2ResourceBindings;
+
 namespace TrinityALImpl
 {
+	// The descriptor type a register of this type takes in set 1 (or set 0 for a constant
+	// buffer). One answer for the layout (Tr2ShaderProgramALVulkan) and the writer
+	// (Tr2ResourceBindingsVulkan), so the two cannot drift.
+	VkDescriptorType DescriptorTypeVulkan( Tr2ShaderRegisterAL::RegisterType registerType );
+
 	class Tr2ShaderProgramAL : public Tr2DeviceResourceAL<Tr2ShaderProgramAL>
 	{
 	public:
@@ -36,17 +43,7 @@ namespace TrinityALImpl
 
 		std::vector<VkDescriptorPoolSize> m_poolSizes;
 
-		// The set SetPipeline binds when this program declares set-1 resources and the
-		// caller bound no resource set: every sampled texture is the primary context's
-		// dummy and every sampler its dummy sampler. Built lazily on first need; a
-		// program whose unbound slots include anything the dummies cannot stand in for
-		// (buffers, UAVs, non-2D textures) gets no default set and behaves as before.
-		VkDescriptorSet GetDefaultResourceSetVulkan( Tr2PrimaryRenderContextAL& renderContext );
 	private:
-		VkDescriptorPool m_defaultPool;
-		VkDescriptorSet m_defaultSet;
-		bool m_defaultSetTried;
-
 		VkPipelineLayout m_pipelineLayout;
 
 		VkDescriptorSetLayout m_resourceLayout;
@@ -85,7 +82,7 @@ namespace TrinityALImpl
 		// names a new TrinityALImpl::Tr2RenderContextAL instead of the global class --
 		// MSVC resolved it to the global anyway, clang does not.
 		friend class ::Tr2RenderContextAL;
-		friend class TrinityALImpl::Tr2ResourceSetAL;
+		friend class ::Tr2ResourceBindings;
 	};
 }
 #endif

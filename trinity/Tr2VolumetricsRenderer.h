@@ -49,6 +49,8 @@ public:
 		PriorityBlend::Attribute<float> fogNoiseFrequency = 0.0f;
 		PriorityBlend::Attribute<Vector3> fogNoiseMovementSpeed = Vector3( 0.0f, 0.0f, 0.0f );
 
+		PriorityBlend::Attribute<float> reflectionIntensity = 1.0f;
+
 		PriorityBlend::Attribute<double> logThickness = 0.0;
 	};
 	virtual FroxelFogSettings* GetFroxelFogSettings() = 0;
@@ -73,14 +75,14 @@ public:
 		bool raytracingEnabled,
 		Tr2GpuResourcePool& gpuResourcePool,
 		Tr2RenderContext& renderContext );
-	static Tr2GpuResourcePool::Texture GetEmptyVolumetricTexture( Tr2GpuResourcePool & gpuResourcePool );
+	static Tr2GpuResourcePool::Texture GetEmptyVolumetricTexture( Tr2GpuResourcePool& gpuResourcePool );
 
 	void UpdateFogSettings( const EveComponentRegistry& registry, const EveUpdateContext& updateContext );
 	bool HasFog() const;
 
 	Tr2GpuResourcePool::Texture RenderFog(
-		Tr2RenderContext & renderContext,
-		Tr2GpuResourcePool & gpuResourcePool,
+		Tr2RenderContext& renderContext,
+		Tr2GpuResourcePool& gpuResourcePool,
 		uint32_t width,
 		uint32_t height,
 		Tr2ShadowMap* cascadedShadowMap,
@@ -93,19 +95,26 @@ public:
 		const Matrix& view,
 		const Matrix& projection,
 		const Matrix& viewLast,
-		const Matrix& projectionLast );
+		const Matrix& projectionLast,
+		const Tr2LightManager::View* lightView );
 	Tr2GpuResourcePool::Texture RenderFogIntoReflectionMap(
-		Tr2RenderContext & renderContext,
-		Tr2GpuResourcePool & gpuResourcePool,
+		Tr2RenderContext& renderContext,
+		Tr2GpuResourcePool& gpuResourcePool,
 		uint32_t width,
 		uint32_t height,
 		const Vector3& sunDirection,
 		const Color& sunColor,
 		const Vector3d origin,
 		const Matrix& view,
-		const Matrix& projection );
-	static Tr2GpuResourcePool::Texture GetEmptyFogTexture( Tr2GpuResourcePool & gpuResourcePool );
-	void UpdateFogEnvironmentMap( Tr2RenderContext & renderContext );
+		const Matrix& projection,
+		const Tr2LightManager::View* lightView );
+	static Tr2GpuResourcePool::Texture GetEmptyFogTexture( Tr2GpuResourcePool& gpuResourcePool );
+	void UpdateFogEnvironmentMap( Tr2RenderContext& renderContext );
+
+	void SetIsReflectionProbe( bool isReflectionProbe )
+	{
+		m_isReflectionProbe = isReflectionProbe;
+	}
 
 	void UpdateVariableStore();
 	void SetPlanets( const CcpMath::Sphere* planets, size_t planetCount );
@@ -127,14 +136,14 @@ public:
 		float EnvironmentIntensity;
 
 		float EnvironmentG;
-		float _pad0;
+		float FogMultiplier;
 		float _pad1;
 		float _pad2;
 
 		CcpMath::Sphere planets[2];
 	};
 
-	void PopulatePerFrameData( FroxelPerFrameData & data );
+	void PopulatePerFrameData( FroxelPerFrameData& data );
 
 	void SetQuality( Tr2VolumerticQuality quality );
 
@@ -162,9 +171,9 @@ private:
 
 
 	Tr2GpuResourcePool::Texture RenderFog(
-		FogViewDependentResources & resources,
-		Tr2RenderContext & renderContext,
-		Tr2GpuResourcePool & gpuResourcePool,
+		FogViewDependentResources& resources,
+		Tr2RenderContext& renderContext,
+		Tr2GpuResourcePool& gpuResourcePool,
 		uint32_t originalWidth,
 		uint32_t originalHeight,
 		Tr2ShadowMap* cascadedShadowMap,
@@ -177,7 +186,8 @@ private:
 		const Matrix& view,
 		const Matrix& projection,
 		const Matrix& viewLast,
-		const Matrix& projectionLast );
+		const Matrix& projectionLast,
+		const Tr2LightManager::View* lightView );
 
 	Tr2EffectPtr m_volumeBlit;
 	Tr2EffectPtr m_downsampleDepth;
@@ -199,6 +209,7 @@ private:
 	bool m_logBlending;
 	double m_logBlendingSmoothness;
 	ITr2FroxelFogSettings::FroxelFogSettings m_froxelFogSettings;
+	bool m_isReflectionProbe;
 
 	float m_gameBackClip;
 
@@ -208,7 +219,6 @@ private:
 	double m_godRayNoiseAnimation;
 	Vector3d m_fogNoiseMovement;
 
-	float m_testValue;
 	double m_godRayNoiseMatrix[16];
 
 	FogViewDependentResources m_fogResources;
@@ -277,7 +287,22 @@ private:
 		CcpMath::Sphere planets[2];
 	};
 
-	void UpdatePerObjectData( FogPerObjectData * data, const Matrix& view, const Matrix& projection, const Matrix& viewLast, const Matrix& projectionLast, const Vector3d& origin, const Vector3d& originShift, const Vector3& sunDirection, const Color& sunColor, uint32_t width, uint32_t height, uint32_t depth, const Vector3& jitter, const Tr2ShadowMap* cascadedShadowMap );
+	void UpdatePerObjectData(
+		FogPerObjectData* data,
+		const Matrix& view,
+		const Matrix& projection,
+		const Matrix& viewLast,
+		const Matrix& projectionLast,
+		const Vector3d& origin,
+		const Vector3d& originShift,
+		const Vector3& sunDirection,
+		const Color& sunColor,
+		uint32_t width,
+		uint32_t height,
+		uint32_t depth,
+		const Vector3& jitter,
+		const Tr2ShadowMap* cascadedShadowMap,
+		const Tr2LightManager::View* lightView );
 
 	Tr2ConstantBufferAL m_fogConstantBuffer;
 
