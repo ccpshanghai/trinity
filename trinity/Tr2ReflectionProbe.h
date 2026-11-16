@@ -10,7 +10,6 @@ BLUE_DECLARE( Tr2Effect );
 BLUE_DECLARE( Tr2TextureReference );
 BLUE_DECLARE( Tr2RenderTarget );
 BLUE_DECLARE( TriTextureRes );
-BLUE_DECLARE( Tr2GpuStructuredBuffer );
 BLUE_DECLARE_INTERFACE( ITriTextureRes );
 
 BLUE_CLASS( Tr2ReflectionProbe ) :
@@ -65,7 +64,6 @@ private:
 	void RunFilter();
 	void Filter( Tr2RenderContext & renderContext );
 	bool DoPrepareResources( ImageIO::PixelFormat targetFormat, Tr2PrimaryRenderContext & renderContext );
-	bool PrepareFilterCoefficients( Tr2PrimaryRenderContext & renderContext );
 	void DestroyRenderTargets();
 
 	bool m_initialized;
@@ -83,10 +81,6 @@ private:
 	Tr2EffectPtr m_copyMipEffect;
 	Tr2RenderTargetPtr m_preFilterTarget;
 	Tr2RenderTargetPtr m_postFilterTarget;
-
-	// The main filter's coefficient table (Tr2ReflectionFilterCoefficients.h), bound as its `coeffs`
-	// StructuredBuffer. Uploaded once, again after ReleaseResources (device loss) drops it.
-	Tr2GpuStructuredBufferPtr m_filterCoefficients;
 
 	ITriTextureResPtr m_customSourceTexture;
 

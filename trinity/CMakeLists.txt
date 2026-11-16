@@ -1618,7 +1618,6 @@ set(_SOURCES
     Tr2QuadRenderer.cpp
     Tr2QuadRenderer.h
     Tr2QuadRenderer_Blue.cpp
-    Tr2ReflectionFilterCoefficients.h
     Tr2ReflectionProbe.cpp
     Tr2ReflectionProbe.h
     Tr2ReflectionProbe_Blue.cpp
