@@ -8,7 +8,7 @@
     {
       "kind": "git",
       "repository": "https://github.com/ccpshanghai/vcpkg-registry.git",
-      "reference": "feat/mobile-exp-v8-upgrade",
+      "reference": "mobile-exp",
       "baseline": "4fb79a5039858de896b7982f77d68c9110eb1dce",
       "packages": [
         "python3",
