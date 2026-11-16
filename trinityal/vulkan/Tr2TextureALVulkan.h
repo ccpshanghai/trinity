@@ -137,13 +137,23 @@ namespace TrinityALImpl
 		// shader-resource view is already the right shape and is returned unchanged.
 		VkImageView GetAttachmentViewVulkan( uint32_t mip, uint32_t layer, bool srgb = false );
 
-		// The storage-image (UAV) view. For every texture but a cube it is the shader-resource
-		// view; a cube's shader-resource view is a CUBE view, and the RWTexture2DArray a compute
-		// shader writes it through needs a 2D_ARRAY view over the same six layers -- the two
-		// dims are not interchangeable in a descriptor (VUID-vkCmdDispatch-viewType-07752, the
-		// reflection probe's `tex_lo_res` on the S23, 2026-09-10). Created on demand, destroyed
-		// with the rest.
-		VkImageView GetStorageViewVulkan();
+		// The storage-image (UAV) view of one mip level: what SetUav( ..., mip ) binds, as dx11
+		// and dx12 bind m_uav[mip] and metal GetUAVMetalTexture( mip ). A storage descriptor
+		// addresses the view's base level only, so a view from level 0 -- the shader-resource
+		// view, which this used to return for every mip -- made every write land in level 0:
+		// the reflection probe's filter wrote its seven roughness levels (tex_out0..6, mips
+		// 1-7) all into mip 0, and rough reflections sampled black (carbon-bind, 2026-11-16).
+		//
+		// One level, every layer, the shader-resource view's type except for a cube: a cube's
+		// shader-resource view is a CUBE view, and the RWTexture2DArray a compute shader writes
+		// it through needs a 2D_ARRAY view over the same six layers -- the two dims are not
+		// interchangeable in a descriptor (VUID-vkCmdDispatch-viewType-07752, the reflection
+		// probe's `tex_lo_res` on the S23, 2026-09-10). A one-level texture that is not a cube
+		// gets its shader-resource view, which is already that shape. Created on demand per
+		// image and mip, destroyed with the rest (Destroy, which every recreation passes
+		// through). VK_NULL_HANDLE for a mip the texture does not have, or if creating the view
+		// failed.
+		VkImageView GetStorageViewVulkan( uint32_t mip );
 		void Describe( Tr2DeviceResourceDescriptionAL& description ) const;
 		ALResult SetName( const char* name );
 		const char* GetName() const;
@@ -165,8 +175,9 @@ namespace TrinityALImpl
 		// GetAttachmentViewVulkan.
 		std::map<uint32_t, VkImageView> m_attachmentViews;
 
-		// GetStorageViewVulkan's, for a cube texture only; VK_NULL_HANDLE otherwise.
-		VkImageView m_storageView;
+		// GetStorageViewVulkan's, keyed by image index and mip packed together. Empty for a
+		// texture never bound as a UAV, and for a one-level texture that is not a cube.
+		std::map<uint32_t, VkImageView> m_storageViews;
 
 		// What SetName was given, kept the way metal keeps it. Tr2GpuResourcePool names every
 		// texture it hands out ("cascadedShadowDepth", "shadowMapResult", ...), so with this

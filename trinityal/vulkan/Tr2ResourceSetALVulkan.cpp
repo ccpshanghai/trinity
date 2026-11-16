@@ -286,10 +286,24 @@ namespace TrinityALImpl
 						return E_FAIL;
 					}
 					VkDescriptorImageInfo imageInfo = {};
-					// The storage view, not the shader-resource one: for a cube texture they
-					// differ in dim (2D_ARRAY against CUBE), and the descriptor has to match
-					// what the shader declared.
-					imageInfo.imageView = resource.texture.m_texture->GetStorageViewVulkan();
+					// The storage view of the mip SetUav named, not the shader-resource view: a
+					// storage descriptor writes its view's base level, so the shader-resource
+					// view (base 0) sent every mip's writes to mip 0; and for a cube texture the
+					// two differ in dim too (2D_ARRAY against CUBE), and the descriptor has to
+					// match what the shader declared.
+					imageInfo.imageView = resource.texture.m_texture->GetStorageViewVulkan( resource.mip );
+					if( imageInfo.imageView == VK_NULL_HANDLE )
+					{
+						// dx11 binds a null UAV for a mip the texture lacks; a Vulkan descriptor
+						// cannot be null without nullDescriptor, so the set is not created.
+						static char s_noStorageViewSite;
+						if( CCP::LogOnceAL( &s_noStorageViewSite, uint64_t( resource.texture.m_texture->GetImageVulkan() ) * 0x9e3779b97f4a7c15ull + resource.mip ) )
+						{
+							CCP_AL_LOGERR( "Tr2ResourceSetAL: no storage view of mip %u (the texture has %u) for binding %u",
+								resource.mip, resource.texture.m_texture->GetDesc().GetTrueMipCount(), it->binding );
+						}
+						return E_FAIL;
+					}
 					imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 					imageInfos.push_back( imageInfo );
 					BoundImageVulkan bound = { resource.texture, VK_IMAGE_LAYOUT_GENERAL };

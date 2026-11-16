@@ -90,7 +90,6 @@ namespace TrinityALImpl
 	Tr2TextureAL::Tr2TextureAL()
 		:m_owner( nullptr ),
 		m_memory( VK_NULL_HANDLE ),
-		m_storageView( VK_NULL_HANDLE ),
 		m_currentIndex( 0 ),
 		m_cpuUsage( Tr2CpuUsage::NONE ),
 		m_gpuUsage( Tr2GpuUsage::NONE ),
@@ -479,10 +478,9 @@ namespace TrinityALImpl
 			{
 				m_owner->DestroyLaterVulkan( it->second, vkDestroyImageView );
 			}
-			if( m_storageView != VK_NULL_HANDLE )
+			for( auto it = begin( m_storageViews ); it != end( m_storageViews ); ++it )
 			{
-				m_owner->DestroyLaterVulkan( m_storageView, vkDestroyImageView );
-				m_storageView = VK_NULL_HANDLE;
+				m_owner->DestroyLaterVulkan( it->second, vkDestroyImageView );
 			}
 			if( m_images.size() == 1 )
 			{
@@ -509,6 +507,7 @@ namespace TrinityALImpl
 			m_imageViews.clear();
 			m_srgbImageViews.clear();
 			m_attachmentViews.clear();
+			m_storageViews.clear();
 			m_layouts.clear();
 		}
 		m_currentIndex = 0;
@@ -1346,24 +1345,33 @@ namespace TrinityALImpl
 		return view;
 	}
 
-	VkImageView Tr2TextureAL::GetStorageViewVulkan()
+	VkImageView Tr2TextureAL::GetStorageViewVulkan( uint32_t mip )
 	{
-		if( m_desc.GetType() != Tr2RenderContextEnum::TEX_TYPE_CUBE )
+		if( m_currentIndex >= m_images.size() || mip >= m_desc.GetTrueMipCount() )
+		{
+			return VK_NULL_HANDLE;
+		}
+		const bool cube = m_desc.GetType() == Tr2RenderContextEnum::TEX_TYPE_CUBE;
+		if( !cube && m_desc.GetTrueMipCount() == 1 )
 		{
 			return m_imageViews[m_currentIndex];
 		}
-		if( m_storageView != VK_NULL_HANDLE )
+		const uint32_t key = ( m_currentIndex << 16 ) | mip;
+		auto found = m_storageViews.find( key );
+		if( found != m_storageViews.end() )
 		{
-			return m_storageView;
+			return found->second;
 		}
-		// The shader-resource view's extent -- every level, every layer -- with the one
-		// difference a storage descriptor of a cube needs: 2D_ARRAY, six layers, not CUBE.
+		// The shader-resource view's layers and type, one level: base mip `mip`, levelCount 1.
+		// A cube is 2D_ARRAY over its six layers, not CUBE (see the header).
 		VkImageViewCreateInfo createInfo = {
 			VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 			nullptr,
 			0,
 			m_images[m_currentIndex],
-			VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+			m_desc.GetType() == Tr2RenderContextEnum::TEX_TYPE_3D ? VK_IMAGE_VIEW_TYPE_3D
+				: cube || m_desc.GetArraySize() > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+				: VK_IMAGE_VIEW_TYPE_2D,
 			m_format,
 			{
 				VK_COMPONENT_SWIZZLE_IDENTITY,
@@ -1373,18 +1381,19 @@ namespace TrinityALImpl
 			},
 			{
 				GetAspectMaskVulkan( m_format ),
-				0,
-				VK_REMAINING_MIP_LEVELS,
+				mip,
+				1,
 				0,
 				VK_REMAINING_ARRAY_LAYERS
 			}
 		};
-		if( FAILED( Vk2Al( vkCreateImageView( m_owner->m_device, &createInfo, nullptr, &m_storageView ) ) ) )
+		VkImageView view = VK_NULL_HANDLE;
+		if( FAILED( Vk2Al( vkCreateImageView( m_owner->m_device, &createInfo, nullptr, &view ) ) ) )
 		{
-			m_storageView = VK_NULL_HANDLE;
-			return m_imageViews[m_currentIndex];
+			return VK_NULL_HANDLE;
 		}
-		return m_storageView;
+		m_storageViews[key] = view;
+		return view;
 	}
 
 	uint32_t Tr2TextureAL::GetSrvIndexInHeap( Tr2RenderContextEnum::ColorSpace ) const
