@@ -459,6 +459,7 @@ ALResult Tr2ResourceBindings::WriteSet( Tr2PrimaryRenderContextAL& owner, VkDesc
 
 	const bool haveDummyTexture = owner.m_dummyTexture.IsValid();
 	const bool haveDummySampler = owner.m_dummySampler != VK_NULL_HANDLE;
+	const VkImageView dummyArrayView = owner.GetDummyArrayImageViewVulkan();
 
 	for( const auto& input : inputs )
 	{
@@ -512,6 +513,13 @@ ALResult Tr2ResourceBindings::WriteSet( Tr2PrimaryRenderContextAL& owner, VkDesc
 				else if( input.type == Tr2ShaderRegisterAL::SRV_TEXTURE2D && haveDummyTexture )
 				{
 					info.imageView = owner.GetDummyImageViewVulkan();
+					info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				}
+				else if( input.type == Tr2ShaderRegisterAL::SRV_TEXTURE2DARRAY && dummyArrayView != VK_NULL_HANDLE )
+				{
+					// An arrayed image in SPIR-V needs a 2D_ARRAY view: the 2D dummy's view
+					// does not match the declaration.
+					info.imageView = dummyArrayView;
 					info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 				}
 				else

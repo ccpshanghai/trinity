@@ -34,8 +34,8 @@ class Tr2ShaderProgramAL;
 //   - SetProgram drops everything set for the previous program.
 //   - A commit seals the batch; the next Set* starts a new one and clears every slot, so
 //     the engine sets the full binding for each draw, as on DX11.
-//   - Unbound 2D texture and sampler slots read the primary context's dummies (black,
-//     like the old default resource set). Any other unbound slot is left unwritten and
+//   - Unbound 2D texture, 2D texture array and sampler slots read the primary context's
+//     dummies (black, like the old default resource set). Any other unbound slot is left unwritten and
 //     logged once: there is no honest 1x1 stand-in for a buffer or a UAV.
 //
 //   What is Vulkan's own:
