@@ -1,28 +1,16 @@
 {
   "name": "carbon-core",
-  "version-semver": "3.0.1",
-  "port-version": 7,
+  "version-semver": "3.3.0",
+  "port-version": 2,
   "description": "Provides generic low-level functionality and cross-platform abstractions for system calls",
   "homepage": "https://github.com/carbonengine/core",
   "license": "MIT",
-  "supports": "(windows & x64) | osx | (android & arm64) | (ios & arm64) | (linux & x64)",
+  "supports": "(windows & x64) | osx | linux | (android & arm64) | (ios & arm64)",
   "dependencies": [
     {
       "name": "ccp-debug-info",
       "host": true,
       "version>=": "1.0.1"
-    },
-    {
-      "name": "tracy",
-      "features": [
-        "delayed-init",
-        "fibers",
-        "manual-lifetime",
-        "no-callstack",
-        "no-crash-handler",
-        "on-demand"
-      ],
-      "version>=": "0.13.1#1"
     },
     {
       "name": "vcpkg-cmake",
@@ -33,14 +21,45 @@
       "host": true
     }
   ],
+  "default-features": [
+    "telemetry"
+  ],
   "features": {
-    "documentation": {
+    "docs": {
       "description": "Build Doxygen & Sphinx documentation",
       "dependencies": [
         {
           "name": "python3",
           "host": true,
           "version>=": "3.12.9#1"
+        }
+      ]
+    },
+    "telemetry": {
+      "description": "Enable telemetry through Tracy",
+      "dependencies": [
+        {
+          "name": "tracy",
+          "features": [
+            {
+              "name": "cli-tools",
+              "platform": "!linux & !android & !ios"
+            },
+            "fibers",
+            {
+              "name": "gui-tools",
+              "platform": "!linux & !android & !ios"
+            },
+            "manual-lifetime",
+            "no-callstack",
+            "no-crash-handler",
+            "on-demand",
+            {
+              "name": "timer-fallback",
+              "platform": "linux"
+            }
+          ],
+          "version>=": "0.14.1"
         }
       ]
     }

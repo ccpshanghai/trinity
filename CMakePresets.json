@@ -367,7 +367,7 @@
       "inherits": "x64-linux",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/.cmake-build-x64-linux-vulkan",
-      "description": "Desktop Wayland on this machine. Not the Android cross preset: that one keeps the upstream x64-linux host triplet. BUILD_TESTING stays OFF so the DX12 AL suite and vulkan-tests are not pulled into this triplet. VCPKG_OVERLAY_PORTS is linux-overlay-ports: the registry checkout's portfiles (python3's versions database lists git-trees that are not in the remote) plus the Linux edits. Several carbon-* portfiles there copy files from ../external/<repo> over the pinned REF; vcpkg does not hash those files, so an edit there rebuilds nothing until the portfile itself changes.",
+      "description": "Desktop Wayland on this machine. Not the Android cross preset: that one keeps the upstream x64-linux host triplet. BUILD_TESTING stays OFF so the DX12 AL suite and vulkan-tests are not pulled into this triplet. VCPKG_OVERLAY_PORTS is linux-overlay-ports: only the ports whose Linux change the registry does not carry, each the registry's current port (same version and port-version) plus that change; every other port comes from the registry. carbon-blue, -blueexposure, -core, -parser and -pdm copy their Linux commits' files from ../external/<repo> over the pinned REF when that checkout exists; vcpkg does not hash those files, so an edit there rebuilds nothing until the portfile itself changes.",
       "environment": {
         "VCPKG_OVERLAY_PORTS": "${sourceDir}/linux-overlay-ports"
       },
