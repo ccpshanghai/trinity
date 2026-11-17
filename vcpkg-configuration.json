@@ -8,8 +8,8 @@
     {
       "kind": "git",
       "repository": "https://github.com/ccpshanghai/vcpkg-registry.git",
-      "reference": "mobile-exp",
-      "baseline": "4fb79a5039858de896b7982f77d68c9110eb1dce",
+      "reference": "carbon-bind",
+      "baseline": "76727f956fa59cd9abe0a8b6cc5260a26248a179",
       "packages": [
         "python3",
         "carbon-*",
