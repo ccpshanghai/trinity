@@ -205,8 +205,22 @@ namespace TrinityALImpl
 		VkMemoryRequirements memoryRequirements;
 		vkGetBufferMemoryRequirements( renderContext.m_device, buffer, &memoryRequirements );
 
-		CR_RETURN_HR( AllocateMemory( memory, memoryRequirements, memoryProperty, renderContext ) );
-		return Vk2Al( vkBindBufferMemory( renderContext.m_device, buffer, memory, 0 ) );
+		ALResult hr = S_OK;
+		CR( hr = AllocateMemory( memory, memoryRequirements, memoryProperty, renderContext ) );
+		if( SUCCEEDED( hr ) )
+		{
+			hr = Vk2Al( vkBindBufferMemory( renderContext.m_device, buffer, memory, 0 ) );
+		}
+		if( FAILED( hr ) )
+		{
+			// Never used by the GPU, so released at once; the caller gets null handles back
+			// rather than a buffer it would have to know to destroy.
+			vkDestroyBuffer( renderContext.m_device, buffer, nullptr );
+			vkFreeMemory( renderContext.m_device, memory, nullptr );
+			buffer = VK_NULL_HANDLE;
+			memory = VK_NULL_HANDLE;
+		}
+		return hr;
 	}
 
 	bool DrawLogEnabledVulkan()

@@ -1047,6 +1047,12 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 			Tr2GpuUsage::SHADER_RESOURCE,
 			&dummyData,
 			*this );
+		Tr2SubresourceData dummyLayers[2] = { dummyData, dummyData };
+		m_dummyTextureArray.Create(
+			Tr2BitmapDimensions( Tr2RenderContextEnum::TEX_TYPE_2D, Tr2RenderContextEnum::PIXEL_FORMAT_B8G8R8A8_UNORM, 1, 1, 1, 1, 2 ),
+			Tr2GpuUsage::SHADER_RESOURCE,
+			dummyLayers,
+			*this );
 
 		VkSamplerCreateInfo dummySamplerInfo = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
 		dummySamplerInfo.magFilter = VK_FILTER_NEAREST;
@@ -1055,6 +1061,16 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		// draws a best-practices advisory per device; the dummy has one mip either way.
 		dummySamplerInfo.maxLod = VK_LOD_CLAMP_NONE;
 		vkCreateSampler( m_device, &dummySamplerInfo, nullptr, &m_dummySampler );
+
+		// Submitted here rather than with the first frame: the shell's first
+		// SetPresentParameters ends this command buffer unsubmitted and BeginFrame moves on
+		// to the next slot, so the dummies' uploads were dropped and both stayed UNDEFINED
+		// and unwritten -- unnoticed until the froxel fog sampled one
+		// (VUID-vkCmdDispatch-None-09600 on every dispatch that read it).
+		if( m_commandBufferRecording )
+		{
+			FlushAndSyncVulkan();
+		}
 	}
 
 	if( m_events )
@@ -1086,6 +1102,7 @@ void Tr2PrimaryRenderContextAL::Destroy()
 	m_pipelines.clear();
 
 	m_dummyTexture = Tr2TextureAL();
+	m_dummyTextureArray = Tr2TextureAL();
 	if( m_dummySampler != VK_NULL_HANDLE )
 	{
 		vkDestroySampler( m_device, m_dummySampler, nullptr );
@@ -1439,6 +1456,11 @@ VkImageView Tr2PrimaryRenderContextAL::GetDummyImageViewVulkan() const
 	return m_dummyTexture.IsValid()
 		? m_dummyTexture.m_texture->GetImageView( Tr2RenderContextEnum::COLOR_SPACE_LINEAR )
 		: VK_NULL_HANDLE;
+}
+
+VkImageView Tr2PrimaryRenderContextAL::GetDummyArrayImageViewVulkan() const
+{
+	return m_dummyTextureArray.IsValid() ? m_dummyTextureArray.m_texture->GetImageView( Tr2RenderContextEnum::COLOR_SPACE_LINEAR ) : VK_NULL_HANDLE;
 }
 
 // TRINITY_BINDING_STATS=<frames>: the direct binding model's CPU cost, sampled once per Present

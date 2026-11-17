@@ -385,11 +385,16 @@ public:
 	// because texture creation records upload commands and cannot run mid-pass.
 	Tr2TextureAL m_dummyTexture;
 	VkSampler m_dummySampler;
+	// The same black texel for a Texture2DArray slot: two layers, because a one-layer
+	// texture gets a 2D view (Tr2TextureALVulkan.cpp) and an arrayed image in SPIR-V needs
+	// a 2D_ARRAY one.
+	Tr2TextureAL m_dummyTextureArray;
 
 	// The dummy's sampled view, for writers that are not friends of the texture wrapper
 	// (the shader program's default descriptor set). Defined in the .cpp because it
 	// needs the texture impl's full type.
 	VkImageView GetDummyImageViewVulkan() const;
+	VkImageView GetDummyArrayImageViewVulkan() const;
 
 	// size_t, not unsigned: the key is the size_t composite of two GetHash() results
 	// built in Tr2RenderContextVulkan.cpp's SetPipeline, so a 32-bit key truncated it
