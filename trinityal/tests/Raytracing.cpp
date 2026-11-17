@@ -6,7 +6,10 @@
 
 #include "../metal/Tr2RtTopLevelAccelerationStructureALMetal.h"
 
-#if TRINITY_PLATFORM_SUPPORTS_RAY_TRACING
+// Vulkan compiles the ray tracing classes (Tr2CapsALVulkan.h) but has no SPIR-V ray tracing
+// test libraries yet (Shaders.vulkan has no RayGen / Miss / ClosestHit), so the suite is left out
+// there rather than failing to find their headers.
+#if TRINITY_PLATFORM_SUPPORTS_RAY_TRACING && TRINITY_PLATFORM != TRINITY_VULKAN
 
 struct Raytracing : public WithValidRenderContext
 {

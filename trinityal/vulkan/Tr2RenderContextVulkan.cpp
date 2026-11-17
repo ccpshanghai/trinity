@@ -17,6 +17,9 @@
 #include "VkResult.h"
 #include "ALLog.h"
 #include "../include/Tr2RtTopLevelAccelerationStructureAL.h"
+#include "../include/Tr2RtShaderTableAL.h"
+#include "Tr2RtPipelineStateALVulkan.h"
+#include "Tr2RtShaderTableALVulkan.h"
 
 bool g_gatherPipelineStatistics = false;
 
@@ -298,6 +301,8 @@ void Tr2RenderContextAL::Destroy() throw( )
 	{
 		m_bindings.Release( *m_owner );
 	}
+	m_rtPipelineSource.reset();
+	m_asBatch = AccelerationStructureBatchVulkan();
 	m_pipelineSource.m_shaderProgram = Tr2ShaderProgramAL();
 	m_drawUPHelper.Destroy();
 
@@ -680,6 +685,11 @@ ALResult Tr2RenderContextAL::SetShaderProgram( const Tr2ShaderProgramAL& shader 
 	// First, while m_pipelineSource still holds the old program: dropping its slots reads its
 	// register map, and the assignment below may release the last reference to it.
 	m_bindings.SetProgram( shader.IsValid() ? shader.TrinityALImpl_GetObject() : nullptr );
+	if( m_rtPipelineSource )
+	{
+		// The bindings held a ray tracing pipeline's global program until the line above.
+		m_rtPipelineSource.reset();
+	}
 	if( !( m_pipelineSource.m_shaderProgram == shader ) )
 	{
 		// The constant descriptor set belongs to the old program's layout, which is
@@ -1596,6 +1606,7 @@ ALResult Tr2RenderContextAL::SetPass()
 
 	m_owner->m_vkCmdBeginRendering( m_commandBuffer, &renderingInfo );
 	m_renderingActive = true;
+	m_asBatch.open = false;
 
 	// FlippedViewport applies the y flip; only the source of the rectangle differs. m_viewportSet
 	// is false both before any SetViewport and after one with a degenerate rectangle, and the
@@ -1620,6 +1631,11 @@ ALResult Tr2RenderContextAL::SetPass()
 
 ALResult Tr2RenderContextAL::SetPipeline()
 {
+	// A draw after SetRtPipelineState with no DispatchRays: the bindings are the program's again.
+	if( m_rtPipelineSource )
+	{
+		RestoreProgramBindingsVulkan();
+	}
 	// Checked before the m_dirtyPass test rather than folded into SetPass, because a
 	// resource set can change without the pass source changing at all. Asking the set
 	// first means a pass only restarts when an image genuinely has to move -- marking the
@@ -1672,7 +1688,7 @@ ALResult Tr2RenderContextAL::SetPipeline()
 		FORWARD_HR( m_bindings.Commit( *m_owner, m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS ) );
 	}
 
-	FORWARD_HR( BindConstantBuffers( VK_PIPELINE_BIND_POINT_GRAPHICS ) );
+	FORWARD_HR( BindConstantBuffers( VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineSource.m_shaderProgram.m_program.get() ) );
 	return S_OK;
 }
 
@@ -1683,6 +1699,7 @@ void Tr2RenderContextAL::InvalidateAttachmentsVulkan()
 
 void Tr2RenderContextAL::EndRenderPassVulkan()
 {
+	m_asBatch.open = false;
 	if( m_renderingActive )
 	{
 		m_owner->m_vkCmdEndRendering( m_commandBuffer );
@@ -1761,9 +1778,8 @@ ALResult Tr2RenderContextAL::AllocateConstantSetVulkan( VkDescriptorSetLayout la
 	}
 }
 
-ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint )
+ALResult Tr2RenderContextAL::BindConstantBuffers( VkPipelineBindPoint bindPoint, const TrinityALImpl::Tr2ShaderProgramAL* program )
 {
-	auto* program = m_pipelineSource.m_shaderProgram.m_program.get();
 	if( !program || !program->m_constantLayout || m_constantBuffers.empty() )
 	{
 		return S_OK;
@@ -1893,6 +1909,11 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 	{
 		return E_INVALIDCALL;
 	}
+	// A dispatch after SetRtPipelineState with no DispatchRays: the bindings are the program's again.
+	if( m_rtPipelineSource )
+	{
+		RestoreProgramBindingsVulkan();
+	}
 
 	// The compute pipeline is determined by the shader module and pipeline layout,
 	// both owned by the program. Cache it keyed by the layout, invalidating on
@@ -1957,7 +1978,7 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 		FORWARD_HR( m_bindings.Commit( *m_owner, m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE ) );
 	}
 
-	FORWARD_HR( BindConstantBuffers( VK_PIPELINE_BIND_POINT_COMPUTE ) );
+	FORWARD_HR( BindConstantBuffers( VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineSource.m_shaderProgram.m_program.get() ) );
 
 	if( DrawLogEnabled() ) { TrinityALImpl::CountDispatchVulkan(); }
 	vkCmdDispatch( m_commandBuffer, groupDimX, groupDimY, groupDimZ );
@@ -1965,6 +1986,144 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 	// And the other side: what this dispatch wrote is visible to whatever comes next.
 	m_owner->m_vkCmdPipelineBarrier2( m_commandBuffer, &dependencyInfo );
 
+	return S_OK;
+}
+
+void Tr2RenderContextAL::RestoreProgramBindingsVulkan()
+{
+	// SetProgram first, while m_rtPipelineSource still keeps the global program it drops alive.
+	m_bindings.SetProgram( m_pipelineSource.m_shaderProgram.IsValid() ? m_pipelineSource.m_shaderProgram.TrinityALImpl_GetObject() : nullptr );
+	m_rtPipelineSource.reset();
+}
+
+ALResult Tr2RenderContextAL::SetRtPipelineState( Tr2RtPipelineStateAL& pipeline, const wchar_t* )
+{
+	if( !m_owner || !m_owner->GetCaps().SupportsRaytracing() )
+	{
+		return E_FAIL;
+	}
+	if( !pipeline.IsValid() )
+	{
+		return E_INVALIDARG;
+	}
+	// The global program's slots take the SetSrv / SetUav / SetSampler that follow, as DX12's
+	// bindings take the global root signature. Before the assignment: dropping the previous
+	// program's slots reads its register map, and the assignment may release the last reference
+	// to a previous ray tracing pipeline.
+	m_bindings.SetProgram( &pipeline.TrinityALImpl_GetObject()->GetGlobalProgramVulkan() );
+	m_rtPipelineSource.reset( new Tr2RtPipelineStateAL( pipeline ) );
+	return S_OK;
+}
+
+ALResult Tr2RenderContextAL::DispatchRays( Tr2RtPipelineStateAL& pipeline, Tr2RtShaderTableAL& shaderTable, const wchar_t* rayGenShader, uint32_t width, uint32_t height, uint32_t depth )
+{
+	if( !m_owner || !m_owner->GetCaps().SupportsRaytracing() )
+	{
+		return E_FAIL;
+	}
+	auto* rt = pipeline.TrinityALImpl_GetObject();
+	auto* table = shaderTable.TrinityALImpl_GetObject();
+	if( !rt || !rt->IsValid() || !table || !table->IsValid() )
+	{
+		return E_INVALIDARG;
+	}
+	// The globals were bound for this pipeline: SetRtPipelineState selected it, as DX12 checks
+	// its root signature. Anything else would commit another layout's slots at set 1.
+	if( m_bindings.GetProgram() != &rt->GetGlobalProgramVulkan() )
+	{
+		static char s_notSelectedSite;
+		if( CCP::LogOnceAL( &s_notSelectedSite, uint64_t( rt->m_pipeline ) ) )
+		{
+			CCP_AL_LOGERR( "Tr2RenderContextAL::DispatchRays: trace skipped on pipeline %p, SetRtPipelineState did not select it", (void*)rt->m_pipeline );
+		}
+		return E_INVALIDCALL;
+	}
+	// Whatever happens below, the bindings are the shader program's again afterwards.
+	ON_BLOCK_EXIT( [this] { RestoreProgramBindingsVulkan(); } );
+
+	// A table's records are in the upload memory of the frame that wrote them, which another
+	// frame reuses once that one has rendered: only that frame may trace with it.
+	if( table->GetFrameVulkan() != m_owner->GetRecordingFrameNumber() )
+	{
+		static char s_staleTableSite;
+		if( CCP::LogOnceAL( &s_staleTableSite, uint64_t( rt->m_pipeline ) ) )
+		{
+			CCP_AL_LOGERR( "Tr2RenderContextAL::DispatchRays: trace skipped on pipeline %p, the shader table was written in frame %llu and this is frame %llu; a table is good for the frame that created or updated it",
+						   (void*)rt->m_pipeline,
+						   (unsigned long long)table->GetFrameVulkan(),
+						   (unsigned long long)m_owner->GetRecordingFrameNumber() );
+		}
+		return E_INVALIDCALL;
+	}
+	VkStridedDeviceAddressRegionKHR rayGen;
+	if( !table->GetRayGenRegionVulkan( rayGenShader, rayGen ) )
+	{
+		return E_INVALIDARG;
+	}
+	const VkStridedDeviceAddressRegionKHR callable = {};
+
+	// As RunComputeShader: no rendering scope (which also closes an acceleration structure
+	// build batch) and the bound images in the layouts their descriptors claim.
+	EndRenderPassVulkan();
+	m_bindings.TransitionImages( m_commandBuffer );
+	// Memory ordered on both sides, but only the trace waits, and only its readers wait on it.
+	// Before: every earlier write, whatever wrote it, is what the trace may read or overwrite --
+	// the builds of the batch just closed (they record no barrier after themselves), the UAV
+	// ClearUav cleared with no barrier after it, a transition into a read layout whose own
+	// destination scope has no ray tracing stage (GetLayoutStageAccessVulkan), constant uploads.
+	// The source stays ALL_COMMANDS for that reason (and for WAR on the UAV); the destination is
+	// the ray tracing stage alone, so draws recorded after the trace no longer wait on all of
+	// the above. AS_READ may only name the ray tracing stage without rayQuery
+	// (VUID-VkMemoryBarrier2-dstAccessMask-06256), and that stage only exists with
+	// rayTracingPipeline (-07946), which DispatchRays requires. The shader binding table is
+	// written by the host before submission, which needs no barrier.
+	VkMemoryBarrier2 before = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+	before.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	before.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+	before.dstStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+	before.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_UNIFORM_READ_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+	VkDependencyInfo dependencyInfo = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+	dependencyInfo.memoryBarrierCount = 1;
+	dependencyInfo.pMemoryBarriers = &before;
+	m_owner->m_vkCmdPipelineBarrier2( m_commandBuffer, &dependencyInfo );
+
+	vkCmdBindPipeline( m_commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt->m_pipeline );
+	// Set 1: what was set since SetRtPipelineState, written into a fresh set against this
+	// pipeline's layout. Set 0: the constant buffers, against the same layout.
+	FORWARD_HR( m_bindings.Commit( *m_owner, m_commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR ) );
+	FORWARD_HR( BindConstantBuffers( VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, &rt->GetGlobalProgramVulkan() ) );
+
+	m_owner->m_raytracing.cmdTraceRays( m_commandBuffer, &rayGen, &table->GetMissRegionVulkan(), &table->GetHitRegionVulkan(), &callable, width, height, depth );
+	// Once per pipeline: the shadow pass and the froxel fog each build their own, so each says
+	// once that it traced, and with what record stride (a local constant buffer's bytes
+	// travel inside the raygen and miss records).
+	static char s_firstTraceSite;
+	if( CCP::LogOnceAL( &s_firstTraceSite, uint64_t( rt->m_pipeline ) ) )
+	{
+		CCP_AL_LOG( "vulkan: first DispatchRays on pipeline %p: %ux%ux%u, raygen record stride %u, %u miss (stride %u), %u hit group records",
+					(void*)rt->m_pipeline,
+					width,
+					height,
+					depth,
+					uint32_t( rayGen.stride ),
+					uint32_t( table->GetMissRegionVulkan().stride ? table->GetMissRegionVulkan().size / table->GetMissRegionVulkan().stride : 0 ),
+					uint32_t( table->GetMissRegionVulkan().stride ),
+					uint32_t( table->GetHitRegionVulkan().stride ? table->GetHitRegionVulkan().size / table->GetHitRegionVulkan().stride : 0 ) );
+	}
+
+	// After: what the trace wrote (its UAV) to the stages that read it next -- the denoiser's and
+	// the lighting pass's draws (any shader stage of a draw: PRE_RASTERIZATION_SHADERS names only
+	// the supported ones), the froxel filter and raymarch dispatches, a clear or copy of the
+	// target. An image leaving GENERAL for another layout is ordered by its own transition,
+	// whose source scope for GENERAL is ALL_COMMANDS; a later trace or build has its own
+	// "before" over ALL_COMMANDS.
+	VkMemoryBarrier2 after = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+	after.srcStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+	after.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+	after.dstStageMask = VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+	after.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+	dependencyInfo.pMemoryBarriers = &after;
+	m_owner->m_vkCmdPipelineBarrier2( m_commandBuffer, &dependencyInfo );
 	return S_OK;
 }
 

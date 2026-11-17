@@ -16,6 +16,7 @@
 #include "../include/Tr2TextureAL.h"
 #include "../include/Tr2VertexLayoutAL.h"
 #include "../include/Tr2ShaderProgramAL.h"
+#include "../include/Tr2RtPipelineStateAL.h"
 #include "../include/Tr2RenderPassAL.h"
 #include "../include/upscaling/Tr2UpscalingAL.h"
 
@@ -210,18 +211,18 @@ public:
 		return E_NOTIMPL;
 	}
 
-	ALResult DispatchRays( Tr2RtPipelineStateAL&, Tr2RtShaderTableAL&, const wchar_t*, uint32_t, uint32_t, uint32_t )
-	{
-		return E_FAIL;
-	}
+	// vkCmdTraceRaysKHR, with the global inputs the engine bound after SetRtPipelineState
+	// (SetConstants / SetSrv / SetUav / SetSampler on COMPUTE_SHADER) committed at the ray
+	// tracing bind point against the pipeline's layout. Synchronized like RunComputeShader: any
+	// open rendering scope ends, the bound images move to their layouts, and a barrier on each
+	// side orders the trace against what came before and what reads it after. The bindings go
+	// back to the shader program afterwards, as on DX12. E_FAIL without ray tracing.
+	ALResult DispatchRays( Tr2RtPipelineStateAL& pipeline, Tr2RtShaderTableAL& shaderTable, const wchar_t* rayGenShader, uint32_t width, uint32_t height, uint32_t depth );
 
-	// Upstream #123 (83ae21a5) binds the ray-gen program ahead of DispatchRays so material data
-	// can be applied to it. Vulkan has no ray tracing (TRINITY_PLATFORM_SUPPORTS_RAY_TRACING is
-	// off), so this fails like DispatchRays does and like the stub back end's.
-	ALResult SetRtPipelineState( Tr2RtPipelineStateAL&, const wchar_t* )
-	{
-		return E_FAIL;
-	}
+	// Upstream #123: select the ray tracing pipeline the following resource bindings are for,
+	// as SetShaderProgram does for draws and dispatches -- the direct bindings take the
+	// pipeline's global program (Tr2RtPipelineStateALVulkan). E_FAIL without ray tracing.
+	ALResult SetRtPipelineState( Tr2RtPipelineStateAL& pipeline, const wchar_t* rayGenShader );
 
 	ALResult SetRenderState( Tr2RenderContextEnum::RenderState state, uint32_t value ) throw( );
 	ALResult SetRenderStates( const uint32_t* stateValuePairs, uint32_t count ) throw( );
@@ -491,7 +492,11 @@ private:
 	// attachment format by it, and SetPipeline folds it into the pipeline key -- three
 	// places that must agree, so it is one function.
 	uint32_t SrgbWriteMaskVulkan() const;
-	ALResult BindConstantBuffers( VkPipelineBindPoint bindPoint );
+	// Set 0 for `program`'s constant layout: the bound shader program's for draws and
+	// dispatches, a ray tracing pipeline's global program for DispatchRays.
+	ALResult BindConstantBuffers( VkPipelineBindPoint bindPoint, const TrinityALImpl::Tr2ShaderProgramAL* program );
+	// The bindings back on the bound shader program, after a ray tracing pipeline had them.
+	void RestoreProgramBindingsVulkan();
 
 	// Four, matching Tr2VertexLayoutAL::m_streamRates. The two arrays are indexed by the
 	// same stream number and CreatePipeline reads them together.
@@ -569,6 +574,10 @@ private:
 	std::pair<uint32_t, uint32_t> m_primitiveToVertexCount;
 
 	Tr2ResourceBindings m_bindings;
+	// The pipeline SetRtPipelineState gave the bindings, kept alive while they hold its global
+	// program; null when they hold the shader program's. A pointer, so a render context that
+	// never traces never constructs a pipeline wrapper.
+	std::unique_ptr<Tr2RtPipelineStateAL> m_rtPipelineSource;
 
 	// Constant-buffer bindings (descriptor set 0), keyed by binding number. Set
 	// by SetConstants, written to a descriptor set and bound at SetPipeline time.
@@ -663,7 +672,33 @@ public:
 	//
 	// On a tiler this is a resolve and a reload, so it is not free; it is here because
 	// Vulkan 1.0 has no host-side vkResetQueryPool, which arrived in 1.2.
+	//
+	// Also closes an open acceleration structure build batch (m_asBatch): every command that is
+	// not a build and is recorded outside a rendering scope calls this first, so it is the one
+	// place that knows something other than a build came next.
 	void EndRenderPassVulkan();
+
+	// Acceleration structure builds recorded back to back share one "before" barrier
+	// (RecordAccelerationStructureBuildVulkan, Tr2RtUtilitiesVulkan.cpp). Open from the first
+	// build of a run until another command is recorded: EndRenderPassVulkan, the start of a
+	// rendering scope and BeginFrame close it. Only ray tracing builds open it, so on a device
+	// without the capability it is never open.
+	struct AccelerationStructureBatchVulkan
+	{
+		bool open = false;
+		// The scratch range the batch's builds have written since its last barrier, as device
+		// addresses (one interval: the scratch arena hands out increasing ranges).
+		VkDeviceAddress scratchLow = 0;
+		VkDeviceAddress scratchHigh = 0;
+		// The structures built since the last barrier, which a later build must not read
+		// (a TLAS over them, or a refit of one) or write again without one.
+		std::vector<VkAccelerationStructureKHR> written;
+		// A TLAS was built since the last barrier. It read BLASes `written` does not name, so a
+		// later build, which may rewrite one of them in place, waits for it.
+		bool topLevelBuilt = false;
+	};
+	AccelerationStructureBatchVulkan m_asBatch;
+
 	// Whether a dynamic rendering instance is open right now -- what EndRenderPassVulkan
 	// would close. Tr2BufferAL asks, so the draw log can count the pass restarts its
 	// synchronized copies cause.

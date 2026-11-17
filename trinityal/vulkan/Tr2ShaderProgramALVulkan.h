@@ -4,7 +4,10 @@
 
 #if TRINITY_PLATFORM == TRINITY_VULKAN
 
+#include <map>
 #include <set>
+#include <utility>
+#include <vector>
 
 #include "../include/Tr2ShaderProgramAL.h"
 #include "../include/Tr2ShaderAL.h"
@@ -16,10 +19,10 @@ class Tr2ResourceBindings;
 
 namespace TrinityALImpl
 {
-	// The descriptor type a register of this type takes in set 1 (or set 0 for a constant
-	// buffer). One answer for the layout (Tr2ShaderProgramALVulkan) and the writer
-	// (Tr2ResourceBindingsVulkan), so the two cannot drift.
-	VkDescriptorType DescriptorTypeVulkan( Tr2ShaderRegisterAL::RegisterType registerType );
+	class Tr2RtPipelineStateAL;
+
+	// (set, binding) pairs, as a SPIR-V module decorates its variables.
+	typedef std::set<std::pair<uint32_t, uint32_t>> Tr2BindingSetVulkan;
 
 	class Tr2ShaderProgramAL : public Tr2DeviceResourceAL<Tr2ShaderProgramAL>
 	{
@@ -28,6 +31,23 @@ namespace TrinityALImpl
 		~Tr2ShaderProgramAL();
 
 		ALResult Create( ::Tr2ShaderAL* shaders, size_t count, Tr2PrimaryRenderContextAL& renderContext );
+		// The global input of a ray tracing pipeline (Tr2RtPipelineStateALVulkan), as a program
+		// the direct bindings can hold: the engine binds ray tracing globals through the compute
+		// slots (Tr2Material::ApplyMaterialDataForRtState), so the signature takes COMPUTE_SHADER
+		// binding numbers and register map, visible to every ray tracing stage. Set 0 the
+		// constant buffers, set 1 everything else, as Create builds them, except:
+		// - a register that appears twice (the reflection reports an explicitly placed cbuffer
+		//   twice) is one binding, and fails if the two disagree on the descriptor type;
+		// - a binding in `accelerationStructures` takes ACCELERATION_STRUCTURE_KHR whatever its
+		//   register type (a RaytracingAccelerationStructure reflects as SRV_BUFFER);
+		// - a binding not in `usedBindings` is optional, left unwritten without a word when the
+		//   caller set nothing there (a library's global input is a superset of what its modules
+		//   read), and a used binding the signature does not declare fails.
+		// No shader stages: such a program is never a draw's or a dispatch's.
+		ALResult CreateRtGlobalVulkan( const Tr2ShaderSignatureAL& signature,
+									   const Tr2BindingSetVulkan& accelerationStructures,
+									   const Tr2BindingSetVulkan& usedBindings,
+									   Tr2PrimaryRenderContextAL& renderContext );
 		void Destroy();
 		bool IsValid() const;
 		const Tr2RegisterMapAL& GetRegisterMap() const;
@@ -44,6 +64,13 @@ namespace TrinityALImpl
 		std::vector<VkDescriptorPoolSize> m_poolSizes;
 
 	private:
+		// Set 0 and set 1 layouts from their bindings, and the pipeline layout over them; the
+		// common tail of Create and CreateRtGlobalVulkan.
+		ALResult CreateLayoutsVulkan( const std::vector<VkDescriptorSetLayoutBinding>& resourceSetBindings,
+									  const std::vector<VkDescriptorSetLayoutBinding>& constantBindings,
+									  const std::map<VkDescriptorType, uint32_t>& poolCounts,
+									  Tr2PrimaryRenderContextAL& renderContext );
+
 		VkPipelineLayout m_pipelineLayout;
 
 		VkDescriptorSetLayout m_resourceLayout;
@@ -74,6 +101,16 @@ namespace TrinityALImpl
 			uint32_t arrayCount;
 
 			Tr2ShaderRegisterAL::RegisterType type;
+
+			// What the layout declared for the binding, which the writer
+			// (Tr2ResourceBindingsVulkan) writes, so the two cannot drift: the register type's
+			// descriptor type, except a ray tracing global's acceleration structure
+			// (CreateRtGlobalVulkan).
+			VkDescriptorType descriptorType;
+			// Declared but read by no module of the ray tracing pipeline: left unwritten
+			// silently when nothing was set, which Vulkan allows for a descriptor no shader
+			// statically uses. Always false for a program from Create.
+			bool optional;
 		};
 		std::vector<RegisterInput> m_registerInput;
 		Tr2RegisterMapAL m_registerMap;
@@ -83,6 +120,7 @@ namespace TrinityALImpl
 		// MSVC resolved it to the global anyway, clang does not.
 		friend class ::Tr2RenderContextAL;
 		friend class ::Tr2ResourceBindings;
+		friend class Tr2RtPipelineStateAL;
 	};
 }
 #endif
