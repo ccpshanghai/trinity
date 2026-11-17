@@ -47,6 +47,14 @@ public:
 		return m_presentationSuspended;
 	}
 
+	// The present mode the live swapchain was created with (GetSwapChainPresentMode's choice for
+	// the present interval among the modes the surface offers), VK_PRESENT_MODE_MAX_ENUM_KHR while
+	// there is no swapchain. A host that lets the user switch vsync reports what it got with it.
+	VkPresentModeKHR GetPresentModeVulkan() const
+	{
+		return m_swapChainPresentMode;
+	}
+
 	bool IsValid() const;
 
 	// The swapchain's format, which the default back buffer already carries -- it is set
@@ -333,6 +341,7 @@ private:
 	// be checked against what a rebuild would choose now -- see SwapChainMatchesSurfaceVulkan.
 	VkExtent2D m_swapChainExtent = { 0, 0 };
 	VkSurfaceTransformFlagBitsKHR m_swapChainTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+	VkPresentModeKHR m_swapChainPresentMode = VK_PRESENT_MODE_MAX_ENUM_KHR; // see GetPresentModeVulkan
 
 	// Set when the swapchain has to be thrown away and built again: a present that reported
 	// OUT_OF_DATE (or SUBOPTIMAL when a rebuild would change the swapchain -- Present says

@@ -303,8 +303,9 @@ namespace
 		Tr2DisplayModeInfo mode;
 		VkExtent2D extent;
 		VkSurfaceTransformFlagBitsKHR transform;
+		VkPresentModeKHR presentMode;
 
-		SwapChainObjects() : swapChain( VK_NULL_HANDLE ), extent{ 0, 0 }, transform( VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR ) {}
+		SwapChainObjects() : swapChain( VK_NULL_HANDLE ), extent{ 0, 0 }, transform( VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR ), presentMode( VK_PRESENT_MODE_MAX_ENUM_KHR ) {}
 	};
 
 	// The extent comes from the surface, not from the parameters.
@@ -424,6 +425,7 @@ namespace
 		}
 
 		CR_RETURN_HR( Vk2Al( vkCreateSwapchainKHR( device, &swapChainCreateInfo, nullptr, &out.swapChain ) ) );
+		out.presentMode = desiredPresentMode;
 
 		CR_RETURN_HR( TrinityALImpl::QueryArray( &vkGetSwapchainImagesKHR, device, out.swapChain, out.backBuffers ) );
 
@@ -990,6 +992,7 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	Tr2DisplayModeInfo actualMode = presentationParameters.mode;
 	VkExtent2D swapChainExtent = { 0, 0 };
 	VkSurfaceTransformFlagBitsKHR swapChainTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+	VkPresentModeKHR swapChainPresentMode = VK_PRESENT_MODE_MAX_ENUM_KHR;
 
 	if( !isWindowless )
 	{
@@ -1001,6 +1004,7 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 		actualMode = created.mode;
 		swapChainExtent = created.extent;
 		swapChainTransform = created.transform;
+		swapChainPresentMode = created.presentMode;
 	}
 
 
@@ -1157,6 +1161,7 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	m_swapChain = swapChain;
 	m_swapChainExtent = swapChainExtent;
 	m_swapChainTransform = swapChainTransform;
+	m_swapChainPresentMode = swapChainPresentMode;
 	for( size_t i = 0; i < VIRTUAL_FRAMES; ++i )
 	{
 		m_frameData[i] = frameData[i];
@@ -1312,6 +1317,7 @@ void Tr2PrimaryRenderContextAL::Destroy()
 	{
 		vkDestroySwapchainKHR( m_device, m_swapChain, nullptr );
 		m_swapChain = VK_NULL_HANDLE;
+		m_swapChainPresentMode = VK_PRESENT_MODE_MAX_ENUM_KHR;
 	}
 	if( m_surface != VK_NULL_HANDLE )
 	{
@@ -1441,6 +1447,7 @@ ALResult Tr2PrimaryRenderContextAL::RebuildSwapChainVulkan( bool alreadyQuiesced
 	m_swapChain = created.swapChain;
 	m_swapChainExtent = created.extent;
 	m_swapChainTransform = created.transform;
+	m_swapChainPresentMode = created.presentMode;
 
 	// ORDER MATTERS HERE, and getting it wrong cost a device loss in one full-suite run out
 	// of twelve while the control lost none.
@@ -1529,6 +1536,7 @@ ALResult Tr2PrimaryRenderContextAL::RecreateSurfaceVulkan()
 	{
 		vkDestroySwapchainKHR( m_device, m_swapChain, nullptr );
 		m_swapChain = VK_NULL_HANDLE;
+		m_swapChainPresentMode = VK_PRESENT_MODE_MAX_ENUM_KHR;
 	}
 
 	VkInstance instance;
