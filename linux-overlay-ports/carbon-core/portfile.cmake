@@ -1,38 +1,23 @@
 vcpkg_from_git(
   OUT_SOURCE_PATH SOURCE_PATH
-  URL git@github.com:ccpshanghai/core.git
-  REF c8e50e0851897cdea0f2669a863f3616eb9356ab
+  URL https://github.com/ccpshanghai/core.git
+  REF 98fd27862fe3a275ab5bac9eb7106389289d1f42
   HEAD_REF mobile-exp
 )
 
-# The git tree spells these Ccp* while CMakeLists.txt spells CCP*. Windows finds
-# them because its filesystem is case-insensitive. Linux does not.
-vcpkg_replace_string("${SOURCE_PATH}/CMakeLists.txt" "CCPDefines.cpp" "CcpDefines.cpp")
-vcpkg_replace_string("${SOURCE_PATH}/CMakeLists.txt" "CCPMemoryTrackerMutex.h" "CcpMemoryTrackerMutex.h")
-
-# Same REF as external/core. The git tarball is cached, so copy the checkout
-# over the extraction. external/core is four levels above this port.
+# REF (core 3.3.0) has upstream's Linux support and spells its files right. What is not in it
+# is ccpshanghai/core a3bfd26: CcpGetProcessMemoryInfo takes the /proc/self/statm branch on
+# __linux__ (upstream has it for Android only). Copy that file from external/core (four levels
+# above this port) over the extraction.
 set(_CARBON_CORE_CHECKOUT "${CURRENT_PORT_DIR}/../../../../external/core")
-if(EXISTS "${_CARBON_CORE_CHECKOUT}/include/CCPLog.h")
-  file(COPY
-    "${_CARBON_CORE_CHECKOUT}/include/CCPLog.h"
-    "${_CARBON_CORE_CHECKOUT}/include/CcpThread.h"
-    DESTINATION "${SOURCE_PATH}/include")
-  file(COPY
-    "${_CARBON_CORE_CHECKOUT}/CcpThread.cpp"
-    "${_CARBON_CORE_CHECKOUT}/CCPAssert.cpp"
-    "${_CARBON_CORE_CHECKOUT}/CCPMemory.cpp"
-    "${_CARBON_CORE_CHECKOUT}/CcpFileUtils.cpp"
-    "${_CARBON_CORE_CHECKOUT}/CCPCallstack.cpp"
-    "${_CARBON_CORE_CHECKOUT}/CcpTime.cpp"
-    "${_CARBON_CORE_CHECKOUT}/CcpSemaphore.cpp"
-    "${_CARBON_CORE_CHECKOUT}/CcpStatistics.cpp"
-    DESTINATION "${SOURCE_PATH}")
+if(EXISTS "${_CARBON_CORE_CHECKOUT}/CcpMemory.cpp")
+  file(COPY "${_CARBON_CORE_CHECKOUT}/CcpMemory.cpp" DESTINATION "${SOURCE_PATH}")
 endif()
 
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
     FEATURES
-      documentation BUILD_DOCUMENTATION
+      telemetry   WITH_TELEMETRY
+      docs        BUILD_DOCUMENTATION
 )
 
 vcpkg_cmake_configure(

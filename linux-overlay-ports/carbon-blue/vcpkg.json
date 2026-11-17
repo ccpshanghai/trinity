@@ -1,7 +1,7 @@
 {
   "name": "carbon-blue",
-  "version-semver": "6.0.0",
-  "port-version": 5,
+  "version-semver": "6.3.1",
+  "port-version": 2,
   "description": "Central library providing the embedded Python interpreter, game loop, resource-loading and other functions",
   "dependencies": [
     {
@@ -10,7 +10,7 @@
     },
     {
       "name": "carbon-core",
-      "version>=": "3.0.0"
+      "version>=": "3.2.0"
     },
     {
       "name": "carbon-io",
@@ -18,11 +18,11 @@
     },
     {
       "name": "carbon-pdmprotowrapper",
-      "version>=": "2.0.4"
+      "version>=": "3.0.0#1"
     },
     {
       "name": "carbon-scheduler",
-      "version>=": "1.4.3"
+      "version>=": "1.4.4"
     },
     {
       "name": "ccp-debug-info",
@@ -31,13 +31,7 @@
     },
     {
       "name": "curl",
-      "features": [
-        {
-          "name": "schannel",
-          "platform": "windows"
-        }
-      ],
-      "version>=": "7.78.0"
+      "version>=": "8.23.0"
     },
     {
       "name": "libyaml",
@@ -45,7 +39,7 @@
     },
     {
       "name": "openssl",
-      "version>=": "3.5.0"
+      "version>=": "3.6.5#2"
     },
     {
       "name": "python3",
