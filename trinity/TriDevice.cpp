@@ -1062,6 +1062,22 @@ bool TriDevice::SetOutputWindow( Tr2WindowHandle window )
 	return true;
 }
 
+std::string TriDevice::GetPresentMode()
+{
+#if TRINITY_PLATFORM == TRINITY_VULKAN
+	USE_MAIN_THREAD_RENDER_CONTEXT();
+	switch( renderContext.GetPresentModeVulkan() )
+	{
+	case VK_PRESENT_MODE_IMMEDIATE_KHR: return "IMMEDIATE";
+	case VK_PRESENT_MODE_MAILBOX_KHR: return "MAILBOX";
+	case VK_PRESENT_MODE_FIFO_KHR: return "FIFO";
+	case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "FIFO_RELAXED";
+	default: break;
+	}
+#endif
+	return "";
+}
+
 bool TriDevice::SetBackBufferSize( int32_t width, int32_t height )
 {
 	if( width <= 0 || height <= 0 )

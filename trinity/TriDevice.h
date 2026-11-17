@@ -265,6 +265,13 @@ private:
 	// (present parameters, width, height, viewport) changes only on success.
 	bool SetBackBufferSize( int32_t width, int32_t height );
 
+	// The swapchain's present mode as the AL chose it for presentationInterval among the modes the
+	// surface offers: "IMMEDIATE", "MAILBOX", "FIFO" or "FIFO_RELAXED" (Vulkan); "" while there is no
+	// swapchain and on the other backends. presentationInterval is what was asked for, this what was
+	// got (a surface may offer FIFO only). A change of presentationInterval takes effect at the next
+	// rebuild of presentation (RefreshDeviceResources, SetBackBufferSize, SetOutputWindow).
+	std::string GetPresentMode();
+
 	static void LogAllLiveResources( Tr2ALMemoryTypes flags = AL_MEMORY_VIDEO | AL_MEMORY_MANAGED );
 
 	bool ShouldSkipFrame() const;

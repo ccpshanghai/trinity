@@ -212,6 +212,7 @@ const Be::ClassInfo* TriDevice::ExposeToBlue()
 		MAP_ATTRIBUTE_WITH_CHOOSER( "swapEffect", mSwapEffect, "na", Be::READWRITE | Be::NOTIFY | Be::PERSIST | Be::ENUM, Tr2RenderContextEnum_SwapEffect_Chooser )
 		MAP_ATTRIBUTE( "multiSampleType", mPresentParam.msaaType, "na", Be::READWRITE | Be::NOTIFY | Be::PERSIST )
 		MAP_ATTRIBUTE_WITH_CHOOSER( "presentationInterval", mPresentParam.presentInterval, "na", Be::READWRITE | Be::NOTIFY | Be::PERSIST | Be::ENUM, Tr2RenderContextEnum_PresentInterval_Chooser )
+		MAP_PROPERTY_READONLY( "presentMode", GetPresentMode, "The swapchain's present mode as chosen for presentationInterval among the surface's: IMMEDIATE, MAILBOX, FIFO or FIFO_RELAXED (Vulkan); empty with no swapchain and on other backends. A presentationInterval change applies at the next RefreshDeviceResources" )
 
 		MAP_ATTRIBUTE( "adapterWidth", mDisplayMode.width, "na", Be::READ )
 		MAP_ATTRIBUTE( "adapterHeight", mDisplayMode.height, "na", Be::READ )
