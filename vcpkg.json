@@ -81,9 +81,11 @@
       "version>=": "1.0.1"
     },
     {
+      "$comment": "The host exefile only runs trinity's Python tests (trinity/CMakeLists.txt, BUILD_TESTING). Windows and macOS targets only (carbon-bind): exefile's crashpad does not build on a Linux host, and no Linux, Android or iOS target runs those tests.",
       "name": "carbon-exefile",
       "version>=": "4.1.1",
-      "host": true
+      "host": true,
+      "platform": "windows | osx"
     },
     {
       "$comment": "carbon-bind's visible desktop window and its input (CB_DEVICE_WINDOW). Desktop Linux, Windows and macOS only: vcpkg's linux is VCPKG_CMAKE_SYSTEM_NAME Linux, which the Android triplets (Android) do not match, as the vulkan-loader row relies on; osx is Darwin, which the iOS triplets (iOS) do not match. On macOS the window is Cocoa with a Metal view (no feature needed). Wayland only on Linux, without the default ibus and x11 features (trinity's Linux backend is Wayland-only; no D-Bus, carbon-trinity-mobile records a dbus/systemd trap). SDL builds libdecor support (title bar on GNOME) when the build host has libdecor-0-dev. carbon-bind builds 3.4.20 from its own overlay port.",
