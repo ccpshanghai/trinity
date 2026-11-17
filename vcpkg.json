@@ -245,17 +245,17 @@
       "version": "1.15#14"
     },
     {
-      "$comment": "vulkan-headers, vulkan-loader and vulkan-memory-allocator are a matched SDK set and must move together: the loader's generated VulkanLoaderConfig.cmake hard-references the Vulkan::Headers target of its own release, so pinning one and leaving the others on a bare version>= lets a baseline move break the configure in whichever direction the unpinned side drifts (observed once already, headers pinned / loader floating -- see docs/spikes/M4-phase2a-test-harness.md \u00c2\u00a74b).",
+      "$comment": "vulkan-headers, vulkan-loader and vulkan-memory-allocator are pinned together so a baseline move cannot shift one without the others. They are not all the same version, and need not be: the loader's own CMakeLists asks for find_package(VulkanHeaders ${PROJECT_VERSION} CONFIG) and Vulkan-Headers ships a SameMajorVersion version file, so headers OLDER than the loader are not found and the loader port fails its own configure (loader_specific_options has no Vulkan::Headers -- seen once, headers pinned / loader floating, docs/spikes/M4-phase2a-test-harness.md section 4b), while headers NEWER than the loader only warn. Since M4 of carbon-mobile-exp-v8-upgrade (2026-11-17) these are what upstream trinity v8.2.0 resolves from microsoft/vcpkg afa249f1, which carries no vulkan-loader past 1.4.357.0: headers 1.4.363.0, loader 1.4.357.0, VMA 3.5.0 (checked with a minimal install and link on arm64-osx). vulkan-loader is built on Windows only (the vulkan feature asks for it there; Android uses the OS loader, iOS does not use the feature), so only the headers and VMA reach the mobile trees; carbon-trinity-mobile pins the same headers.",
       "name": "vulkan-headers",
-      "version": "1.4.304.1#1"
+      "version": "1.4.363.0"
     },
     {
       "name": "vulkan-loader",
-      "version": "1.4.304.1"
+      "version": "1.4.357.0"
     },
     {
       "name": "vulkan-memory-allocator",
-      "version": "3.3.0"
+      "version": "3.5.0"
     }
   ],
   "$comment-android": "The Android tree is configured only on POSIX hosts. carbon-blue depends on python3, and CPython cannot be cross-built from Windows (its pybuilddir step runs a POSIX-only sysconfig on the build python); a POSIX-built cache entry cannot be restored on Windows either, because vcpkg's ABI hash embeds the host (docs/spikes/artifacts/m6-python3-abi-probe-20260901.txt, four causes). So there are no android platform gates here: the engine's whole dependency set is in the Android closure, and Windows is not an Android build host (M6 second-half spec D3). amd-fidelityfx-cas and -cacao are header-only copies and the engine cannot compile without them (Tr2SSAO.cpp includes ffx_cacao.cpp) -- the first-half note that they never lift was mistaken about what they are."
