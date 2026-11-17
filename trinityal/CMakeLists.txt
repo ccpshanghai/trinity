@@ -337,6 +337,16 @@ set(_SOURCES
     vulkan/Tr2RenderContextVulkan.h
     vulkan/Tr2ResourceBindingsVulkan.cpp
     vulkan/Tr2ResourceBindingsVulkan.h
+    vulkan/Tr2RtBottomLevelAccelerationStructureALVulkan.cpp
+    vulkan/Tr2RtBottomLevelAccelerationStructureALVulkan.h
+    vulkan/Tr2RtPipelineStateALVulkan.cpp
+    vulkan/Tr2RtPipelineStateALVulkan.h
+    vulkan/Tr2RtShaderTableALVulkan.cpp
+    vulkan/Tr2RtShaderTableALVulkan.h
+    vulkan/Tr2RtTopLevelAccelerationStructureALVulkan.cpp
+    vulkan/Tr2RtTopLevelAccelerationStructureALVulkan.h
+    vulkan/Tr2RtUtilitiesVulkan.cpp
+    vulkan/Tr2RtUtilitiesVulkan.h
     vulkan/Tr2SamplerStateALVulkan.cpp
     vulkan/Tr2SamplerStateALVulkan.h
     vulkan/Tr2ShaderALVulkan.cpp

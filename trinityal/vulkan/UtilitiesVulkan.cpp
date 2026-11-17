@@ -158,10 +158,15 @@ namespace TrinityALImpl
 		}
 	}
 
-	ALResult AllocateMemory( VkDeviceMemory& memory, const VkMemoryRequirements& memoryRequirements, VkMemoryPropertyFlagBits memoryProperty, Tr2PrimaryRenderContextAL& renderContext )
+	ALResult AllocateMemory( VkDeviceMemory& memory, const VkMemoryRequirements& memoryRequirements, VkMemoryPropertyFlagBits memoryProperty, Tr2PrimaryRenderContextAL& renderContext, VkMemoryAllocateFlags allocateFlags )
 	{
 		VkPhysicalDeviceMemoryProperties memoryProperties;
 		vkGetPhysicalDeviceMemoryProperties( renderContext.m_physicalDevice, &memoryProperties );
+
+		// Chained only when a flag is asked for, so every allocation that asks for none is
+		// the same call it always was.
+		VkMemoryAllocateFlagsInfo flagsInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO };
+		flagsInfo.flags = allocateFlags;
 
 		for( uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i )
 		{
@@ -170,7 +175,7 @@ namespace TrinityALImpl
 
 				VkMemoryAllocateInfo memory_allocate_info = {
 					VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-					nullptr,
+					allocateFlags ? &flagsInfo : nullptr,
 					memoryRequirements.size,
 					i
 				};
@@ -205,8 +210,13 @@ namespace TrinityALImpl
 		VkMemoryRequirements memoryRequirements;
 		vkGetBufferMemoryRequirements( renderContext.m_device, buffer, &memoryRequirements );
 
+		// A buffer whose address will be taken must live in memory allocated with
+		// DEVICE_ADDRESS (VUID-vkBindBufferMemory-bufferDeviceAddress-03339). Only buffers on
+		// a device that supports ray tracing ask for that usage (Tr2BufferAL::Create under the
+		// cap, and the Tr2Rt*ALVulkan classes), so this is the one place the flag is decided.
+		const VkMemoryAllocateFlags allocateFlags = ( usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT ) ? VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT : 0;
 		ALResult hr = S_OK;
-		CR( hr = AllocateMemory( memory, memoryRequirements, memoryProperty, renderContext ) );
+		CR( hr = AllocateMemory( memory, memoryRequirements, memoryProperty, renderContext, allocateFlags ) );
 		if( SUCCEEDED( hr ) )
 		{
 			hr = Vk2Al( vkBindBufferMemory( renderContext.m_device, buffer, memory, 0 ) );

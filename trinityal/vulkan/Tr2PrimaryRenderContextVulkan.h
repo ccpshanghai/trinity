@@ -96,6 +96,27 @@ public:
 	// frame and replaced by a bigger one, so after the first few frames nothing here allocates.
 	// HOST_COHERENT, so the caller neither flushes nor unmaps.
 	ALResult AllocateUploadVulkan( VkDeviceSize size, VkBuffer& buffer, VkDeviceSize& offset, void*& mapped );
+
+	// The same memory read by the GPU through its device address, at an address aligned to
+	// `alignment`: a shader binding table (shaderGroupBaseAlignment) or a TLAS build's instance
+	// descriptors (16). Valid, like every upload, only in the frame that allocated it -- what a
+	// table records and DispatchRays checks (Tr2RtShaderTableALVulkan). The chunks carry the
+	// address and build-input usage only on a device that can build acceleration structures, and
+	// the shader binding table usage only with the ray tracing pipeline; E_INVALIDCALL without.
+	ALResult AllocateUploadVulkan( VkDeviceSize size, VkDeviceSize alignment, VkDeviceAddress& address, void*& mapped );
+
+	// `size` bytes of device-local scratch for one acceleration structure build, at an address
+	// aligned to minAccelerationStructureScratchOffsetAlignment
+	// (VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03710), inside one buffer (-03671 and
+	// -03672), created with STORAGE_BUFFER usage (-03674). A build reads and writes its scratch
+	// only while it executes, and an UPDATE build needs updateScratchSize bytes of scratch, not
+	// the scratch of the build it refits, so nothing outlives the command. One bump arena per
+	// frame slot, reset in BeginFrame after the slot's fence: ranges handed out in one frame never
+	// overlap, so builds back to back need no barrier for their scratch. An arena that runs out
+	// is retired with the frame (DestroyLaterVulkan) and replaced by one at least twice its size;
+	// it never shrinks. Created on the first build, which needs the ray tracing capability, so a
+	// device without it never has one.
+	ALResult AllocateRtScratchVulkan( VkDeviceSize size, VkDeviceAddress& address );
 public:
 	Tr2TextureAL m_defaultBackBuffer;
 		
@@ -208,11 +229,27 @@ private:
 		VkBuffer buffer = VK_NULL_HANDLE;
 		VkDeviceMemory memory = VK_NULL_HANDLE;
 		uint8_t* mapped = nullptr;
+		VkDeviceAddress address = 0; // of byte 0; 0 without acceleration structures
 		VkDeviceSize size = 0;
 		VkDeviceSize used = 0;
 	};
 	UploadChunk m_upload[VIRTUAL_FRAMES];
+	// Both AllocateUploadVulkan: `addressAlignment` 0 aligns the offset to 16 and needs no address.
+	ALResult AllocateUploadChunkVulkan( VkDeviceSize size, VkDeviceSize addressAlignment, VkBuffer& buffer, VkDeviceSize& offset, void*& mapped );
 	void DestroyUploadVulkan();
+
+	// AllocateRtScratchVulkan's arenas. `address` is the buffer's device address, unaligned;
+	// `size` is the bytes from it.
+	struct RtScratchArena
+	{
+		VkBuffer buffer = VK_NULL_HANDLE;
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		VkDeviceAddress address = 0;
+		VkDeviceSize size = 0;
+		VkDeviceSize used = 0;
+	};
+	RtScratchArena m_rtScratch[VIRTUAL_FRAMES];
+	void DestroyRtScratchVulkan();
 
 	// imageAvailableSemaphore is a binary semaphore signalled by vkAcquireNextImageKHR in
 	// BeginFrame, and BeginFrame immediately records a barrier against the acquired image
@@ -370,6 +407,41 @@ public:
 	// synchronization2's entry points, fetched the same way and for the same reason.
 	PFN_vkCmdPipelineBarrier2 m_vkCmdPipelineBarrier2;
 	PFN_vkQueueSubmit2 m_vkQueueSubmit2;
+
+	// The ray-tracing entry points, fetched with vkGetDeviceProcAddr at device creation for the
+	// same reason as the two pairs above, in the two groups of RaytracingLevelVulkan. All null
+	// unless the device has a ray tracing level, and a level is only enabled when every entry
+	// point of it and of the levels below resolved.
+	struct RaytracingEntryPointsVulkan
+	{
+		// VK_KHR_acceleration_structure, and the buffer addresses its builds read.
+		PFN_vkGetAccelerationStructureBuildSizesKHR getAccelerationStructureBuildSizes = nullptr;
+		PFN_vkCreateAccelerationStructureKHR createAccelerationStructure = nullptr;
+		PFN_vkDestroyAccelerationStructureKHR destroyAccelerationStructure = nullptr;
+		PFN_vkCmdBuildAccelerationStructuresKHR cmdBuildAccelerationStructures = nullptr;
+		PFN_vkGetAccelerationStructureDeviceAddressKHR getAccelerationStructureDeviceAddress = nullptr;
+		PFN_vkGetBufferDeviceAddress getBufferDeviceAddress = nullptr;
+		// VK_KHR_ray_tracing_pipeline.
+		PFN_vkCreateRayTracingPipelinesKHR createRayTracingPipelines = nullptr;
+		PFN_vkGetRayTracingShaderGroupHandlesKHR getRayTracingShaderGroupHandles = nullptr;
+		PFN_vkCmdTraceRaysKHR cmdTraceRays = nullptr;
+
+		bool HasAccelerationStructureEntryPoints() const
+		{
+			return getAccelerationStructureBuildSizes && createAccelerationStructure && destroyAccelerationStructure && cmdBuildAccelerationStructures && getAccelerationStructureDeviceAddress && getBufferDeviceAddress;
+		}
+		bool HasPipelineEntryPoints() const
+		{
+			return createRayTracingPipelines && getRayTracingShaderGroupHandles && cmdTraceRays;
+		}
+	};
+	RaytracingEntryPointsVulkan m_raytracing;
+
+	// Read at device creation when ray tracing is on (zeroed, sType aside, otherwise): the
+	// shader binding table's handle size and alignments, the recursion limit, and the scratch
+	// alignment acceleration structure builds need.
+	VkPhysicalDeviceRayTracingPipelinePropertiesKHR m_rayTracingPipelineProperties = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR };
+	VkPhysicalDeviceAccelerationStructurePropertiesKHR m_accelerationStructureProperties = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR };
 
 	// True when the device was created with VK_KHR_swapchain_mutable_format, which is
 	// what lets the swapchain carry an sRGB view alongside its UNORM one -- the whole

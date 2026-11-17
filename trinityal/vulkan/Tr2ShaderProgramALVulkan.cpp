@@ -9,6 +9,7 @@
 #include "Tr2ShaderALVulkan.h"
 #include "Tr2ShaderBindingABIVulkan.h"
 #include "UtilitiesVulkan.h"
+#include "ALLog.h"
 
 
 using namespace Tr2RenderContextEnum;
@@ -71,11 +72,6 @@ namespace
 
 namespace TrinityALImpl
 {
-	VkDescriptorType DescriptorTypeVulkan( Tr2ShaderRegisterAL::RegisterType registerType )
-	{
-		return GetDescriptorType( registerType );
-	}
-
 	Tr2ShaderProgramAL::Tr2ShaderProgramAL()
 		:m_owner( nullptr ),
 		m_resourceLayout( VK_NULL_HANDLE ),
@@ -198,11 +194,25 @@ namespace TrinityALImpl
 					resourceSetBindings.push_back( binding );
 				}
 
-				RegisterInput ri = { binding.binding, static_cast<uint32_t>( shaders[i].GetType() ), it->registerIndex, arrayCount, it->registerType };
+				RegisterInput ri = { binding.binding, static_cast<uint32_t>( shaders[i].GetType() ), it->registerIndex, arrayCount, it->registerType, binding.descriptorType, false };
 				m_registerInput.push_back( ri );
 			}
 		}
 
+		FORWARD_HR( CreateLayoutsVulkan( resourceSetBindings, constantBindings, poolCounts, renderContext ) );
+		m_owner = &renderContext;
+
+		m_registerMap = Tr2RegisterMapAL( shaders, count );
+
+		return S_OK;
+	}
+
+
+	ALResult Tr2ShaderProgramAL::CreateLayoutsVulkan( const std::vector<VkDescriptorSetLayoutBinding>& resourceSetBindings,
+													  const std::vector<VkDescriptorSetLayoutBinding>& constantBindings,
+													  const std::map<VkDescriptorType, uint32_t>& poolCounts,
+													  Tr2PrimaryRenderContextAL& renderContext )
+	{
 		if( !resourceSetBindings.empty() )
 		{
 			VkDescriptorSetLayoutCreateInfo layoutInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, nullptr, 0 };
@@ -275,10 +285,78 @@ namespace TrinityALImpl
 		};
 
 		CR_RETURN_HR( Vk2Al( vkCreatePipelineLayout( renderContext.m_device, &layoutInfo, nullptr, &m_pipelineLayout ) ) );
+		return S_OK;
+	}
+
+
+	ALResult Tr2ShaderProgramAL::CreateRtGlobalVulkan( const Tr2ShaderSignatureAL& signature,
+													   const Tr2BindingSetVulkan& accelerationStructures,
+													   const Tr2BindingSetVulkan& usedBindings,
+													   Tr2PrimaryRenderContextAL& renderContext )
+	{
+		Destroy();
+
+		if( !renderContext.IsValid() )
+		{
+			return E_INVALIDCALL;
+		}
+		// First, so that Destroy releases whatever a failure below leaves created.
 		m_owner = &renderContext;
 
-		m_registerMap = Tr2RegisterMapAL( shaders, count );
+		const VkShaderStageFlags rayTracingStages = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_ANY_HIT_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_INTERSECTION_BIT_KHR | VK_SHADER_STAGE_CALLABLE_BIT_KHR;
+		const ShaderType bindingStage = COMPUTE_SHADER;
 
+		std::map<VkDescriptorType, uint32_t> poolCounts;
+		std::vector<VkDescriptorSetLayoutBinding> resourceSetBindings, constantBindings;
+		Tr2BindingSetVulkan declared;
+
+		for( auto it = begin( signature.registers ); it != end( signature.registers ); ++it )
+		{
+			const uint32_t set = Tr2VulkanBindingABI::DescriptorSetIndex( it->registerType );
+			const uint32_t bindingNumber = Tr2VulkanBindingABI::BindingNumber( it->registerType, it->registerIndex, bindingStage );
+			const auto key = std::make_pair( set, bindingNumber );
+			const VkDescriptorType type = accelerationStructures.count( key ) ? VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR : GetDescriptorType( it->registerType );
+			const bool constant = set == Tr2VulkanBindingABI::DESCRIPTOR_SET_CONSTANTS;
+			auto& bindings = constant ? constantBindings : resourceSetBindings;
+
+			if( !declared.insert( key ).second )
+			{
+				for( auto& existing : bindings )
+				{
+					if( existing.binding == bindingNumber && existing.descriptorType != type )
+					{
+						CCP_AL_LOGERR( "Tr2RtPipelineStateAL: global set %u binding %u is declared as two descriptor types", set, bindingNumber );
+						return E_INVALIDARG;
+					}
+				}
+				continue;
+			}
+
+			const uint32_t arrayCount = it->arrayCount ? it->arrayCount : 1;
+			VkDescriptorSetLayoutBinding binding = { bindingNumber, type, arrayCount, rayTracingStages, nullptr };
+			bindings.push_back( binding );
+			if( !constant )
+			{
+				poolCounts[type] += arrayCount;
+			}
+			RegisterInput ri = { bindingNumber, static_cast<uint32_t>( bindingStage ), it->registerIndex, arrayCount, it->registerType, type, usedBindings.count( key ) == 0 };
+			m_registerInput.push_back( ri );
+		}
+
+		// A binding a module reads that the signature does not declare would fail pipeline
+		// creation with a VUID; name it instead.
+		for( auto& used : usedBindings )
+		{
+			if( !declared.count( used ) )
+			{
+				CCP_AL_LOGERR( "Tr2RtPipelineStateAL: a library reads set %u binding %u, which the global input does not declare", used.first, used.second );
+				return E_INVALIDARG;
+			}
+		}
+
+		FORWARD_HR( CreateLayoutsVulkan( resourceSetBindings, constantBindings, poolCounts, renderContext ) );
+
+		m_registerMap = Tr2RegisterMapAL( &bindingStage, &signature, 1 );
 		return S_OK;
 	}
 
