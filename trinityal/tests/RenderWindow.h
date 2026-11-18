@@ -4,6 +4,10 @@
 #ifndef RenderWindow_H
 #define RenderWindow_H
 
+#if defined( __ANDROID__ )
+struct ANativeWindow;
+#endif
+
 class RenderWindow
 {
 public:
@@ -28,6 +32,12 @@ public:
 	uint32_t GetClientHeight() const;
 
 	bool Resize( uint32_t width, uint32_t height );
+
+#if defined( __ANDROID__ )
+	// Soak hands a new ANativeWindow after surface loss. A non-owning swap: the
+	// activity owns the window, so there is no acquire to release (R9).
+	void AdoptWindow( ANativeWindow* window );
+#endif
 
 private:
 	Tr2WindowHandle m_handle;

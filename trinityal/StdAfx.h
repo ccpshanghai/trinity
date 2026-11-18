@@ -20,10 +20,20 @@
 #include <cstdint>
 #include <memory>
 
+#ifndef _WIN32
+// MSVC's _countof, for the call sites that use it; the expression is the portable
+// classic and mismatched pointer arguments still fail to compile via the array bind.
+template <typename T, size_t N>
+constexpr size_t _countof( T ( & )[N] ) { return N; }
+#endif
+
 #ifdef _WIN32
 typedef HWND Tr2WindowHandle;
 #elif defined( __APPLE__ )
-#include <objc/objc-runtime.h>
+// objc/objc.h (not objc-runtime.h) is the one header this typedef needs and the
+// one that ships in every Apple platform SDK -- objc-runtime.h is macOS-SDK-only
+// and isn't present under iPhoneOS/iPhoneSimulator.
+#include <objc/objc.h>
 typedef id Tr2WindowHandle;
 #else
 typedef uintptr_t Tr2WindowHandle;

@@ -16,6 +16,15 @@ struct Tr2MorphTargetAnimationData
 	float m_weight;
 };
 
+struct Tr2ChildBoosterInstanceData
+{
+	Float4x3 transform;
+	float intensity;
+	float wavePhase;
+	uint32_t atlasIndex0;
+	uint32_t atlasIndex1;
+};
+
 BLUE_CLASS( Tr2RingBuffer ) :
 	public ITr2GpuBuffer,
 	public Tr2DeviceResource
@@ -39,13 +48,17 @@ private:
 	void ReleaseResources( TriStorage s ) override;
 	bool OnPrepareResources() override;
 
+	// UploadTransforms may run on worker threads, so Resize only grows the mirror;
+	// the GPU buffer is recreated in PrepareBuffer on the main thread.
 	void Resize( uint32_t size );
+	void CreateGpuBuffer( Tr2PrimaryRenderContextAL & renderContext );
 
 	std::string m_name;
 
 	uint32_t m_stride;
 	std::mutex m_mutex;
 	Tr2BufferAL m_buffer;
+	bool m_gpuBufferStale = false;
 	std::vector<uint8_t> m_mirror;
 
 	uint64_t m_frame = 0;

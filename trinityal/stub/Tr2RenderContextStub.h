@@ -20,7 +20,6 @@ class Tr2VertexLayoutAL;
 class Tr2ShaderAL;
 class Tr2SamplerStateAL;
 class Tr2TextureAL;
-class Tr2ResourceSetAL;
 class Tr2BufferAL;
 class Tr2RtShaderTableAL;
 class Tr2RtPipelineStateAL;
@@ -111,7 +110,16 @@ public:
 		return E_FAIL;
 	}
 
-	ALResult SetResourceSet( const Tr2ResourceSetAL& resourceSet );
+	ALResult SetSrv( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2BufferAL& buffer ) throw();
+	ALResult SetSrv( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2TextureAL& texture, Tr2RenderContextEnum::ColorSpace colorSpace = Tr2RenderContextEnum::COLOR_SPACE_LINEAR ) throw();
+	ALResult SetUav( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2BufferAL& buffer ) throw();
+	ALResult SetUav( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2TextureAL& texture, uint32_t mip = 0 ) throw();
+	ALResult SetSrvHeapView( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex ) throw();
+	ALResult SetUavHeapView( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex ) throw();
+	ALResult SetSamplerHeapView( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex ) throw();
+	ALResult SetSampler( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2SamplerStateAL& sampler ) throw();
+
+	ALResult ResetResourceBindings() throw();
 
 	ALResult DrawIndexedPrimitive(
 		uint32_t numVertices,
@@ -178,6 +186,11 @@ public:
 	}
 
 	ALResult DispatchRays( Tr2RtPipelineStateAL& pipeline, Tr2RtShaderTableAL& shaderTable, const wchar_t* rayGenShader, uint32_t width, uint32_t height, uint32_t depth )
+	{
+		return E_FAIL;
+	}
+
+	ALResult SetRtPipelineState( Tr2RtPipelineStateAL& pipeline, const wchar_t* rayGenShader )
 	{
 		return E_FAIL;
 	}
@@ -290,6 +303,81 @@ private:
 	uint64_t m_frameNumber;
 
 public:
+	// See the DX12 backend for what this is for. There is no DX12 command list
+	// here, and 0 is the documented "not now" value.
+	uint64_t GetNativeCommandList() const
+	{
+		return 0;
+	}
+
+	// See the DX12 backend. No DX12 device or descriptor heap here.
+	uint64_t GetNativeDevice() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeSrvHeap() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeCommandQueue() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeSamplerHeap() const
+	{
+		return 0;
+	}
+
+	// Metal opens a render pass here; every other backend has an always-recording command
+	// list and there is nothing to do. Present on all of them so the shared TriStep that
+	// calls it compiles everywhere (spec 5: the frame graph asks, getters never drive).
+	ALResult BeginRenderPass()
+	{
+		return S_OK;
+	}
+
+	// No device, so no back buffer format. 0 is MTLPixelFormatInvalid and DXGI_FORMAT_UNKNOWN
+	// alike, so a caller checking for 0 is right on every backend (spec D3).
+	uint64_t GetNativeBackBufferFormat() const
+	{
+		return 0;
+	}
+
+	// Metal's two, so the Python-side handle table is the same shape on every backend
+	// (spec D3): a getter is named for what it returns, and returns 0 where the concept
+	// does not exist. ImGui's Metal backend renders with a command buffer plus the pass's
+	// open encoder; neither has a stub counterpart.
+	uint64_t GetNativeCommandBuffer() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeRenderEncoder() const
+	{
+		return 0;
+	}
+
+	// Vulkan's three, and the contract every accessor here shares (spec D3): named for what
+	// they return, 0 where the concept does not exist. None of these three exists on this
+	// backend.
+	uint64_t GetNativeInstance() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativePhysicalDevice() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeQueueFamily() const
+	{
+		return 0;
+	}
+
 	TrinityALImpl::Tr2SamplerStateALFactory m_samplerStateFactory;
 };
 

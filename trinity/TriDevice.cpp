@@ -5,11 +5,12 @@
 #include "TriDevice.h"
 #include "Tr2Renderer.h"
 #include "Resources/TriGeometryRes.h"
+#include "Resources/TriTextureRes.h"
 
 #include "TriPythonContext.h"
 #include "RenderJob/Tr2RenderJobs.h"
 #include "Curves/TriCurveSet.h"
-#include "Include/TriMath.h"
+#include "include/TriMath.h"
 #include "Tr2SyncToGpu.h"
 #include "TriSettingsRegistrar.h"
 #include "Tr2GpuResourcePool.h"
@@ -91,6 +92,11 @@ HRESULT CreateDeviceInt(
 #endif
 
 	Tr2Renderer::InitializeSystemShaderOptions();
+
+	// The one place the device's ASTC answer becomes a resource-loading policy (spec O3, D7).
+	// Here rather than in TriTextureRes because this is where a render context first exists and
+	// where the main thread still owns it -- the loader threads that read the flag cannot ask.
+	TriTextureRes::SetSubstituteKtx2ForDds( renderContext.GetCaps().SupportsAstcTextures() );
 
 	return hr;
 }
@@ -696,7 +702,7 @@ static const float ANIMATION_TIME_MAX = 3600.0f; // One hour
 
 void TriDevice::OnTick( Be::Time realTime, Be::Time simTime, void* cookie )
 {
-	CCP_STATS_SCOPED_TIME( deviceOnTick );
+	TRINITY_STATS_SCOPED_TIME( deviceOnTick );
 
 	// Start with statistics on frame time
 	static BeTimer s_frameTimer;
@@ -955,8 +961,12 @@ PyObject* TriDevice::PythonCreateDeviceHelper( PyObject* args, DeviceScreenType 
 #if __APPLE__
 	void* hwndAsPtr = (void*)hwnd;
 	bool OK = CreateSimpleDevice( ( __bridge Tr2WindowHandle )( hwndAsPtr ), width, height, screenType, Tr2RenderContextEnum::PresentInterval( presentInterval ), adapter );
-#else
+#elif defined( _WIN32 )
 	bool OK = CreateSimpleDevice( reinterpret_cast<Tr2WindowHandle>( hwnd ), width, height, screenType, Tr2RenderContextEnum::PresentInterval( presentInterval ), adapter );
+#else
+	// Tr2WindowHandle is uintptr_t off Windows and Apple (trinityal/StdAfx.h), so this is
+	// an integer-to-integer conversion: reinterpret_cast is not allowed between those.
+	bool OK = CreateSimpleDevice( static_cast<Tr2WindowHandle>( hwnd ), width, height, screenType, Tr2RenderContextEnum::PresentInterval( presentInterval ), adapter );
 #endif
 
 	if( !OK )
@@ -1034,6 +1044,46 @@ bool TriDevice::SetPresentParameters( unsigned adapter, const Tr2PresentParamete
 	}
 	return true;
 }
+
+bool TriDevice::SetOutputWindow( Tr2WindowHandle window )
+{
+	// The record is updated only on success: a failed rebuild leaves the device describing
+	// the surface it still has, so a later same-handle SetPresentParameters (a resize) does
+	// not silently retarget it. mHwnd is what SetPresentParameters' software early-return and
+	// the device-creation path read, so it follows the present parameters, as SetupDevice does.
+	Tr2PresentParametersAL pp = mPresentParam;
+	pp.outputWindow = window;
+	if( !SetPresentParameters( mAdapter, pp ) )
+	{
+		return false;
+	}
+	mPresentParam.outputWindow = window;
+	mHwnd = window;
+	return true;
+}
+
+#if BLUE_WITH_PYTHON
+PyObject* TriDevice::PySetOutputWindow( PyObject* args )
+{
+	// The same three-way cast PythonCreateDeviceHelper uses for hwnd, for the same reason:
+	// Tr2WindowHandle is HWND on Windows, an ObjC id on Apple, and uintptr_t everywhere else,
+	// and only one of the three casts is legal for each.
+	unsigned PY_LONG_LONG handle = 0;
+	if( !PyArg_ParseTuple( args, "K:SetOutputWindow", &handle ) )
+	{
+		return nullptr;
+	}
+#if __APPLE__
+	void* handleAsPtr = (void*)handle;
+	const bool ok = SetOutputWindow( ( __bridge Tr2WindowHandle )( handleAsPtr ) );
+#elif defined( _WIN32 )
+	const bool ok = SetOutputWindow( reinterpret_cast<Tr2WindowHandle>( handle ) );
+#else
+	const bool ok = SetOutputWindow( static_cast<Tr2WindowHandle>( handle ) );
+#endif
+	return PyBool_FromLong( ok );
+}
+#endif
 
 void TriDevice::PrepareDeviceResources()
 {
@@ -1250,7 +1300,7 @@ void TriDevice::Throttle() const
 
 	if( sleepTime > 0 )
 	{
-		CCP_STATS_SCOPED_TIME( throttleTime );
+		TRINITY_STATS_SCOPED_TIME( throttleTime );
 		CcpThreadSleep( sleepTime );
 	}
 
@@ -1353,7 +1403,7 @@ void TriDevice::SetUpscaling( Tr2UpscalingAL::Technique technique, Tr2UpscalingA
 
 uint32_t TriDevice::CreateUpscalingContext( uint32_t displayWidth, uint32_t displayHeight, Tr2RenderContextEnum::PixelFormat sourceFormat, Tr2RenderContextEnum::DepthStencilFormat depthFormat, bool allowFramegen, Be::Optional<uint32_t> existingContext )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	USE_MAIN_THREAD_RENDER_CONTEXT();
 
@@ -1374,7 +1424,7 @@ uint32_t TriDevice::CreateUpscalingContext( uint32_t displayWidth, uint32_t disp
 
 void TriDevice::DeleteUpscalingContext( uint32_t contextID )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 	USE_MAIN_THREAD_RENDER_CONTEXT();
 	renderContext.DeleteUpscalingContext( contextID );
 }

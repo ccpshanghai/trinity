@@ -12,6 +12,65 @@
 
 namespace TrinityALImpl
 {
+
+
+
+Tr2ReadbackAL::Tr2ReadbackAL( MetalContext* metalContext, id<MTLBuffer> mtlReadBackBuffer, uint32_t rowPitch, uint64_t frameNumber )
+{
+    m_metalContext = metalContext;
+	m_mtlReadBackBuffer = mtlReadBackBuffer;
+	m_rowPitch = rowPitch;
+	m_frameNumber = frameNumber;
+}
+
+Tr2ReadbackAL::~Tr2ReadbackAL()
+{
+	Destroy();
+}
+
+bool Tr2ReadbackAL::IsReady( Tr2PrimaryRenderContextAL& renderContext ) const
+{
+	return renderContext.GetRenderedFrameNumber() >= m_frameNumber;
+}
+
+ALResult Tr2ReadbackAL::Map( const void*& pointer, uint32_t& rowPitch, Tr2PrimaryRenderContextAL& renderContext ) const
+{
+	if( !IsReady( renderContext ) )
+	{
+        renderContext.GetMetalWorkQueue()->ReadBackBufferToCPU( m_mtlReadBackBuffer, true );
+	}
+
+	pointer = m_mtlReadBackBuffer.contents;
+	rowPitch = m_rowPitch;
+
+	return S_OK;
+}
+
+void Tr2ReadbackAL::Destroy()
+{
+	if( m_mtlReadBackBuffer )
+	{
+		m_metalContext->DestroyMetalBuffer( m_mtlReadBackBuffer );
+		m_mtlReadBackBuffer = nil;
+	}
+}
+
+void Tr2ReadbackAL::Describe( Tr2DeviceResourceDescriptionAL& description ) const
+{
+}
+
+Tr2ALMemoryType Tr2ReadbackAL::GetMemoryClass() const
+{
+	return AL_MEMORY_MANAGED;
+}
+
+bool Tr2ReadbackAL::IsValid() const
+{
+	return m_mtlReadBackBuffer != nil;
+}
+
+
+
 Tr2TextureAL::Tr2TextureAL() :
 	m_gpuUsage( Tr2GpuUsage::NONE ),
 	m_cpuUsage( Tr2CpuUsage::NONE ),
@@ -23,7 +82,8 @@ Tr2TextureAL::Tr2TextureAL() :
 	m_mtlTextureSRGBView( nil ),
 	m_metalContext( nullptr ),
 	m_usedInEncoder( 0 ),
-	m_wrappedTexture( false )
+	m_wrappedTexture( false ),
+	m_debugDecompressedOnCreate( false )
 {
 	m_srvHeapIndices[0] = m_srvHeapIndices[1] = 0xffffffff;
 }
@@ -163,26 +223,43 @@ ALResult Tr2TextureAL::Create( const Tr2BitmapDimensions& desc,
 
 	Tr2BitmapDimensions realDesc = desc;
 
-	// macOS 10.14 can't handle compressed volume textures, so we decompress them on the fly
-	// This only works with an assumption that we have BC 1, 2, 3 compression only and that such
-	// textures are immutable textures only participating in draw commands (not copy/map, etc.)
+	// Two reasons to decompress, one mechanism. The 10.14 volume-texture
+	// workaround this machinery was built for, and -- new with M3 -- a device
+	// that cannot sample BC at all (every iPhone; spec D7). BcDecompress
+	// covers BC1/2/3 only; a format it refuses fails the create loudly below,
+	// which is correct -- BC4/5/7 content is ASTC's job (spec §1), not a
+	// decoder's.
+	bool deviceLacksBc = !MetalDeviceSupportsBC( metalContext->GetDevice() );
+	bool legacyVolumeCase = false;
 	if( @available( macOS 10.15, * ) )
 	{
 	}
 	else
 	{
-		if( desc.GetType() == Tr2RenderContextEnum::TEX_TYPE_3D && IsCompressedFormat( desc.GetFormat() ) )
-		{
-			metalPixelFormat = MTLPixelFormatBGRA8Unorm;
-			needsDecompression = true;
-			realDesc = Tr2BitmapDimensions( desc.GetType(),
-											Tr2RenderContextEnum::PIXEL_FORMAT_B8G8R8A8_UNORM,
-											desc.GetWidth(),
-											desc.GetHeight(),
-											desc.GetDepth(),
-											desc.GetMipCount(),
-											desc.GetArraySize() );
-		}
+		legacyVolumeCase = desc.GetType() == Tr2RenderContextEnum::TEX_TYPE_3D;
+	}
+	// IsCompressedFormat and not IsAstcFormat, because "compressed" is two families and only
+	// one of them is BC's business. Every device that lacks BC samples ASTC natively -- that is
+	// the whole reason M3 transcodes to it -- so routing an ASTC texture through the BC
+	// decompressor asks BcDecompress for a format it has no decoder for, and the create fails
+	// with E_FAIL on exactly the device the format exists for. The simulator found this on the
+	// first ASTC upload it was ever handed.
+	//
+	// A device that lacked ASTC too would still fail here, and should: there is no ASTC decoder
+	// and inventing one is not this layer's job. Tr2CapsAL::SupportsAstcTextures is what a
+	// caller asks before it gets this far.
+	if( ( deviceLacksBc || legacyVolumeCase ) && IsCompressedFormat( desc.GetFormat() ) &&
+		!IsAstcFormat( desc.GetFormat() ) )
+	{
+		metalPixelFormat = MTLPixelFormatBGRA8Unorm;
+		needsDecompression = true;
+		realDesc = Tr2BitmapDimensions( desc.GetType(),
+										Tr2RenderContextEnum::PIXEL_FORMAT_B8G8R8A8_UNORM,
+										desc.GetWidth(),
+										desc.GetHeight(),
+										desc.GetDepth(),
+										desc.GetMipCount(),
+										desc.GetArraySize() );
 	}
 
 	{
@@ -214,15 +291,36 @@ ALResult Tr2TextureAL::Create( const Tr2BitmapDimensions& desc,
 						uint32_t levelWidth = std::max( desc.GetWidth() >> mip, 1U );
 						uint32_t levelHeight = std::max( desc.GetHeight() >> mip, 1U );
 						uint32_t levelDepth = std::max( desc.GetDepth() >> mip, 1U );
+						// index, not mip alone: index tracks the (slice, mip) pair
+						// actually being processed, same as the non-decompressed
+						// sibling branch below. Using `mip` alone was dormant while
+						// this trigger only fired for TEX_TYPE_3D (where
+						// GetArraySize() == 1, so index == mip always) -- the D7
+						// widening to any device lacking BC made it reachable for
+						// arrays/cubes (GetArraySize() > 1), where it silently
+						// decompressed slice 0's bytes for every slice. Do not
+						// "simplify" this back to initialData[mip].
+						const Tr2SubresourceData& decompressSource = initialData[index];
 						if( !BcDecompress( levelWidth,
 										   levelHeight,
 										   levelDepth,
 										   desc.GetFormat(),
-										   initialData[mip],
+										   decompressSource,
 										   decompressed ) )
 						{
 							return E_FAIL;
 						}
+						// Proof the decompress path actually executed, not just that
+						// the format was reported as if it had (spec D8). Read via
+						// DebugDecompressedOnCreate().
+						m_debugDecompressedOnCreate = true;
+						// Debug-only (regression coverage for the index fix above):
+						// records which source this (slice, mip) iteration actually
+						// consumed. Not reachable via MapForReading, which only ever
+						// supports face 0 (CCP_ASSERT( region.m_startFace == 0 &&
+						// region.m_endFace == 1 ) below), so this is the narrowest
+						// observable proof that each slice decompresses its own data.
+						m_debugDecompressedSources.push_back( decompressSource.m_sysMem );
 						workQueue->UploadTexture( m_mtlTexture,
 												  decompressed.get(),
 												  slice,
@@ -266,7 +364,10 @@ ALResult Tr2TextureAL::Create( const Tr2BitmapDimensions& desc,
 	m_memory.Set( Tr2MemoryCounterAL::TEXTURE, realDesc, msaa );
 
 	m_metalContext = metalContext;
-	m_desc = desc;
+	// The format we actually allocated. A caller that asked for BC1 on a
+	// device that cannot sample it gets BGRA8 and is told so -- GetFormat
+	// lying about this cost a design round to rule out (spec D8).
+	m_desc = realDesc;
 	m_gpuUsage = gpuUsage;
 	m_cpuUsage = cpuUsage;
 	m_msaa = msaa;
@@ -362,6 +463,8 @@ void Tr2TextureAL::Destroy()
 
 	m_metalContext = nil;
 	m_wrappedTexture = false;
+	m_debugDecompressedOnCreate = false;
+	m_debugDecompressedSources.clear();
 	m_memory.Reset();
 }
 
@@ -395,8 +498,75 @@ Tr2CpuUsage::Type Tr2TextureAL::GetCpuUsage() const
 	return m_cpuUsage;
 }
 
+
+std::shared_ptr<Tr2ReadbackAL> Tr2TextureAL::CreateReadback( const Tr2TextureSubresource& region, Tr2PrimaryRenderContextAL& renderContext )
+{
+	MetalContext* metalContext = renderContext.GetMetalContext();
+
+	if( !HasFlag( m_cpuUsage, Tr2CpuUsage::READ ) )
+	{
+		return nil;
+	}
+
+	if( !IsValid() || !renderContext.IsValid() )
+	{
+		return nil;
+	}
+	if( !region.IsValidForBitmap( m_desc ) )
+	{
+		return nil;
+	}
+	if( !region.IsSingleSubresource() )
+	{
+		return nil;
+	}
+
+	CCP_ASSERT( region.m_startFace == 0 && region.m_endFace == 1 );
+
+	MTLOrigin readOrigin;
+	MTLSize readSize;
+	uint32_t readMipLevel = region.m_startMipLevel;
+
+	if( readMipLevel >= m_mtlTexture.mipmapLevelCount )
+	{
+		CCP_AL_LOGWARN( "Mip level %d does not exist for this texture. Defaulting to 0.", (int)readMipLevel );
+		readMipLevel = 0;
+	}
+
+	if( region.HasBox() )
+	{
+		readOrigin = MTLOriginMake( region.m_box.left, region.m_box.bottom, region.m_box.front );
+		readSize = MTLSizeMake( region.GetWidth(), region.GetHeight(), region.GetDepth() );
+	}
+	else
+	{
+		readOrigin = MTLOriginMake( 0, 0, 0 );
+		readSize = MTLSizeMake( m_desc.GetMipWidth( readMipLevel ),
+								m_desc.GetMipHeight( readMipLevel ),
+								m_desc.GetMipDepth( readMipLevel ) );
+	}
+
+	auto mipPitch = m_desc.GetMipPitch( readMipLevel );
+	auto bufferSize = m_desc.GetMipSize( readMipLevel );
+
+	// Upstream #96 asked for Managed storage, which is macOS-only SDK surface; the GPU-written,
+	// CPU-read buffer takes the same per-platform mode MapForReading's readback buffer does
+	// (Managed on macOS, Shared on iOS, spec D7 of the fork's M3).
+	id<MTLBuffer> mtlReadbackBuffer = metalContext->CreateMetalBuffer( renderContext.GetMetalWorkQueue(), bufferSize, MetalDefaultUploadStorageMode( metalContext->GetDevice() ), nil );
+
+	renderContext.GetMetalWorkQueue()->CopyTextureToMTLBuffer( m_mtlTexture,
+                                                               mtlReadbackBuffer,
+															   mipPitch,
+															   bufferSize / std::max( 1u, m_desc.GetDepth() ),
+															   readOrigin,
+															   readSize,
+															   readMipLevel,
+															   false );
+
+	return std::make_shared<Tr2ReadbackAL>(metalContext, mtlReadbackBuffer, mipPitch, renderContext.GetRecordingFrameNumber());
+}
+
 ALResult Tr2TextureAL::MapForReading( const Tr2TextureSubresource& region,
-									  bool synchronize,
 									  const void*& data,
 									  uint32_t& pitch,
 									  Tr2RenderContextAL& renderContext )
@@ -450,10 +620,13 @@ ALResult Tr2TextureAL::MapForReading( const Tr2TextureSubresource& region,
 	auto mipPitch = m_desc.GetMipPitch( readMipLevel );
 	auto bufferSize = m_desc.GetMipSize( readMipLevel );
 
+	// GPU-written only: filled by CopyTextureToMTLBuffer's blit below, then the
+	// CPU reads m_mtlReadBackBuffer.contents directly. No CPU write ever happens
+	// to this buffer, so no didModifyRange is needed for either allocation of it.
 	if( !m_mtlReadBackBuffer )
 	{
 		m_mtlReadBackBuffer = metalContext->CreateMetalBuffer(
-			renderContext.GetMetalWorkQueue(), bufferSize, MTLResourceStorageModeManaged, nil );
+			renderContext.GetMetalWorkQueue(), bufferSize, MetalDefaultUploadStorageMode( metalContext->GetDevice() ), nil );
 		m_memory.Grow( bufferSize );
 	}
 	// We recreate the buffer if it's not an exact match but we could just do this for larger buffers if performance is an issue
@@ -462,7 +635,7 @@ ALResult Tr2TextureAL::MapForReading( const Tr2TextureSubresource& region,
 		m_memory.Shrink( m_mtlReadBackBuffer.length );
 		metalContext->DestroyMetalBuffer( m_mtlReadBackBuffer );
 		m_mtlReadBackBuffer = metalContext->CreateMetalBuffer(
-			renderContext.GetMetalWorkQueue(), bufferSize, MTLResourceStorageModeManaged, nil );
+			renderContext.GetMetalWorkQueue(), bufferSize, MetalDefaultUploadStorageMode( metalContext->GetDevice() ), nil );
 		m_memory.Grow( bufferSize );
 	}
 
@@ -473,7 +646,7 @@ ALResult Tr2TextureAL::MapForReading( const Tr2TextureSubresource& region,
 															   readOrigin,
 															   readSize,
 															   readMipLevel,
-															   synchronize );
+															   true );
 
 	pitch = mipPitch;
 	data = m_mtlReadBackBuffer.contents;
@@ -540,13 +713,25 @@ ALResult Tr2TextureAL::MapForWriting( const Tr2TextureSubresource& region,
 		auto depth = MAX( MIN( region.GetDepth(), m_desc.GetMipDepth( region.m_startMipLevel ) ), 1 );
 		if( m_desc.IsCompressed() )
 		{
-			mipPitch = MAX( width / 4u, 1 ) * GetBlockByteSize( m_desc.GetFormat() );
+			// GetBlockCount, not `MAX( width / 4u, 1 )`. The MAX was covering for the same
+			// truncation -- it turned a sub-block width into 1 block, correctly -- but it could
+			// not fix a width of 5 on a 4-wide block (1 instead of 2), and it assumed the block
+			// is 4 wide, which ASTC 6x6 and 8x8 are not.
+			// Qualified, unlike GetBlockWidth beside it: those take a PixelFormat and so reach
+			// ImageIO by argument-dependent lookup, while GetBlockCount takes two integers and
+			// has nothing to be found through.
+			mipPitch = Tr2RenderContextEnum::GetBlockCount( width, GetBlockWidth( m_desc.GetFormat() ) )
+				* GetBlockByteSize( m_desc.GetFormat() );
 		}
 		else
 		{
 			mipPitch = width * GetBytesPerPixel( m_desc.GetFormat() );
 		}
-		bufferSize = mipPitch * height * depth;
+		// Block rows, for the same reason: the pitch above is bytes per BLOCK row, so
+		// multiplying by texel rows overcounted by the block height on every compressed
+		// format. GetBlockHeight is 1 when uncompressed, so this is unchanged there.
+		bufferSize = mipPitch
+			* Tr2RenderContextEnum::GetBlockCount( height, GetBlockHeight( m_desc.GetFormat() ) ) * depth;
 	}
 
 	auto renderedFrame = metalContext->GetRenderedFrameNumber();
@@ -564,10 +749,14 @@ ALResult Tr2TextureAL::MapForWriting( const Tr2TextureSubresource& region,
 		}
 	}
 
+	// CPU-write-mapped staging buffer for all three allocations below; synced by
+	// UnmapForWriting's IndicateBufferModified call, guarded by storage mode there.
 	if( !m_mtlWriteBuffer )
 	{
-		m_mtlWriteBuffer = metalContext->CreateMetalBuffer(
-			renderContext.GetMetalWorkQueue(), m_desc.GetMipSize( 0 ), MTLResourceStorageModeManaged, nil );
+		m_mtlWriteBuffer = metalContext->CreateMetalBuffer( renderContext.GetMetalWorkQueue(),
+															 m_desc.GetMipSize( 0 ),
+															 MetalDefaultUploadStorageMode( metalContext->GetDevice() ),
+															 nil );
 		m_memory.Grow( m_mtlWriteBuffer.length );
 	}
 	uint32_t start = 0;
@@ -591,10 +780,13 @@ ALResult Tr2TextureAL::MapForWriting( const Tr2TextureSubresource& region,
 			{
 				m_memory.Shrink( m_mtlWriteBuffer.length );
 				metalContext->DestroyMetalBuffer( m_mtlWriteBuffer );
-				m_mtlWriteBuffer = metalContext->CreateMetalBuffer( renderContext.GetMetalWorkQueue(),
-																	m_desc.GetMipSize( 0 ) + m_mtlWriteBuffer.length,
-																	MTLResourceStorageModeManaged,
-																	nil );
+				// Regrow of the same CPU-write-mapped staging buffer above; same
+				// UnmapForWriting/IndicateBufferModified sync pairing applies.
+				m_mtlWriteBuffer = metalContext->CreateMetalBuffer(
+					renderContext.GetMetalWorkQueue(),
+					m_desc.GetMipSize( 0 ) + m_mtlWriteBuffer.length,
+					MetalDefaultUploadStorageMode( metalContext->GetDevice() ),
+					nil );
 				m_memory.Grow( m_mtlWriteBuffer.length );
 				m_mappedRanges.clear();
 				start = 0;
@@ -610,10 +802,13 @@ ALResult Tr2TextureAL::MapForWriting( const Tr2TextureSubresource& region,
 			{
 				m_memory.Shrink( m_mtlWriteBuffer.length );
 				metalContext->DestroyMetalBuffer( m_mtlWriteBuffer );
-				m_mtlWriteBuffer = metalContext->CreateMetalBuffer( renderContext.GetMetalWorkQueue(),
-																	m_desc.GetMipSize( 0 ) + m_mtlWriteBuffer.length,
-																	MTLResourceStorageModeManaged,
-																	nil );
+				// Regrow of the same CPU-write-mapped staging buffer above; same
+				// UnmapForWriting/IndicateBufferModified sync pairing applies.
+				m_mtlWriteBuffer = metalContext->CreateMetalBuffer(
+					renderContext.GetMetalWorkQueue(),
+					m_desc.GetMipSize( 0 ) + m_mtlWriteBuffer.length,
+					MetalDefaultUploadStorageMode( metalContext->GetDevice() ),
+					nil );
 				m_memory.Grow( m_mtlWriteBuffer.length );
 				m_mappedRanges.clear();
 				start = 0;

@@ -5,10 +5,13 @@
 #define Tr2RenderContextDx11_h_
 
 
+#include <vector>
+
 #include "../Tr2RenderContextEnum.h"
 #include "../Tr2DrawUPHelper.h"
 #include "../include/Tr2ConstantBufferAL.h"
-#include "../include/Tr2ResourceSetAL.h"
+#include "../include/Tr2BufferAL.h"
+#include "../include/Tr2SamplerStateAL.h"
 #include "../include/Tr2TextureAL.h"
 #include "../include/Tr2ShaderAL.h"
 #include "../include/Tr2ShaderProgramAL.h"
@@ -20,8 +23,7 @@
 class Tr2ConstantBufferAL;
 struct ITr2RenderContextEvents;
 
-class Tr2SamplerStateAL;
-class Tr2BufferAL;
+class Tr2RtPipelineStateAL;
 class Tr2RtShaderTableAL;
 struct Tr2Viewport;
 
@@ -29,6 +31,7 @@ struct Tr2Viewport;
 #if ( TRINITY_PLATFORM == TRINITY_DIRECTX11 )
 
 #include "Tr2RenderStateEmulationDx11.h"
+#include "Tr2ResourceBindingsDx11.h"
 #include "Tr2ShaderProgramALDx11.h"
 
 
@@ -99,7 +102,16 @@ public:
 	ALResult ClearUav( const Tr2TextureAL& rt, uint32_t mipLevel, const float values[4] ) throw();
 	ALResult ClearUav( const Tr2TextureAL& rt, uint32_t mipLevel, const uint32_t values[4] ) throw();
 
-	ALResult SetResourceSet( const Tr2ResourceSetAL& resourceSet ) throw();
+	ALResult SetSrv( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2BufferAL& buffer ) throw();
+	ALResult SetSrv( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2TextureAL& texture, Tr2RenderContextEnum::ColorSpace colorSpace = Tr2RenderContextEnum::COLOR_SPACE_LINEAR ) throw();
+	ALResult SetUav( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2BufferAL& buffer ) throw();
+	ALResult SetUav( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2TextureAL& texture, uint32_t mip = 0 ) throw();
+	ALResult SetSrvHeapView( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex ) throw();
+	ALResult SetUavHeapView( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex ) throw();
+	ALResult SetSamplerHeapView( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex ) throw();
+	ALResult SetSampler( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2SamplerStateAL& sampler ) throw();
+
+	ALResult ResetResourceBindings() throw();
 
 	ALResult DrawIndexedPrimitive(
 		uint32_t numVertices,
@@ -152,6 +164,7 @@ public:
 	ALResult RunComputeShaderIndirect( Tr2BufferAL& indirectParams, unsigned offset ) throw();
 
 	ALResult DispatchRays( Tr2RtPipelineStateAL& pipeline, Tr2RtShaderTableAL& shaderTable, const wchar_t* rayGenShader, uint32_t width, uint32_t height, uint32_t depth );
+	ALResult SetRtPipelineState( Tr2RtPipelineStateAL& pipeline, const wchar_t* rayGenShader );
 
 	ALResult SetRenderState( Tr2RenderContextEnum::RenderState state, uint32_t value ) throw();
 
@@ -256,6 +269,10 @@ private:
 	// Current shaders
 	Tr2ShaderProgramAL m_shaderProgram;
 
+	Tr2ResourceBindings m_bindings;
+
+	ALResult UseResourceBindings() throw();
+
 	Tr2RenderContextEnum::Topology m_topology;
 	Tr2RenderContextEnum::Topology m_lastSetTopology;
 	// If readonly depth buffer was requested
@@ -277,6 +294,84 @@ private:
 	SharedConstantBuffer m_sharedConstantBuffers[Tr2RenderContextEnum::SHADER_TYPE_COUNT * CB_SLOT_COUNT];
 
 public:
+	// See the DX12 backend for what this is for. There is no DX12 command list
+	// here, and 0 is the documented "not now" value.
+	uint64_t GetNativeCommandList() const
+	{
+		return 0;
+	}
+
+	// See the DX12 backend. No DX12 device or descriptor heap here.
+	uint64_t GetNativeDevice() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeSrvHeap() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeCommandQueue() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeSamplerHeap() const
+	{
+		return 0;
+	}
+
+	// Metal opens a render pass here; every other backend has an always-recording command
+	// list and there is nothing to do. Present on all of them so the shared TriStep that
+	// calls it compiles everywhere (spec 5: the frame graph asks, getters never drive).
+	ALResult BeginRenderPass()
+	{
+		return S_OK;
+	}
+
+	// The back buffer's format as the GPU API spells it. On the DX backends
+	// Tr2RenderContextEnum::PixelFormat already holds DXGI's values, so this is
+	// GetBackBufferFormat() widened -- and the getter exists precisely so a caller does not
+	// have to know that, because on Metal the two are different numbers and passing the wrong
+	// one aborts the process inside Metal's validation layer.
+	uint64_t GetNativeBackBufferFormat() const
+	{
+		return static_cast<uint64_t>( GetBackBufferFormat() );
+	}
+
+	// Metal's two, so the Python-side handle table is the same shape on every backend
+	// (spec D3): a getter is named for what it returns, and returns 0 where the concept
+	// does not exist. ImGui's Metal backend renders with a command buffer plus the pass's
+	// open encoder; neither has a DX11 counterpart.
+	uint64_t GetNativeCommandBuffer() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeRenderEncoder() const
+	{
+		return 0;
+	}
+
+	// Vulkan's three, and the contract every accessor here shares (spec D3): named for what
+	// they return, 0 where the concept does not exist. None of these three exists on this
+	// backend.
+	uint64_t GetNativeInstance() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativePhysicalDevice() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeQueueFamily() const
+	{
+		return 0;
+	}
+
 	uint32_t ComputeVertexCount( uint32_t primitiveCount ) const throw();
 
 	CComPtr<ID3D11Device> m_secondaryDevice11;
@@ -328,18 +423,10 @@ private:
 	ALResult SetRtDsToDevice( uint32_t changedSlot ) throw();
 
 private:
-	uint32_t m_resourceHashes[Tr2RenderContextEnum::SHADER_TYPE_COUNT];
-	uint32_t m_samplerHashes[Tr2RenderContextEnum::SHADER_TYPE_COUNT];
-	Tr2ResourceSetAL m_currentResourceSet;
-
 	friend class Tr2PrimaryRenderContextAL;
 	typedef TrackableStdStack<Tr2TextureAL> TextureStack;
 	TrackableStdStack<BoundRT> m_stackRT[MAX_RENDER_TARGET];
 	TextureStack m_stackDS;
-
-	uint32_t m_assignedUavOffset;
-	uint32_t m_assignedUavCount;
-	bool m_assignedPsUavs;
 
 	Tr2RenderContextAL( const Tr2RenderContextAL& ) /* = delete */;
 	Tr2RenderContextAL& operator=( const Tr2RenderContextAL& ) /* = delete */;
