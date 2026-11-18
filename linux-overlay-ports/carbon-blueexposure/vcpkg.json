@@ -1,7 +1,7 @@
 {
   "name": "carbon-blueexposure",
-  "version": "2.1.1",
-  "port-version": 3,
+  "version": "2.2.0",
+  "port-version": 2,
   "description": "Carbon blue exposure static library",
   "dependencies": [
     {

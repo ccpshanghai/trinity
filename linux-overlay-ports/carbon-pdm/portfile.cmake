@@ -1,17 +1,17 @@
 vcpkg_from_git(
   OUT_SOURCE_PATH SOURCE_PATH
   URL git@github.com:ccpshanghai/pdm.git
-  REF 777482cb841c30101cc4aecdad25bdf10d870cfe
+  REF 13d210d4fd57674b268828524aa87beb2e7c49b5
   HEAD_REF master
 )
 
-# Same tree as external/pdm. The git tarball is cached, so copy the Linux
-# edits over the extraction. external/pdm is four levels above this port.
+# Same tree as ccpshanghai/pdm mobile-exp (registry 2.3.0#1), which has upstream's Linux backend.
+# external/pdm's carbon-bind branch only adds the CMakeLists filter that keeps ios_data.mm out of
+# g++ builds. The git tarball is cached, so copy that file over the extraction. external/pdm is
+# four levels above this port.
 set(_CARBON_PDM_CHECKOUT "${CURRENT_PORT_DIR}/../../../../external/pdm")
 if(EXISTS "${_CARBON_PDM_CHECKOUT}/CMakeLists.txt")
   file(COPY "${_CARBON_PDM_CHECKOUT}/CMakeLists.txt" DESTINATION "${SOURCE_PATH}")
-  file(COPY "${_CARBON_PDM_CHECKOUT}/include/pdm_data.h" DESTINATION "${SOURCE_PATH}/include")
-  file(COPY "${_CARBON_PDM_CHECKOUT}/src/linux/linux_data.cpp" DESTINATION "${SOURCE_PATH}/src/linux")
 endif()
 
 vcpkg_cmake_configure(
