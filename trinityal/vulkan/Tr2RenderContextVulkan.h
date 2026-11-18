@@ -629,7 +629,10 @@ public:
 protected:
 	static const uint32_t RENDER_TARGET_COUNT = 4;
 	Tr2TextureAL m_boundRenderTargets[RENDER_TARGET_COUNT];
-	std::vector<Tr2TextureAL> m_rtStack[RENDER_TARGET_COUNT];
+	// The array slice (cube face) SetRenderTarget named for each slot: the attachment view
+	// and a target clear address that layer, as dx12's RTV and ClearRenderTargetView do.
+	uint32_t m_boundRenderTargetSlices[RENDER_TARGET_COUNT] = {};
+	std::vector<std::pair<Tr2TextureAL, uint32_t>> m_rtStack[RENDER_TARGET_COUNT];
 
 	// Tracked even though binding one is still E_NOTIMPL, so that the push/pop pairing is
 	// already correct when SetDepthStencil grows a real implementation.
@@ -712,6 +715,7 @@ public:
 
 	// SetRenderTarget and SetDepthStencil reopen the pass when the bound IMAGE changes, not
 	// only when its attachment description does; this is the comparison they use.
+	// SetRenderTarget also reopens it when the bound image stays and the slice changes.
 	bool SameImageVulkan( const Tr2TextureAL& a, const Tr2TextureAL& b ) const;
 
 	VkCommandBuffer m_commandBuffer;

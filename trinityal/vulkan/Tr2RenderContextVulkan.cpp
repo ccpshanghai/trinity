@@ -315,6 +315,7 @@ void Tr2RenderContextAL::Destroy() throw( )
 	for( uint32_t i = 0; i < RENDER_TARGET_COUNT; ++i )
 	{
 		m_boundRenderTargets[i] = Tr2TextureAL();
+		m_boundRenderTargetSlices[i] = 0;
 		m_rtStack[i].clear();
 	}
 	m_boundDepthStencil = Tr2TextureAL();
@@ -510,7 +511,8 @@ ALResult Tr2RenderContextAL::Clear(
 			EndRenderPassVulkan();
 			m_boundRenderTargets[slot].m_texture->TransitionForTransferWriteVulkan( m_commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
 
-			VkImageSubresourceRange subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+			// Only the bound slice: a cube face render clears its own face.
+			VkImageSubresourceRange subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, m_boundRenderTargetSlices[slot], 1 };
 			vkCmdClearColorImage( m_commandBuffer, m_boundRenderTargets[slot].m_texture->GetImageVulkan(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearColor, 1, &subresourceRange );
 
 			m_dirtyPass = true;
@@ -1033,16 +1035,46 @@ bool Tr2RenderContextAL::SameImageVulkan( const Tr2TextureAL& a, const Tr2Textur
 
 ALResult Tr2RenderContextAL::SetRenderTarget( const Tr2TextureAL& renderTarget, uint32_t slot, uint32_t slice ) throw()
 {
-	// The pass has to reopen when the IMAGE changes, not only when its description does.
-	// The description below carries format, sample count, load/store ops and layouts, and two
-	// render targets of one format are byte-identical in it -- so a rebind from one to the
-	// other used to leave the pass open on the first, and every draw meant for the second
-	// landed on the first. Tr2PostProcessRenderer builds "Final Result" in the back buffer's
-	// own format, tonemaps into it, then binds the back buffer and draws it across: that draw
-	// went into Final Result, and an EVE scene of 43 draws a frame put nothing on the swap
-	// chain. dx12 compares the texture itself here (Tr2RenderContextDx12.cpp:985); this is
-	// that comparison, on the image rather than the wrapper for the back buffer's sake.
-	if( !SameImageVulkan( renderTarget, m_boundRenderTargets[slot] ) )
+	// The slice becomes the base array layer of the attachment view and of a target clear, so
+	// it must name a layer the image has. A cube has six. A 3D image has one layer: it is
+	// created without 2D_ARRAY_COMPATIBLE, so its depth slices cannot be bound here the way
+	// dx11 and dx12 bind them through FirstWSlice. A refused slice leaves the binding as it was.
+	if( renderTarget.IsValid() )
+	{
+		if( renderTarget.GetType() == Tr2RenderContextEnum::TEX_TYPE_3D && slice > 0 )
+		{
+			static bool logged = false;
+			if( !logged )
+			{
+				logged = true;
+				CCP_AL_LOGERR( "Tr2RenderContextAL::SetRenderTarget: slice %u of a 3D texture refused; a depth slice cannot be a render target on Vulkan", slice );
+			}
+			return E_INVALIDARG;
+		}
+		if( slice >= renderTarget.GetArraySize() )
+		{
+			static bool logged = false;
+			if( !logged )
+			{
+				logged = true;
+				CCP_AL_LOGERR( "Tr2RenderContextAL::SetRenderTarget: slice %u refused; the texture has %u layers", slice, renderTarget.GetArraySize() );
+			}
+			return E_INVALIDARG;
+		}
+	}
+	const uint32_t boundSlice = renderTarget.IsValid() ? slice : 0;
+
+	// The pass has to reopen when the IMAGE changes, or the slice, not only when its
+	// description does. The description below carries format, sample count, load/store ops
+	// and layouts, and two render targets of one format are byte-identical in it -- so a
+	// rebind from one to the other used to leave the pass open on the first, and every draw
+	// meant for the second landed on the first. Tr2PostProcessRenderer builds "Final Result"
+	// in the back buffer's own format, tonemaps into it, then binds the back buffer and
+	// draws it across: that draw went into Final Result, and an EVE scene of 43 draws a
+	// frame put nothing on the swap chain. dx12 compares the texture itself here
+	// (Tr2RenderContextDx12.cpp:985); this is that comparison, on the image rather than the
+	// wrapper for the back buffer's sake.
+	if( !SameImageVulkan( renderTarget, m_boundRenderTargets[slot] ) || boundSlice != m_boundRenderTargetSlices[slot] )
 	{
 		m_dirtyPass = true;
 	}
@@ -1058,6 +1090,7 @@ ALResult Tr2RenderContextAL::SetRenderTarget( const Tr2TextureAL& renderTarget, 
 		++g_drawLogBindCount;
 	}
 	m_boundRenderTargets[slot] = renderTarget;
+	m_boundRenderTargetSlices[slot] = boundSlice;
 
 	if( renderTarget.IsValid() )
 	{
@@ -1159,7 +1192,7 @@ ALResult Tr2RenderContextAL::PushRenderTarget( uint32_t slot ) throw()
 	{
 		return E_INVALIDARG;
 	}
-	m_rtStack[slot].push_back( m_boundRenderTargets[slot] );
+	m_rtStack[slot].push_back( { m_boundRenderTargets[slot], m_boundRenderTargetSlices[slot] } );
 	return S_OK;
 }
 
@@ -1173,9 +1206,9 @@ ALResult Tr2RenderContextAL::PopRenderTarget( uint32_t slot ) throw()
 	{
 		return E_INVALIDCALL;
 	}
-	Tr2TextureAL rt = m_rtStack[slot].back();
+	auto [rt, slice] = m_rtStack[slot].back();
 	m_rtStack[slot].pop_back();
-	return SetRenderTarget( rt, slot );
+	return SetRenderTarget( rt, slot, slice );
 }
 
 ALResult Tr2RenderContextAL::PushDepthStencil() throw()
@@ -1534,10 +1567,9 @@ ALResult Tr2RenderContextAL::SetPass()
 		attachment.resolveMode = VK_RESOLVE_MODE_NONE;
 		if( m_renderPassSource.m_rt[i + 1].format != VK_FORMAT_UNDEFINED && m_boundRenderTargets[i].IsValid() )
 		{
-			// Mip 0, slice 0: nothing in the AL binds a render target at another level yet,
-			// and the slice argument to SetRenderTarget is not plumbed through either. Both
-			// belong with mip generation, which is a separate cluster.
-			attachment.imageView = m_boundRenderTargets[i].m_texture->GetAttachmentViewVulkan( 0, 0, ( srgbMask & ( 1u << i ) ) != 0 );
+			// Mip 0 (nothing in the AL binds a render target at another level yet), at the
+			// slice SetRenderTarget named: a reflection probe renders each cube face this way.
+			attachment.imageView = m_boundRenderTargets[i].m_texture->GetAttachmentViewVulkan( 0, m_boundRenderTargetSlices[i], ( srgbMask & ( 1u << i ) ) != 0 );
 			attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 			attachment.loadOp = m_renderPassSource.m_rt[i + 1].loadOp;
 			attachment.storeOp = m_renderPassSource.m_rt[i + 1].storeOp;
