@@ -226,10 +226,13 @@
           "version>=": "1.4.304.1"
         },
         {
-          "$comment": "Desktop Linux links the built loader, the same port Windows uses. Android still does not: its loader is the OS libvulkan and this row's platform expression excludes it.",
+          "$comment": "Desktop Linux links the built loader, the same port Windows uses. Android still does not: its loader is the OS libvulkan and this row's platform expression excludes it. The loader port builds no window-system support unless a feature asks for it, and trinity's Linux swapchain calls vkCreateWaylandSurfaceKHR, so the wayland feature is required.",
           "name": "vulkan-loader",
           "platform": "linux",
-          "version>=": "1.4.304.1"
+          "version>=": "1.4.304.1",
+          "features": [
+            "wayland"
+          ]
         }
       ]
     },
