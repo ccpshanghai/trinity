@@ -8,7 +8,7 @@
     {
       "kind": "git",
       "repository": "https://github.com/ccpshanghai/vcpkg-registry.git",
-      "reference": "mobile-exp",
+      "reference": "feat/prototype-model-conversion",
       "baseline": "6dee1a44692b5c1797d96aa23b24938b7b8e8081",
       "packages": [
         "python3",
