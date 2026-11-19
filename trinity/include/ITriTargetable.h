@@ -33,6 +33,7 @@ BLUE_INTERFACE( ITriTargetable ) :
 	{
 	}
 };
+BLUE_INVOKE_CANONICAL_NAME( ITriTargetable::ImpactConfiguration, "ITriTargetable::ImpactConfiguration" );
 
 
 #endif

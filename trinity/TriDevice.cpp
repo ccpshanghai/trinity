@@ -1062,6 +1062,61 @@ bool TriDevice::SetOutputWindow( Tr2WindowHandle window )
 	return true;
 }
 
+std::string TriDevice::GetPresentMode()
+{
+#if TRINITY_PLATFORM == TRINITY_VULKAN
+	USE_MAIN_THREAD_RENDER_CONTEXT();
+	switch( renderContext.GetPresentModeVulkan() )
+	{
+	case VK_PRESENT_MODE_IMMEDIATE_KHR: return "IMMEDIATE";
+	case VK_PRESENT_MODE_MAILBOX_KHR: return "MAILBOX";
+	case VK_PRESENT_MODE_FIFO_KHR: return "FIFO";
+	case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "FIFO_RELAXED";
+	default: break;
+	}
+#endif
+	return "";
+}
+
+bool TriDevice::SetBackBufferSize( int32_t width, int32_t height )
+{
+	if( width <= 0 || height <= 0 )
+	{
+		CCP_LOGERR( "SetBackBufferSize: %dx%d is not a size", int( width ), int( height ) );
+		return false;
+	}
+	if( !DeviceExists() )
+	{
+		CCP_LOGERR( "SetBackBufferSize: no device" );
+		return false;
+	}
+	if( uint32_t( width ) == mPresentParam.mode.width && uint32_t( height ) == mPresentParam.mode.height &&
+		width == mWidth && height == mHeight )
+	{
+		return true;
+	}
+
+	Tr2PresentParametersAL pp = mPresentParam;
+	pp.mode.width = uint32_t( width );
+	pp.mode.height = uint32_t( height );
+
+	ReleaseDeviceResources( TRISTORAGE_ALL );
+	if( !SetPresentParameters( mAdapter, pp ) )
+	{
+		// Back to the size the record still describes, so the device keeps presenting.
+		SetPresentParameters( mAdapter, mPresentParam );
+		PrepareDeviceResources();
+		return false;
+	}
+	mPresentParam = pp;
+	mWidth = width;
+	mHeight = height;
+	mViewport.width = int( mWidth );
+	mViewport.height = int( mHeight );
+	PrepareDeviceResources();
+	return true;
+}
+
 #if BLUE_WITH_PYTHON
 PyObject* TriDevice::PySetOutputWindow( PyObject* args )
 {
@@ -1126,10 +1181,15 @@ void TriDevice::PyRender()
 // copies sprite sets on a background thread - these sprite sets are registered
 // here, and the builder might happen to do that just as something is being
 // created on the main thread.
+//
+// Never destroyed, like the set it guards (GetResourcesRegistered). Resources still unregister
+// during static destruction: blue's MotherLode releases cached effects from its own destructor,
+// and on Linux blue.so's destructors run after this module's, so a function-local static mutex
+// was already destroyed and locking it hung the process at exit.
 CcpMutex& GetResourcesRegisteredMutex()
 {
-	static CcpMutex s_resourcesRegisteredMutex( "TriDevice", "s_resourcesRegisteredMutex" );
-	return s_resourcesRegisteredMutex;
+	static CcpMutex* s_resourcesRegisteredMutex = new CcpMutex( "TriDevice", "s_resourcesRegisteredMutex" );
+	return *s_resourcesRegisteredMutex;
 }
 
 // We manage a set of weak references to objects that have registered themselves

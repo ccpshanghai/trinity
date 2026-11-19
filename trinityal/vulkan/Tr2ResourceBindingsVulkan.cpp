@@ -31,6 +31,16 @@ const VkDescriptorPoolSize POOL_SIZES[] = {
 	{ VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, SETS_PER_POOL * 4 },
 	{ VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, SETS_PER_POOL * 4 },
 };
+// The same, plus a few acceleration structures: a frame traces a handful of times.
+const VkDescriptorPoolSize POOL_SIZES_RAYTRACING[] = {
+	{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, SETS_PER_POOL * 16 },
+	{ VK_DESCRIPTOR_TYPE_SAMPLER, SETS_PER_POOL * 8 },
+	{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, SETS_PER_POOL * 4 },
+	{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, SETS_PER_POOL * 4 },
+	{ VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, SETS_PER_POOL * 4 },
+	{ VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, SETS_PER_POOL * 4 },
+	{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 16 },
+};
 
 bool IsPoolExhausted( VkResult result )
 {
@@ -305,7 +315,7 @@ bool Tr2ResourceBindings::NeedsTransition() const
 	}
 	for( const auto& input : m_program->m_registerInput )
 	{
-		const VkDescriptorType type = TrinityALImpl::DescriptorTypeVulkan( input.type );
+		const VkDescriptorType type = input.descriptorType;
 		if( type != VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE && type != VK_DESCRIPTOR_TYPE_STORAGE_IMAGE )
 		{
 			continue;
@@ -334,7 +344,7 @@ void Tr2ResourceBindings::TransitionImages( VkCommandBuffer commandBuffer )
 	}
 	for( const auto& input : m_program->m_registerInput )
 	{
-		const VkDescriptorType type = TrinityALImpl::DescriptorTypeVulkan( input.type );
+		const VkDescriptorType type = input.descriptorType;
 		if( type != VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE && type != VK_DESCRIPTOR_TYPE_STORAGE_IMAGE )
 		{
 			continue;
@@ -406,6 +416,14 @@ ALResult Tr2ResourceBindings::AllocateSet( Tr2PrimaryRenderContextAL& owner, VkD
 				poolInfo.maxSets = SETS_PER_POOL;
 				poolInfo.poolSizeCount = uint32_t( sizeof( POOL_SIZES ) / sizeof( POOL_SIZES[0] ) );
 				poolInfo.pPoolSizes = POOL_SIZES;
+				if( owner.GetCaps().SupportsRaytracing() )
+				{
+					// Ray tracing globals bind the TLAS (Tr2RtPipelineStateALVulkan). Only on a
+					// device created with acceleration structures: the type is not legal in a
+					// pool without them.
+					poolInfo.poolSizeCount = uint32_t( sizeof( POOL_SIZES_RAYTRACING ) / sizeof( POOL_SIZES_RAYTRACING[0] ) );
+					poolInfo.pPoolSizes = POOL_SIZES_RAYTRACING;
+				}
 			}
 			VkDescriptorPool pool = VK_NULL_HANDLE;
 			CR_RETURN_HR( Vk2Al( vkCreateDescriptorPool( owner.m_device, &poolInfo, nullptr, &pool ) ) );
@@ -456,9 +474,14 @@ ALResult Tr2ResourceBindings::WriteSet( Tr2PrimaryRenderContextAL& owner, VkDesc
 	bufferInfos.reserve( descriptorTotal );
 	std::vector<VkBufferView> texelViews;
 	texelViews.reserve( descriptorTotal );
+	std::vector<VkAccelerationStructureKHR> accelerationStructures;
+	accelerationStructures.reserve( descriptorTotal );
+	std::vector<VkWriteDescriptorSetAccelerationStructureKHR> accelerationStructureWrites;
+	accelerationStructureWrites.reserve( inputs.size() );
 
 	const bool haveDummyTexture = owner.m_dummyTexture.IsValid();
 	const bool haveDummySampler = owner.m_dummySampler != VK_NULL_HANDLE;
+	const VkImageView dummyArrayView = owner.GetDummyArrayImageViewVulkan();
 
 	for( const auto& input : inputs )
 	{
@@ -468,11 +491,12 @@ ALResult Tr2ResourceBindings::WriteSet( Tr2PrimaryRenderContextAL& owner, VkDesc
 			continue;
 		}
 
-		const VkDescriptorType type = TrinityALImpl::DescriptorTypeVulkan( input.type );
+		const VkDescriptorType type = input.descriptorType;
 		const uint32_t count = input.arrayCount ? input.arrayCount : 1;
 		const size_t imageFirst = imageInfos.size();
 		const size_t bufferFirst = bufferInfos.size();
 		const size_t texelFirst = texelViews.size();
+		const size_t accelerationStructureFirst = accelerationStructures.size();
 		bool complete = true;
 
 		for( uint32_t k = 0; k < count && complete; ++k )
@@ -514,6 +538,13 @@ ALResult Tr2ResourceBindings::WriteSet( Tr2PrimaryRenderContextAL& owner, VkDesc
 					info.imageView = owner.GetDummyImageViewVulkan();
 					info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 				}
+				else if( input.type == Tr2ShaderRegisterAL::SRV_TEXTURE2DARRAY && dummyArrayView != VK_NULL_HANDLE )
+				{
+					// An arrayed image in SPIR-V needs a 2D_ARRAY view: the 2D dummy's view
+					// does not match the declaration.
+					info.imageView = dummyArrayView;
+					info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				}
 				else
 				{
 					complete = false;
@@ -529,14 +560,21 @@ ALResult Tr2ResourceBindings::WriteSet( Tr2PrimaryRenderContextAL& owner, VkDesc
 					complete = false;
 					break;
 				}
-				if( r->mip != 0 )
-				{
-					CCP_AL_LOGWARN_LIMITED( "Vulkan: a storage image bound at mip %u is bound at mip 0 (no per-mip storage views yet); stage %u, register %u", r->mip, input.stage, reg );
-				}
 				VkDescriptorImageInfo info = {};
-				// The storage view, not the shader-resource one: for a cube texture they differ
-				// in dim (2D_ARRAY against CUBE), and the descriptor has to match the shader.
-				info.imageView = r->texture.TrinityALImpl_GetObject()->GetStorageViewVulkan();
+				// The storage view of the mip SetUav named, not the shader-resource view: a
+				// storage descriptor writes its view's base level, so the shader-resource view
+				// (base 0) sent every mip's writes to mip 0; and for a cube texture the two
+				// differ in dim too (2D_ARRAY against CUBE), and the descriptor has to match
+				// what the shader declared.
+				info.imageView = r->texture.TrinityALImpl_GetObject()->GetStorageViewVulkan( r->mip );
+				if( info.imageView == VK_NULL_HANDLE )
+				{
+					// dx11 binds a null UAV for a mip the texture lacks; a Vulkan descriptor
+					// cannot be null without nullDescriptor, so the commit is incomplete.
+					CCP_AL_LOGWARN_LIMITED( "Vulkan: no storage view of mip %u for stage %u, register %u", r->mip, input.stage, reg );
+					complete = false;
+					break;
+				}
 				info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 				imageInfos.push_back( info );
 				break;
@@ -570,6 +608,24 @@ ALResult Tr2ResourceBindings::WriteSet( Tr2PrimaryRenderContextAL& owner, VkDesc
 				bufferInfos.push_back( info );
 				break;
 			}
+			case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR: {
+				// A ray tracing global (Tr2ShaderProgramAL::CreateRtGlobalVulkan). The engine binds
+				// the TLAS as its storage buffer, an SRV, as on DX12; the structure built over that
+				// buffer is the buffer's (Tr2RtTopLevelAccelerationStructureALVulkan).
+				const Resource* r = FindSrv( input.stage, reg );
+				VkAccelerationStructureKHR structure = VK_NULL_HANDLE;
+				if( r && r->type == Resource::BUFFER && r->buffer.IsValid() )
+				{
+					structure = r->buffer.TrinityALImpl_GetObject()->GetAccelerationStructureVulkan();
+				}
+				if( structure == VK_NULL_HANDLE )
+				{
+					complete = false;
+					break;
+				}
+				accelerationStructures.push_back( structure );
+				break;
+			}
 			default:
 				complete = false;
 				break;
@@ -579,12 +635,17 @@ ALResult Tr2ResourceBindings::WriteSet( Tr2PrimaryRenderContextAL& owner, VkDesc
 		if( !complete )
 		{
 			// Left unwritten. If the shader really reads it, validation names the binding; this
-			// line names the register the engine did not set.
-			CCP_AL_LOGWARN_LIMITED( "Vulkan: no resource bound for stage %u register %u (register type %u, binding %u); descriptor left unwritten",
-									input.stage, input.registerIndex, uint32_t( input.type ), input.binding );
+			// line names the register the engine did not set. Not for a binding no module of a
+			// ray tracing pipeline reads, which may legally stay unwritten.
+			if( !input.optional )
+			{
+				CCP_AL_LOGWARN_LIMITED( "Vulkan: no resource bound for stage %u register %u (register type %u, binding %u); descriptor left unwritten",
+										input.stage, input.registerIndex, uint32_t( input.type ), input.binding );
+			}
 			imageInfos.resize( imageFirst );
 			bufferInfos.resize( bufferFirst );
 			texelViews.resize( texelFirst );
+			accelerationStructures.resize( accelerationStructureFirst );
 			continue;
 		}
 
@@ -603,6 +664,14 @@ ALResult Tr2ResourceBindings::WriteSet( Tr2PrimaryRenderContextAL& owner, VkDesc
 		case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
 			write.pBufferInfo = &bufferInfos[bufferFirst];
 			break;
+		case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR: {
+			VkWriteDescriptorSetAccelerationStructureKHR accelerationStructureWrite = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
+			accelerationStructureWrite.accelerationStructureCount = count;
+			accelerationStructureWrite.pAccelerationStructures = &accelerationStructures[accelerationStructureFirst];
+			accelerationStructureWrites.push_back( accelerationStructureWrite );
+			write.pNext = &accelerationStructureWrites.back();
+			break;
+		}
 		default:
 			write.pImageInfo = &imageInfos[imageFirst];
 			break;

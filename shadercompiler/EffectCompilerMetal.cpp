@@ -4652,11 +4652,18 @@ std::vector<uint8_t> CompileCode( const std::string& code, const std::vector<Mac
 			}
 
 			fseek( file, 0, SEEK_END );
+#if defined(__linux__) && !defined(__APPLE__)
+			// glibc fpos_t is a struct. ftell is the byte offset this size wants.
+			long end = ftell( file );
+			fseek( file, 0, SEEK_SET );
+			size_t dataSize = end < 0 ? 0 : static_cast<size_t>( end );
+#else
 			fpos_t pos = 0;
 			fgetpos( file, &pos );
 			fseek( file, 0, SEEK_SET );
 
 			size_t dataSize = pos;
+#endif
 			compiledCode.resize( dataSize );
 
 			size_t readBytes = fread( compiledCode.data(), 1, dataSize, file );

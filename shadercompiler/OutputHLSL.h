@@ -84,10 +84,21 @@ inline CodeStream& operator<<( CodeStream& os, const Endl& )
 	return os;
 }
 
+struct Symbol;
+
 struct HLSL
 {
 	ASTNode* node;
 	SymbolTable* symbolTable;
+	// Vulkan ray tracing only: the cbuffers to emit as [[vk::shader_record_ext]], i.e. as the
+	// data of the shader binding table record. Null everywhere else, which emits every cbuffer
+	// as it always was.
+	const std::set<const Symbol*>* shaderRecordCBuffers = nullptr;
+	// Vulkan only: the declarations whose t/s/u registers are written on space1, the binding
+	// ABI's resource descriptor set, whatever space the tree gives them
+	// (CheckVulkanRegisterSpaces collects them and refuses what cannot go there). Null
+	// everywhere else, which writes every register as the tree has it.
+	const std::set<const Symbol*>* vulkanResourceSpace = nullptr;
 };
 
 struct MSL

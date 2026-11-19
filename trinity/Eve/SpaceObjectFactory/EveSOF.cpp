@@ -1314,7 +1314,7 @@ void EveSOF::SetupPlaneSets( IEveSpaceObjectAttachmentOwnerPtr obj, const EveSOF
 							float maxScale = max( psiit.scaling.x, max( psiit.scaling.y, psiit.scaling.z ) );
 							auto saturatedColor = Saturate( planeSetItem->m_color, pslight.saturation );
 							auto lightData = pslight.AsLightData( saturatedColor, maxScale );
-							lightData.position = Transform( lightData.position, RotationMatrix( planeSetItem->m_rotation ) ) + planeSetItem->m_position;
+							lightData.position = Transform( lightData.position, RotationMatrix( planeSetItem->m_rotation ) ).GetXYZ() + planeSetItem->m_position;
 							lightData.rotation = Normalize( lightData.rotation * planeSetItem->m_rotation );
 							lightData.boneIndex = planeSetItem->m_boneIndex;
 
@@ -1544,7 +1544,7 @@ void EveSOF::SetupHazeSets( IEveSpaceObjectAttachmentOwnerPtr obj, const EveSOFD
 								float maxScale = max( scale.x, max( scale.y, scale.z ) );
 
 								auto lightData = light.AsLightData( saturatedColor, maxScale );
-								lightData.position = Transform( lightData.position, RotationMatrix( hazeSetItem->m_rotation ) ) + hazeSetItem->m_position;
+								lightData.position = Transform( lightData.position, RotationMatrix( hazeSetItem->m_rotation ) ).GetXYZ() + hazeSetItem->m_position;
 								lightData.rotation = Normalize( lightData.rotation * hazeSetItem->m_rotation );
 
 								lightData.boneIndex = itemData->boneIndex;
@@ -1787,7 +1787,7 @@ void EveSOF::SetupBannerSets( EveSpaceObject2Ptr obj, const EveSOFDNAPtr dna, co
 							float maxScale = max( scale.x, max( scale.y, scale.z ) );
 							auto black = Color( 0, 0, 0, 0 );
 							auto lightData = banner.light->AsLightData( black, maxScale );
-							lightData.position = Transform( lightData.position, RotationMatrix( modifiedItem.rotation ) ) + modifiedItem.position;
+							lightData.position = Transform( lightData.position, RotationMatrix( modifiedItem.rotation ) ).GetXYZ() + modifiedItem.position;
 							lightData.rotation = Normalize( lightData.rotation * modifiedItem.rotation );
 
 							EveBannerLight bannerLight( lightData, banner.light->saturation, index, banner.light->lightProfilePath );

@@ -3,7 +3,7 @@
 #include "StdAfx.h"
 #include "../include/Tr2TextureAL.h"
 
-#include TRINITY_AL_PLATFORM_INCLUDE( Tr2TextureAL )
+#include TRINITY_AL_PLATFORM_INCLUDE(Tr2TextureAL)
 
 bool g_preloadTextureToDeviceOnPrepare = true;
 
