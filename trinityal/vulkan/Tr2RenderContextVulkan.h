@@ -621,8 +621,6 @@ private:
 	VkDescriptorSet m_constantSet;
 	VkDescriptorSetLayout m_boundConstantLayout;
 
-	VkPipeline m_computePipeline;
-	VkPipelineLayout m_computePipelineLayout;
 public:
 	// If you need this, you're probably doing something wrong :P
 	//Tr2TextureAL&			GetDefaultBackBuffer()

@@ -77,7 +77,8 @@ namespace TrinityALImpl
 		m_resourceLayout( VK_NULL_HANDLE ),
 		m_constantLayout( VK_NULL_HANDLE ),
 		m_emptyLayout( VK_NULL_HANDLE ),
-		m_pipelineLayout( VK_NULL_HANDLE )
+		m_pipelineLayout( VK_NULL_HANDLE ),
+		m_computePipeline( VK_NULL_HANDLE )
 	{
 	}
 
@@ -365,6 +366,7 @@ namespace TrinityALImpl
 	{
 		if( m_owner )
 		{
+			m_owner->DestroyLaterVulkan( m_computePipeline, vkDestroyPipeline );
 			m_owner->DestroyLaterVulkan( m_resourceLayout, vkDestroyDescriptorSetLayout );
 			m_owner->DestroyLaterVulkan( m_constantLayout, vkDestroyDescriptorSetLayout );
 			m_owner->DestroyLaterVulkan( m_emptyLayout, vkDestroyDescriptorSetLayout );
@@ -374,6 +376,7 @@ namespace TrinityALImpl
 			m_constantBindings.clear();
 			m_emptyLayout = VK_NULL_HANDLE;
 			m_pipelineLayout = VK_NULL_HANDLE;
+			m_computePipeline = VK_NULL_HANDLE;
 			m_owner = nullptr;
 		}
 		m_shaders.clear();
@@ -383,6 +386,29 @@ namespace TrinityALImpl
 		m_poolSizes.clear();
 		m_registerInput.clear();
 		m_registerMap = Tr2RegisterMapAL();
+	}
+
+	ALResult Tr2ShaderProgramAL::GetComputePipelineVulkan( VkPipeline& pipeline )
+	{
+		if( !m_computePipeline )
+		{
+			if( !m_owner || !m_pipelineLayout || m_shaderInfo.size() != 1 || m_shaderInfo[0].stage != VK_SHADER_STAGE_COMPUTE_BIT )
+			{
+				return E_INVALIDCALL;
+			}
+			VkComputePipelineCreateInfo pipelineInfo = {
+				VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+				nullptr,
+				0,
+				m_shaderInfo[0],
+				m_pipelineLayout,
+				VK_NULL_HANDLE,
+				0
+			};
+			CR_RETURN_HR( Vk2Al( vkCreateComputePipelines( m_owner->m_device, m_owner->m_pipelineCache, 1, &pipelineInfo, nullptr, &m_computePipeline ) ) );
+		}
+		pipeline = m_computePipeline;
+		return S_OK;
 	}
 
 	bool Tr2ShaderProgramAL::IsValid() const

@@ -211,8 +211,6 @@ Tr2RenderContextAL::Tr2RenderContextAL() throw( )
 	m_constantSet( VK_NULL_HANDLE ),
 	m_boundConstantLayout( VK_NULL_HANDLE ),
 	m_constantsDirty( false ),
-	m_computePipeline( VK_NULL_HANDLE ),
-	m_computePipelineLayout( VK_NULL_HANDLE ),
 	m_primitiveToVertexCount( 0, 0 ),
 	m_topology( Tr2RenderContextEnum::TOP_TRIANGLES ),
 	m_separateAlphaBlend( false ),
@@ -346,13 +344,6 @@ void Tr2RenderContextAL::Destroy() throw( )
 	m_boundConstantLayout = VK_NULL_HANDLE;
 	m_constantBuffers.clear();
 	m_constantsDirty = false;
-
-	if( m_computePipeline )
-	{
-		m_owner->DestroyLaterVulkan( m_computePipeline, vkDestroyPipeline );
-		m_computePipeline = VK_NULL_HANDLE;
-	}
-	m_computePipelineLayout = VK_NULL_HANDLE;
 }
 
 bool Tr2RenderContextAL::IsValid() const throw( )
@@ -1947,32 +1938,8 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 		RestoreProgramBindingsVulkan();
 	}
 
-	// The compute pipeline is determined by the shader module and pipeline layout,
-	// both owned by the program. Cache it keyed by the layout, invalidating on
-	// program change (the same handle-reuse concern as the constant descriptor set).
-	if( m_computePipelineLayout != program->m_pipelineLayout )
-	{
-		m_computePipelineLayout = program->m_pipelineLayout;
-		if( m_computePipeline )
-		{
-			m_owner->DestroyLaterVulkan( m_computePipeline, vkDestroyPipeline );
-			m_computePipeline = VK_NULL_HANDLE;
-		}
-	}
-
-	if( !m_computePipeline )
-	{
-		VkComputePipelineCreateInfo pipelineInfo = {
-			VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-			nullptr,
-			0,
-			program->m_shaderInfo[0],
-			program->m_pipelineLayout,
-			VK_NULL_HANDLE,
-			0
-		};
-		CR_RETURN_HR( Vk2Al( vkCreateComputePipelines( m_owner->m_device, m_owner->m_pipelineCache, 1, &pipelineInfo, nullptr, &m_computePipeline ) ) );
-	}
+	VkPipeline pipeline;
+	FORWARD_HR( program->GetComputePipelineVulkan( pipeline ) );
 
 	// The draw path moves the resource set's images into the layouts its descriptors
 	// declare in SetPass; a dispatch has no pass, and so it bound the set with its images
@@ -2003,7 +1970,7 @@ ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned grou
 	dependencyInfo.pMemoryBarriers = &memoryBarrier;
 	m_owner->m_vkCmdPipelineBarrier2( m_commandBuffer, &dependencyInfo );
 
-	vkCmdBindPipeline( m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_computePipeline );
+	vkCmdBindPipeline( m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline );
 
 	if( m_bindings.GetProgram() )
 	{

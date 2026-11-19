@@ -52,6 +52,10 @@ namespace TrinityALImpl
 		bool IsValid() const;
 		const Tr2RegisterMapAL& GetRegisterMap() const;
 
+		// The compute pipeline of a compute-shader program, created on the first call and kept
+		// until Destroy. E_INVALIDCALL for a program without a compute shader.
+		ALResult GetComputePipelineVulkan( VkPipeline& pipeline );
+
 		Tr2ALMemoryType GetMemoryClass() const;
 		void Describe( Tr2DeviceResourceDescriptionAL& description ) const;
 		ALResult SetName( const char* name );
@@ -72,6 +76,12 @@ namespace TrinityALImpl
 									  Tr2PrimaryRenderContextAL& renderContext );
 
 		VkPipelineLayout m_pipelineLayout;
+
+		// Built from this program's shader module and pipeline layout and destroyed with them, so
+		// it is never found through a layout handle that was freed and reused. One pipeline per
+		// render context would be rebuilt at every switch of compute program, and on Adreno each
+		// vkCreateComputePipelines is a kernel allocation.
+		VkPipeline m_computePipeline;
 
 		VkDescriptorSetLayout m_resourceLayout;
 		VkDescriptorSetLayout m_constantLayout;
