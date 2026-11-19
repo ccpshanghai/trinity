@@ -57,6 +57,12 @@
       "version>=": "6.3.1"
     },
     {
+      "$comment": "Windows only: 2.2.0#2 is the fork's blueexposure with the Android interface anchors made to build and link with MSVC (ccpshanghai/blueexposure e32445e; C2375 and LNK2005 without it). The registry's baseline stays at 2.2.0#1, whose Clang builds compile the same code, so macOS, Android and iOS keep resolving #1. carbon-blue already brings blueexposure in; this row only raises the floor on Windows.",
+      "name": "carbon-blueexposure",
+      "version>=": "2.2.0#2",
+      "platform": "windows"
+    },
+    {
       "name": "carbon-math",
       "version>=": "1.2.1"
     },
