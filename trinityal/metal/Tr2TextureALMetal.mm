@@ -220,15 +220,18 @@ ALResult Tr2TextureAL::Create( const Tr2BitmapDimensions& desc,
 		else
 #endif
 	bool needsDecompression = false;
+	Tr2RenderContextEnum::PixelFormat decompressedFormat = Tr2RenderContextEnum::PIXEL_FORMAT_UNKNOWN;
+	uint32_t decompressedTexelBytes = 4;
 
 	Tr2BitmapDimensions realDesc = desc;
 
 	// Two reasons to decompress, one mechanism. The 10.14 volume-texture
 	// workaround this machinery was built for, and -- new with M3 -- a device
 	// that cannot sample BC at all (every iPhone; spec D7). BcDecompress
-	// covers BC1/2/3 only; a format it refuses fails the create loudly below,
-	// which is correct -- BC4/5/7 content is ASTC's job (spec §1), not a
-	// decoder's.
+	// covers BC1/2/3 (to BGRA8) and BC6H (to RGBA16Float); a format it refuses
+	// fails the create loudly below, which is correct -- BC4/5/7 content is
+	// ASTC's job (spec §1), not a decoder's. BC6H is decoded because a cube
+	// without an ASTC HDR sibling should still load, at 8 bytes a texel.
 	bool deviceLacksBc = !MetalDeviceSupportsBC( metalContext->GetDevice() );
 	bool legacyVolumeCase = false;
 	if( @available( macOS 10.15, * ) )
@@ -251,10 +254,17 @@ ALResult Tr2TextureAL::Create( const Tr2BitmapDimensions& desc,
 	if( ( deviceLacksBc || legacyVolumeCase ) && IsCompressedFormat( desc.GetFormat() ) &&
 		!IsAstcFormat( desc.GetFormat() ) )
 	{
-		metalPixelFormat = MTLPixelFormatBGRA8Unorm;
+		// A format without a decoder still gets BGRA8 here; BcDecompress refuses it below.
+		decompressedFormat = BcDecompressedFormat( desc.GetFormat() );
+		if( decompressedFormat == Tr2RenderContextEnum::PIXEL_FORMAT_UNKNOWN )
+		{
+			decompressedFormat = Tr2RenderContextEnum::PIXEL_FORMAT_B8G8R8A8_UNORM;
+		}
+		metalPixelFormat = metalContext->m_utils->GetMTLPixelFormat( decompressedFormat );
+		decompressedTexelBytes = decompressedFormat == Tr2RenderContextEnum::PIXEL_FORMAT_R16G16B16A16_FLOAT ? 8 : 4;
 		needsDecompression = true;
 		realDesc = Tr2BitmapDimensions( desc.GetType(),
-										Tr2RenderContextEnum::PIXEL_FORMAT_B8G8R8A8_UNORM,
+										decompressedFormat,
 										desc.GetWidth(),
 										desc.GetHeight(),
 										desc.GetDepth(),
@@ -325,8 +335,8 @@ ALResult Tr2TextureAL::Create( const Tr2BitmapDimensions& desc,
 												  decompressed.get(),
 												  slice,
 												  mip,
-												  levelWidth * 4,
-												  levelWidth * levelHeight * 4,
+												  levelWidth * decompressedTexelBytes,
+												  levelWidth * levelHeight * decompressedTexelBytes,
 												  0,
 												  false );
 					}
