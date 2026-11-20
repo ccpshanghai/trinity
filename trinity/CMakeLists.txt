@@ -2374,6 +2374,14 @@ set(_TR2C_SOURCES
     CApi/Tr2CSpriteHook.cpp
     CApi/Tr2CSpriteHook_Blue.cpp
 )
+if(APPLE)
+    # Compile the CApi sources as Objective-C++ so trinity_metal keeps a single
+    # OBJCXX precompiled header (its PCH includes MetalContext.h, which needs
+    # Foundation types such as NSString that a C++ PCH cannot parse).
+    set(_TR2C_CXX_SOURCES ${_TR2C_SOURCES})
+    list(FILTER _TR2C_CXX_SOURCES INCLUDE REGEX "\\.cpp$")
+    set_source_files_properties(${_TR2C_CXX_SOURCES} PROPERTIES LANGUAGE OBJCXX)
+endif()
 foreach(_tr2c_target trinity_stub trinity_dx11 trinity_dx12 trinity_vulkan trinity_metal)
     if(TARGET ${_tr2c_target})
         target_sources(${_tr2c_target} PRIVATE ${_TR2C_SOURCES})
