@@ -167,6 +167,22 @@ void Tr2FontMeasurer::Reset()
 
 unsigned int Tr2FontMeasurer::AddText( const std::wstring& text )
 {
+	// Stops at the first L'\0', as before.
+	return AddTextImpl( text.c_str(), std::char_traits<wchar_t>::length( text.c_str() ) );
+}
+
+unsigned int Tr2FontMeasurer::AddCodepoints( const uint32_t* codepoints, uint32_t count )
+{
+	if( !codepoints )
+	{
+		return 0;
+	}
+	return AddTextImpl( codepoints, count );
+}
+
+template <typename CharT>
+unsigned int Tr2FontMeasurer::AddTextImpl( const CharT* text, size_t count )
+{
 	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	const char* font;
@@ -261,8 +277,9 @@ unsigned int Tr2FontMeasurer::AddText( const std::wstring& text )
 	FTC_SBitCache sbitCache = g_fontManager->GetSbitCache();
 
 	int charactersAdded = 0;
-	const wchar_t* curChar = text.c_str();
-	while( *curChar )
+	const CharT* curChar = text;
+	const CharT* const endChar = text + count;
+	while( curChar != endChar && *curChar )
 	{
 		// Character bitmap is only allocated after we've found the glyph index. The
 		// font may not have a glyph for the character we're asking for - in that case
@@ -345,7 +362,7 @@ unsigned int Tr2FontMeasurer::AddText( const std::wstring& text )
 
 		CCP_ASSERT( characterBitmap );
 
-		characterBitmap->charCode = *curChar;
+		characterBitmap->charCode = wchar_t( *curChar ); // written, never read
 
 		int newCursorX = m_cursorX;
 		newCursorX += characterBitmap->sbit->xadvance;
@@ -379,6 +396,54 @@ unsigned int Tr2FontMeasurer::AddText( const std::wstring& text )
 	}
 
 	return charactersAdded;
+}
+
+uint32_t Tr2FontMeasurer::GetPendingAdvances( float* out, uint32_t cap ) const
+{
+	if( !out || m_renderData.empty() )
+	{
+		return 0;
+	}
+	const Tr2FontRenderData* data = m_renderData.back();
+	uint32_t n = 0;
+	for( const CharacterBitmap* cb = data->sbits.get(); cb && n < cap; cb = cb->next.get() )
+	{
+		out[n++] = float( cb->sbit->xadvance + m_letterSpace );
+	}
+	return n;
+}
+
+bool Tr2FontMeasurer::GetFontMetrics( int& ascender, int& descender ) const
+{
+	const char* font = m_font.empty() ? TR2_FONT_FALLBACK : m_font.c_str();
+	FaceID face = g_fontManager->GetFaceID( font );
+	if( !g_fontManager->LookupFace( face ) )
+	{
+		face = g_fontManager->GetFaceID( TR2_FONT_FALLBACK );
+		if( !g_fontManager->LookupFace( face ) )
+		{
+			return false;
+		}
+	}
+	FT_Size_Metrics metrics = g_fontManager->LookupMetrics( face, m_fontSize, m_fontSize );
+	ascender = int( metrics.ascender >> 6 );
+	descender = int( metrics.descender >> 6 );
+	return true;
+}
+
+void Tr2FontMeasurer::SetCursorX( int x )
+{
+	m_cursorX = x;
+}
+
+void Tr2FontMeasurer::SetLimit( int limit )
+{
+	m_limit = limit;
+}
+
+void Tr2FontMeasurer::SetLetterSpace( int letterSpace )
+{
+	m_letterSpace = letterSpace;
 }
 
 void Tr2FontMeasurer::CommitText( int shiftX, int shiftY )
