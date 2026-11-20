@@ -64,6 +64,10 @@ set(PUBLIC_HEADER_FILES
     include/TriVector.h
 )
 
+# tr2c engine C interface (carbon-ui-core). Listed here so the install rules above pick it up;
+# its sources are added in the separate block at the end of this file.
+list(APPEND PUBLIC_HEADER_FILES CApi/tr2c.h)
+
 if(BUILD_FOR_PYTHON_2)
     # This is only needed for py2 as the file now belongs in blue.
     # Unfortunatly the blue py2 branch cannot be updated at present due to security vulnerability work.
@@ -2356,3 +2360,24 @@ if(BUILD_TESTING)
         endif()
     endif()
 endif()
+
+# tr2c engine C interface for carbon-ui-core (trinity/CApi). Kept as one separate block at the
+# end of the file, rather than in _SOURCES, so upstream merges of the source list do not
+# conflict. Only tr2c_get_api is exported (TR2C_API); everything else stays hidden.
+set(_TR2C_SOURCES
+    CApi/tr2c.h
+    CApi/tr2c_internal.h
+    CApi/tr2c_api.cpp
+    CApi/tr2c_texture.cpp
+    CApi/tr2c_text.cpp
+    CApi/Tr2CSpriteHook.h
+    CApi/Tr2CSpriteHook.cpp
+    CApi/Tr2CSpriteHook_Blue.cpp
+)
+foreach(_tr2c_target trinity_stub trinity_dx11 trinity_dx12 trinity_vulkan trinity_metal)
+    if(TARGET ${_tr2c_target})
+        target_sources(${_tr2c_target} PRIVATE ${_TR2C_SOURCES})
+        target_include_directories(${_tr2c_target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/CApi)
+        target_compile_definitions(${_tr2c_target} PRIVATE TR2C_BUILDING)
+    endif()
+endforeach()
