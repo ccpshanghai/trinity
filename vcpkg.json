@@ -98,6 +98,18 @@
         }
       ],
       "platform": "linux | windows | osx | android | ios"
+    },
+    {
+      "$comment": "carbon-ui-core's flexbox layout (Yoga). carbon-ui-core is built and packaged with carbon-bind against this trinity tree's vcpkg install, as sdl3 above is for carbon-bind's window; trinity itself does not link it.",
+      "name": "yoga",
+      "version>=": "3.2.1",
+      "platform": "linux | windows | osx | android | ios"
+    },
+    {
+      "$comment": "carbon-ui-core's line breaking (UAX #14). Same arrangement as yoga above; trinity itself does not link it.",
+      "name": "libunibreak",
+      "version>=": "7.0",
+      "platform": "linux | windows | osx | android | ios"
     }
   ],
   "features": {
