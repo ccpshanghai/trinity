@@ -77,21 +77,42 @@ tr2c_status TextureCreateBgra( uint32_t w, uint32_t h, const void* pixels, uint3
 	{
 		return Fail( TR2C_E_ENGINE, "texture_create_bgra: CreateTexture(%u, %u) failed", w, h );
 	}
+	// Lock the texture together with the atlas margin around it and fill the margin by
+	// replicating the edge texels (clamp-to-edge). Bilinear sampling at the window edge
+	// reads the margin; the atlas memory is not initialised (undefined on Metal).
 	void* dest = nullptr;
 	unsigned int destPitch = 0;
-	if( !tex->LockBuffer( dest, destPitch ) || !dest )
+	unsigned int margin = 0;
+	if( !tex->LockBufferAndMargin( dest, destPitch, margin ) || !dest )
 	{
-		return Fail( TR2C_E_ENGINE, "texture_create_bgra: LockBuffer failed" );
+		return Fail( TR2C_E_ENGINE, "texture_create_bgra: LockBufferAndMargin failed" );
 	}
 	const size_t rowBytes = size_t( w ) * 4;
-	if( destPitch < rowBytes )
+	const size_t fullW = size_t( w ) + 2 * size_t( margin );
+	if( destPitch < fullW * 4 )
 	{
 		tex->UnlockBuffer();
-		return Fail( TR2C_E_ENGINE, "texture_create_bgra: locked pitch %u is less than %zu", destPitch, rowBytes );
+		return Fail( TR2C_E_ENGINE, "texture_create_bgra: locked pitch %u is less than %zu", destPitch, fullW * 4 );
 	}
+	uint8_t* base = static_cast<uint8_t*>( dest );
 	for( uint32_t y = 0; y < h; ++y )
 	{
-		std::memcpy( static_cast<uint8_t*>( dest ) + size_t( y ) * destPitch, static_cast<const uint8_t*>( pixels ) + size_t( y ) * pitch, rowBytes );
+		uint8_t* row = base + ( size_t( y ) + margin ) * destPitch;
+		std::memcpy( row + size_t( margin ) * 4, static_cast<const uint8_t*>( pixels ) + size_t( y ) * pitch, rowBytes );
+		const uint8_t* first = row + size_t( margin ) * 4;
+		const uint8_t* last = first + rowBytes - 4;
+		for( uint32_t m = 0; m < margin; ++m )
+		{
+			std::memcpy( row + size_t( m ) * 4, first, 4 );
+			std::memcpy( row + ( size_t( margin ) + w + m ) * 4, last, 4 );
+		}
+	}
+	// Top and bottom margin rows (corners included) copy the first and last full rows.
+	const size_t fullRowBytes = fullW * 4;
+	for( uint32_t m = 0; m < margin; ++m )
+	{
+		std::memcpy( base + size_t( m ) * destPitch, base + size_t( margin ) * destPitch, fullRowBytes );
+		std::memcpy( base + ( size_t( margin ) + h + m ) * destPitch, base + ( size_t( margin ) + h - 1 ) * destPitch, fullRowBytes );
 	}
 	tex->UnlockBuffer();
 	*out = reinterpret_cast<tr2c_texture*>( tex.Detach() );
