@@ -9,6 +9,7 @@
 #include "Sprite2d/Tr2Sprite2dScene.h"
 
 #include <cmath>
+#include <memory>
 #include <new>
 #include <string>
 #include <vector>
@@ -54,18 +55,23 @@ tr2c_status TextCreate( tr2c_text** out )
 		return Fail( TR2C_E_INVALID_ARG, "text_create: null out" );
 	}
 	*out = nullptr;
-	tr2c_text* t = new( std::nothrow ) tr2c_text;
+	std::unique_ptr<tr2c_text> t( new( std::nothrow ) tr2c_text );
 	if( !t )
 	{
 		return Fail( TR2C_E_OUT_OF_MEMORY, "text_create: out of memory" );
 	}
 	// O-type: constructed with one reference, which the wrapper owns. No extra Lock.
+	// If this throws, t is freed and the table entry's catch reports TR2C_E_OUT_OF_MEMORY.
 	t->measurer.Attach( new OTr2FontMeasurer );
+	if( !t->measurer )
+	{
+		return Fail( TR2C_E_OUT_OF_MEMORY, "text_create: out of memory" ); // Windows: new returns nullptr
+	}
 	// m_limit is not initialised by the constructor; letter space as CarbonUI and Chrome (0).
 	t->measurer->SetLimit( 0 );
 	t->measurer->SetLetterSpace( 0 );
 	t->generation = DeviceGeneration();
-	*out = t;
+	*out = t.release();
 	return Ok();
 }
 

@@ -20,6 +20,8 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <exception>
+#include <new>
 #include <stddef.h>
 #include <string>
 #include <thread>
@@ -72,7 +74,15 @@ tr2c_status Fail( tr2c_status status, const char* fmt, ... )
 	va_start( args, fmt );
 	vsnprintf( buf, sizeof( buf ), fmt, args );
 	va_end( args );
-	t_lastError = buf;
+	try
+	{
+		t_lastError = buf;
+	}
+	catch( ... )
+	{
+		// Out of memory for the text itself: keep the status, drop the text.
+		t_lastError.clear();
+	}
 	return status;
 }
 
@@ -108,6 +118,14 @@ uint32_t DeviceGeneration()
 uint32_t ContentEpoch()
 {
 	return g_contentEpoch;
+}
+
+void SpoilRecording()
+{
+	if( g_currentFrame && g_currentFrame->rec )
+	{
+		g_currentFrame->recSpoiled = true;
+	}
 }
 
 void NoteChanged( const void* obj )
@@ -358,7 +376,9 @@ tr2c_status HookCreate( void* scene, tr2c_gather_fn fn, void* user, tr2c_hook** 
 		return Fail( TR2C_E_ENGINE, "hook_create: Tr2Sprite2dScene has no 'children' list" );
 	}
 
-	// O-type: constructed with one reference, which the handle owns.
+	// O-type: constructed with one reference, which the handle owns. Keep the null check:
+	// on Windows the global new is CCP_MALLOC, which returns nullptr instead of throwing.
+	// Elsewhere new throws std::bad_alloc, which Shielded (below) turns into TR2C_E_OUT_OF_MEMORY.
 	Tr2CSpriteHook* raw = new OTr2CSpriteHook;
 	BluePtr<Tr2CSpriteHook> hook;
 	hook.Attach( raw );
@@ -455,6 +475,7 @@ tr2c_status PushTranslation( tr2c_frame* f, float x, float y )
 	{
 		return s;
 	}
+	f->pushes.reserve( f->pushes.size() + 1 ); // so push_back below cannot throw
 	f->scene->PushTranslation( Vector2( x, y ) );
 	f->pushes.push_back( tr2c_frame::PUSH_TRANSLATION );
 	if( Recording::Op* op = Record( f, Recording::PUSH_TRANSLATION ) )
@@ -508,6 +529,7 @@ tr2c_status PushTransform( tr2c_frame* f, const float m[16] )
 	}
 	Matrix mat;
 	std::memcpy( static_cast<void*>( &mat ), m, sizeof( mat ) );
+	f->pushes.reserve( f->pushes.size() + 1 ); // so push_back below cannot throw
 	f->scene->PushTransform( mat );
 	f->pushes.push_back( tr2c_frame::PUSH_TRANSFORM );
 	if( Recording::Op* op = Record( f, Recording::PUSH_TRANSFORM ) )
@@ -530,6 +552,7 @@ tr2c_status PushClip( tr2c_frame* f, float x, float y, float w, float h )
 	{
 		return s;
 	}
+	f->pushes.reserve( f->pushes.size() + 1 ); // so push_back below cannot throw
 	f->scene->PushClipRectangle( x, y, w, h );
 	f->pushes.push_back( tr2c_frame::PUSH_CLIP );
 	if( Recording::Op* op = Record( f, Recording::PUSH_CLIP ) )
@@ -955,6 +978,43 @@ void tr2c::Play( tr2c_frame* f, const Recording& rec )
 
 namespace
 {
+// No C++ exception may cross the C ABI. Every table entry that can throw is wrapped:
+// std::bad_alloc becomes TR2C_E_OUT_OF_MEMORY, anything else TR2C_E_ENGINE, both with error
+// text. An exception inside a gather callback also spoils the recording being made, as the
+// frame call may have stopped halfway. (On Windows the global new returns nullptr instead of
+// throwing, so a failed vector growth there crashes before any catch; not handled here.)
+template <typename Sig, Sig Fn>
+struct Shield;
+
+template <typename... A, tr2c_status ( *Fn )( A... )>
+struct Shield<tr2c_status ( * )( A... ), Fn>
+{
+	static tr2c_status Call( A... a ) noexcept
+	{
+		try
+		{
+			return Fn( a... );
+		}
+		catch( const std::bad_alloc& )
+		{
+			SpoilRecording();
+			return Fail( TR2C_E_OUT_OF_MEMORY, "tr2c: out of memory (std::bad_alloc)" );
+		}
+		catch( const std::exception& e )
+		{
+			SpoilRecording();
+			return Fail( TR2C_E_ENGINE, "tr2c: C++ exception: %s", e.what() );
+		}
+		catch( ... )
+		{
+			SpoilRecording();
+			return Fail( TR2C_E_ENGINE, "tr2c: unknown C++ exception" );
+		}
+	}
+};
+
+#define TR2C_SHIELD( fn ) Shield<decltype( &fn ), &fn>::Call
+
 uint32_t DeviceGenerationFn()
 {
 	return DeviceGeneration();
@@ -964,46 +1024,46 @@ const tr2c_api s_api = {
 	sizeof( tr2c_api ),
 	TR2C_API_VERSION,
 
-	LastError,
-	Init,
+	LastError, // noexcept: c_str()
+	TR2C_SHIELD( Init ),
 
-	HookCreate,
-	HookSetDirty,
-	HookRelease,
+	TR2C_SHIELD( HookCreate ),
+	TR2C_SHIELD( HookSetDirty ),
+	TR2C_SHIELD( HookRelease ),
 
-	PushTranslation,
-	PopTranslation,
-	PushTransform,
-	PopTransform,
-	PushClip,
-	PopClip,
-	SetAlpha,
-	SetEffect,
-	SetBlend,
-	SetColor,
-	SetTexture,
-	SetTextureWindow,
-	DrawQuad,
-	DrawTriangles,
-	CaptureBegin,
-	CaptureEnd,
-	Replay,
-	DisplayListDestroy,
-	DeviceGenerationFn,
+	TR2C_SHIELD( PushTranslation ),
+	TR2C_SHIELD( PopTranslation ),
+	TR2C_SHIELD( PushTransform ),
+	TR2C_SHIELD( PopTransform ),
+	TR2C_SHIELD( PushClip ),
+	TR2C_SHIELD( PopClip ),
+	TR2C_SHIELD( SetAlpha ),
+	TR2C_SHIELD( SetEffect ),
+	TR2C_SHIELD( SetBlend ),
+	TR2C_SHIELD( SetColor ),
+	TR2C_SHIELD( SetTexture ),
+	TR2C_SHIELD( SetTextureWindow ),
+	TR2C_SHIELD( DrawQuad ),
+	TR2C_SHIELD( DrawTriangles ),
+	TR2C_SHIELD( CaptureBegin ),
+	TR2C_SHIELD( CaptureEnd ),
+	TR2C_SHIELD( Replay ),
+	TR2C_SHIELD( DisplayListDestroy ),
+	DeviceGenerationFn, // noexcept: an atomic load
 
-	TextureLoad,
-	TextureCreateBgra,
-	TextureState,
-	TextureRelease,
+	TR2C_SHIELD( TextureLoad ),
+	TR2C_SHIELD( TextureCreateBgra ),
+	TR2C_SHIELD( TextureState ),
+	TR2C_SHIELD( TextureRelease ),
 
-	TextCreate,
-	TextSetFont,
-	TextMetrics,
-	TextMeasure,
-	TextReset,
-	TextAddLine,
-	TextDraw,
-	TextRelease,
+	TR2C_SHIELD( TextCreate ),
+	TR2C_SHIELD( TextSetFont ),
+	TR2C_SHIELD( TextMetrics ),
+	TR2C_SHIELD( TextMeasure ),
+	TR2C_SHIELD( TextReset ),
+	TR2C_SHIELD( TextAddLine ),
+	TR2C_SHIELD( TextDraw ),
+	TR2C_SHIELD( TextRelease ),
 };
 }
 

@@ -1,4 +1,4 @@
-/* tr2c.h - engine C interface over trinity's 2D UI rendering (DRAFT for M1).
+/* tr2c.h - engine C interface over trinity's 2D UI rendering (API version 1).
  *
  * Lives in trinity at trinity/CApi/tr2c.h (new directory, additive only).
  * trinity exports exactly one symbol, tr2c_get_api(); everything else is reached
@@ -11,7 +11,9 @@
  *   - all calls on the engine boot/render thread; other threads get TR2C_E_THREAD;
  *   - strings are UTF-8 with explicit byte length, copied;
  *   - handles are opaque and refcounted; *_release drops the caller's reference;
- *   - functions taking a tr2c_frame* are only valid inside the gather callback.
+ *   - functions taking a tr2c_frame* are only valid inside the gather callback;
+ *   - no C++ exception crosses this interface: an entry that hits one returns
+ *     TR2C_E_OUT_OF_MEMORY (std::bad_alloc) or TR2C_E_ENGINE (anything else).
  */
 #ifndef TR2C_H
 #define TR2C_H
@@ -91,7 +93,10 @@ typedef struct tr2c_api {
      * initialised; records the calling thread. Safe to call more than once. */
     tr2c_status (*init)(void);
 
-    /* Attach: scene is the IRoot* of a Tr2Sprite2dScene (cb_native_ptr).
+    /* Attach: scene MUST be the pointer carbon-bind's cb_native_ptr returns for a
+     * Tr2Sprite2dScene (its IRoot*). Any other IRoot* that is not a Tr2Sprite2dScene gets
+     * TR2C_E_INVALID_ARG; a pointer that is not a Blue IRoot at all (a raw object pointer,
+     * a handle, freed memory) is undefined behaviour and may crash before the type check.
      * Creates a Tr2CSpriteHook and appends it to scene.children. */
     tr2c_status (*hook_create)(void* scene, tr2c_gather_fn fn, void* user, tr2c_hook** out_hook);
     tr2c_status (*hook_set_dirty)(tr2c_hook* hook);   /* next render calls the gather callback */

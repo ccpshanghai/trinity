@@ -97,6 +97,8 @@ struct Recording
 	}
 };
 
+// Marks the recording being made (if any) as not replayable, e.g. after a frame call threw.
+void SpoilRecording();
 // Bumped whenever a texture, text or display list is released or changed.
 uint32_t ContentEpoch();
 // Called before obj (a tr2c texture, text or display list) is released or changed. Inside a
