@@ -57,6 +57,7 @@ thread_local std::string t_lastError;
 std::atomic<bool> g_initialized{ false };
 std::thread::id g_thread;
 std::atomic<uint32_t> g_deviceGeneration{ 0 };
+uint32_t g_contentEpoch = 0; // render thread only
 
 // The frame of the gather callback running now (render thread only).
 tr2c_frame* g_currentFrame = nullptr;
@@ -102,6 +103,22 @@ void BumpDeviceGeneration()
 uint32_t DeviceGeneration()
 {
 	return g_deviceGeneration.load();
+}
+
+uint32_t ContentEpoch()
+{
+	return g_contentEpoch;
+}
+
+void NoteChanged( const void* obj )
+{
+	// Spoils the recordings of other hooks (and of this hook's last clean frame); the
+	// recording being made now stays valid unless it already drew from obj.
+	++g_contentEpoch;
+	if( obj && g_currentFrame && g_currentFrame->rec && g_currentFrame->rec->References( obj ) )
+	{
+		g_currentFrame->recSpoiled = true;
+	}
 }
 
 tr2c_status DecodeUtf8( const char* fn, const char* utf8, uint32_t len, std::vector<uint32_t>& out )
@@ -412,6 +429,26 @@ tr2c_status HookRelease( tr2c_hook* h )
 //////////////////////////////////////////////////////////////////////////
 // Frame: state
 
+// Appends an op to the recording being made, if any. Returns null when not recording.
+Recording::Op* Record( tr2c_frame* f, Recording::Kind kind )
+{
+	if( !f->rec )
+	{
+		return nullptr;
+	}
+	f->rec->ops.emplace_back();
+	Recording::Op* op = &f->rec->ops.back();
+	op->kind = kind;
+	return op;
+}
+
+// Draws made between capture_begin and capture_end land in the display list, not on screen,
+// so they are not recorded (the replay of that list is). State calls are recorded either way.
+Recording::Op* RecordDraw( tr2c_frame* f, Recording::Kind kind )
+{
+	return f->capturing ? nullptr : Record( f, kind );
+}
+
 tr2c_status PushTranslation( tr2c_frame* f, float x, float y )
 {
 	if( tr2c_status s = CheckFrame( "push_translation", f ) )
@@ -420,6 +457,11 @@ tr2c_status PushTranslation( tr2c_frame* f, float x, float y )
 	}
 	f->scene->PushTranslation( Vector2( x, y ) );
 	f->pushes.push_back( tr2c_frame::PUSH_TRANSLATION );
+	if( Recording::Op* op = Record( f, Recording::PUSH_TRANSLATION ) )
+	{
+		op->v[0] = x;
+		op->v[1] = y;
+	}
 	return Ok();
 }
 
@@ -440,6 +482,12 @@ tr2c_status PopPush( tr2c_frame* f, const char* fn, tr2c_frame::Push kind )
 	case tr2c_frame::PUSH_CLIP: f->scene->PopClipRectangle(); break;
 	}
 	f->pushes.pop_back();
+	switch( kind )
+	{
+	case tr2c_frame::PUSH_TRANSLATION: Record( f, Recording::POP_TRANSLATION ); break;
+	case tr2c_frame::PUSH_TRANSFORM: Record( f, Recording::POP_TRANSFORM ); break;
+	case tr2c_frame::PUSH_CLIP: Record( f, Recording::POP_CLIP ); break;
+	}
 	return Ok();
 }
 
@@ -462,6 +510,12 @@ tr2c_status PushTransform( tr2c_frame* f, const float m[16] )
 	std::memcpy( static_cast<void*>( &mat ), m, sizeof( mat ) );
 	f->scene->PushTransform( mat );
 	f->pushes.push_back( tr2c_frame::PUSH_TRANSFORM );
+	if( Recording::Op* op = Record( f, Recording::PUSH_TRANSFORM ) )
+	{
+		op->off = uint32_t( f->rec->floats.size() );
+		op->n = 16;
+		f->rec->floats.insert( f->rec->floats.end(), m, m + 16 );
+	}
 	return Ok();
 }
 
@@ -478,6 +532,13 @@ tr2c_status PushClip( tr2c_frame* f, float x, float y, float w, float h )
 	}
 	f->scene->PushClipRectangle( x, y, w, h );
 	f->pushes.push_back( tr2c_frame::PUSH_CLIP );
+	if( Recording::Op* op = Record( f, Recording::PUSH_CLIP ) )
+	{
+		op->v[0] = x;
+		op->v[1] = y;
+		op->v[2] = w;
+		op->v[3] = h;
+	}
 	return Ok();
 }
 
@@ -493,6 +554,10 @@ tr2c_status SetAlpha( tr2c_frame* f, float a )
 		return s;
 	}
 	f->scene->SetAccumulatedAlpha( a );
+	if( Recording::Op* op = Record( f, Recording::SET_ALPHA ) )
+	{
+		op->v[0] = a;
+	}
 	return Ok();
 }
 
@@ -516,6 +581,10 @@ tr2c_status SetEffect( tr2c_frame* f, int32_t effect )
 	}
 	f->scene->SetSpriteEffect( static_cast<Tr2SpriteObjectEffect>( effect ) );
 	f->effect = effect;
+	if( Recording::Op* op = Record( f, Recording::SET_EFFECT ) )
+	{
+		op->u = uint32_t( effect );
+	}
 	return Ok();
 }
 
@@ -530,6 +599,10 @@ tr2c_status SetBlend( tr2c_frame* f, int32_t blend )
 		return Fail( TR2C_E_INVALID_ARG, "set_blend: unknown blend mode %d", blend );
 	}
 	f->scene->SetBlendmode( static_cast<Tr2SpriteObjectBlendMode>( blend ) );
+	if( Recording::Op* op = Record( f, Recording::SET_BLEND ) )
+	{
+		op->u = uint32_t( blend );
+	}
 	return Ok();
 }
 
@@ -540,6 +613,13 @@ tr2c_status SetColor( tr2c_frame* f, float r, float g, float b, float a )
 		return s;
 	}
 	f->scene->SetColor( Color( r, g, b, a ) );
+	if( Recording::Op* op = Record( f, Recording::SET_COLOR ) )
+	{
+		op->v[0] = r;
+		op->v[1] = g;
+		op->v[2] = b;
+		op->v[3] = a;
+	}
 	return Ok();
 }
 
@@ -559,6 +639,12 @@ tr2c_status SetTexture( tr2c_frame* f, uint32_t slot, tr2c_texture* tex, uint32_
 	}
 	Tr2AtlasTexturePtr t( reinterpret_cast<Tr2AtlasTexture*>( tex ) );
 	f->scene->SetTexture( slot, t, static_cast<Tr2Sprite2dTextureSettings>( settings ) );
+	if( Recording::Op* op = Record( f, Recording::SET_TEXTURE ) )
+	{
+		op->u = slot;
+		op->n = settings;
+		op->p = tex;
+	}
 	return Ok();
 }
 
@@ -573,6 +659,14 @@ tr2c_status SetTextureWindow( tr2c_frame* f, uint32_t slot, float x, float y, fl
 		return Fail( TR2C_E_INVALID_ARG, "set_texture_window: slot %u (0 or 1)", slot );
 	}
 	f->scene->SetTextureWindow( slot, x, y, w, h );
+	if( Recording::Op* op = Record( f, Recording::SET_TEXTURE_WINDOW ) )
+	{
+		op->u = slot;
+		op->v[0] = x;
+		op->v[1] = y;
+		op->v[2] = w;
+		op->v[3] = h;
+	}
 	return Ok();
 }
 
@@ -584,6 +678,20 @@ tr2c_status DrawQuad( tr2c_frame* f, float x, float y, float w, float h, const f
 	if( tr2c_status s = CheckFrame( "draw_quad", f ) )
 	{
 		return s;
+	}
+	// Recorded even when the textures are not ready yet, so a replay draws it once they are.
+	if( Recording::Op* op = RecordDraw( f, Recording::DRAW_QUAD ) )
+	{
+		op->v[0] = x;
+		op->v[1] = y;
+		op->v[2] = w;
+		op->v[3] = h;
+		if( uv )
+		{
+			op->off = uint32_t( f->rec->floats.size() );
+			op->n = 8;
+			f->rec->floats.insert( f->rec->floats.end(), uv, uv + 8 );
+		}
 	}
 	Tr2Sprite2dD3DVertex verts[4];
 	const auto sfx = static_cast<Tr2SpriteObjectEffect>( f->effect );
@@ -639,6 +747,15 @@ tr2c_status DrawTriangles( tr2c_frame* f, const tr2c_vertex* v, uint32_t vcount,
 	if( !icount )
 	{
 		return Ok();
+	}
+	if( Recording::Op* op = RecordDraw( f, Recording::DRAW_TRIANGLES ) )
+	{
+		op->off = uint32_t( f->rec->verts.size() );
+		op->n = vcount;
+		op->off2 = uint32_t( f->rec->indices.size() );
+		op->n2 = icount;
+		f->rec->verts.insert( f->rec->verts.end(), v, v + vcount );
+		f->rec->indices.insert( f->rec->indices.end(), idx, idx + icount );
 	}
 
 	const uint32_t maxV = std::max( 3u, f->scene->GetMaxVertexCountPerDrawCall() );
@@ -774,6 +891,10 @@ tr2c_status Replay( tr2c_frame* f, const tr2c_display_list* dl )
 		return Fail( TR2C_E_STATE, "replay: not allowed while capturing" );
 	}
 	f->scene->ReplayCapture( const_cast<Tr2Sprite2dDisplayList*>( reinterpret_cast<const Tr2Sprite2dDisplayList*>( dl ) ) );
+	if( Recording::Op* op = RecordDraw( f, Recording::REPLAY ) )
+	{
+		op->p = dl;
+	}
 	return Ok();
 }
 
@@ -785,12 +906,55 @@ tr2c_status DisplayListDestroy( tr2c_display_list* dl )
 	}
 	if( dl )
 	{
+		NoteChanged( dl );
 		Tr2Sprite2dDisplayList* p = reinterpret_cast<Tr2Sprite2dDisplayList*>( dl );
 		CCP_DELETE p;
 	}
 	return Ok();
 }
 
+}
+
+//////////////////////////////////////////////////////////////////////////
+// Replay of a recorded gather (Tr2CSpriteHook::GatherSprites)
+
+void tr2c::Play( tr2c_frame* f, const Recording& rec )
+{
+	CCP_ASSERT( !f->rec );
+	for( const Recording::Op& op : rec.ops )
+	{
+		switch( op.kind )
+		{
+		case Recording::PUSH_TRANSLATION: PushTranslation( f, op.v[0], op.v[1] ); break;
+		case Recording::POP_TRANSLATION: PopTranslation( f ); break;
+		case Recording::PUSH_TRANSFORM: PushTransform( f, rec.floats.data() + op.off ); break;
+		case Recording::POP_TRANSFORM: PopTransform( f ); break;
+		case Recording::PUSH_CLIP: PushClip( f, op.v[0], op.v[1], op.v[2], op.v[3] ); break;
+		case Recording::POP_CLIP: PopClip( f ); break;
+		case Recording::SET_ALPHA: SetAlpha( f, op.v[0] ); break;
+		case Recording::SET_EFFECT: SetEffect( f, int32_t( op.u ) ); break;
+		case Recording::SET_BLEND: SetBlend( f, int32_t( op.u ) ); break;
+		case Recording::SET_COLOR: SetColor( f, op.v[0], op.v[1], op.v[2], op.v[3] ); break;
+		case Recording::SET_TEXTURE:
+			SetTexture( f, op.u, const_cast<tr2c_texture*>( static_cast<const tr2c_texture*>( op.p ) ), op.n );
+			break;
+		case Recording::SET_TEXTURE_WINDOW: SetTextureWindow( f, op.u, op.v[0], op.v[1], op.v[2], op.v[3] ); break;
+		case Recording::DRAW_QUAD:
+			DrawQuad( f, op.v[0], op.v[1], op.v[2], op.v[3], op.n ? rec.floats.data() + op.off : nullptr );
+			break;
+		case Recording::DRAW_TRIANGLES:
+			DrawTriangles( f, rec.verts.data() + op.off, op.n, rec.indices.data() + op.off2, op.n2 );
+			break;
+		case Recording::REPLAY: Replay( f, static_cast<const tr2c_display_list*>( op.p ) ); break;
+		case Recording::TEXT_DRAW:
+			TextDraw( f, const_cast<tr2c_text*>( static_cast<const tr2c_text*>( op.p ) ), op.v[0], op.v[1], op.v[2], op.v[3] );
+			break;
+		}
+	}
+}
+
+namespace
+{
 uint32_t DeviceGenerationFn()
 {
 	return DeviceGeneration();

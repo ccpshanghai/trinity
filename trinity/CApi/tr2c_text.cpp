@@ -88,6 +88,7 @@ tr2c_status TextSetFont( tr2c_text* t, const char* res_path, uint32_t len, float
 	{
 		return Fail( TR2C_E_INVALID_ARG, "text_set_font: NUL in font path" );
 	}
+	NoteChanged( t );
 	t->measurer->SetFont( path );
 	t->measurer->SetFontSize( int( std::lround( size_px ) ) );
 	t->dirty = true;
@@ -160,6 +161,7 @@ tr2c_status TextReset( tr2c_text* t )
 	{
 		return s;
 	}
+	NoteChanged( t );
 	t->measurer->Reset();
 	t->dirty = true;
 	return Ok();
@@ -179,6 +181,7 @@ tr2c_status TextAddLine( tr2c_text* t, const char* utf8, uint32_t len, int32_t x
 	{
 		return Ok();
 	}
+	NoteChanged( t );
 	Tr2FontMeasurer* m = t->measurer;
 	// CommitText does not reset the cursor: without this every line after the first moves right.
 	m->SetCursorX( 0 );
@@ -237,6 +240,23 @@ tr2c_status TextDraw( tr2c_frame* f, tr2c_text* t, float r, float g, float b, fl
 	f->scene->SetSpriteEffect( TR2_SFX_FONT );
 	f->effect = TR2C_EFFECT_FONT;
 	m->SubmitSprites( f->scene );
+	if( f->rec )
+	{
+		// Inside a capture the glyphs went into the display list; only the effect change is
+		// seen outside it.
+		Recording::Op& op = f->rec->ops.emplace_back();
+		op.kind = f->capturing ? Recording::SET_EFFECT : Recording::TEXT_DRAW;
+		op.u = TR2C_EFFECT_FONT;
+		op.p = t;
+		if( f->capturing )
+		{
+			op.p = nullptr;
+		}
+		op.v[0] = r;
+		op.v[1] = g;
+		op.v[2] = b;
+		op.v[3] = a;
+	}
 	return Ok();
 }
 
@@ -246,6 +266,7 @@ tr2c_status TextRelease( tr2c_text* t )
 	{
 		return s;
 	}
+	NoteChanged( t );
 	delete t; // drops the measurer's reference
 	return Ok();
 }

@@ -32,6 +32,79 @@ uint32_t DeviceGeneration();
 tr2c_status DecodeUtf8( const char* fn, const char* utf8, uint32_t len, std::vector<uint32_t>& out );
 }
 
+namespace tr2c
+{
+// What one gather callback drew, as the frame calls it made, so Tr2CSpriteHook can draw an
+// unchanged frame again without calling back (tr2c.h, hook_set_dirty). Pointers to C-side
+// objects (texture, text, display list) stay valid while ContentEpoch() is unchanged: releasing
+// or changing one bumps it.
+struct Recording
+{
+	enum Kind : uint8_t
+	{
+		PUSH_TRANSLATION,
+		POP_TRANSLATION,
+		PUSH_TRANSFORM, // 16 floats at off
+		POP_TRANSFORM,
+		PUSH_CLIP,
+		POP_CLIP,
+		SET_ALPHA,
+		SET_EFFECT,
+		SET_BLEND,
+		SET_COLOR,
+		SET_TEXTURE,
+		SET_TEXTURE_WINDOW,
+		DRAW_QUAD,      // n = 8: uvs at off; n = 0: no uvs
+		DRAW_TRIANGLES, // n vertices at off, n2 indices at off2
+		REPLAY,
+		TEXT_DRAW
+	};
+	struct Op
+	{
+		Kind kind;
+		uint32_t u = 0;          // slot, effect, blend, texture settings
+		float v[4] = {};         // x y w h, colour, translation, alpha
+		const void* p = nullptr; // texture, text or display list
+		uint32_t off = 0, n = 0, off2 = 0, n2 = 0;
+	};
+
+	std::vector<Op> ops;
+	std::vector<float> floats;
+	std::vector<tr2c_vertex> verts;
+	std::vector<uint32_t> indices;
+	bool valid = false;      // complete and replayable
+	uint32_t epoch = 0;      // ContentEpoch() when recorded
+	uint32_t generation = 0; // DeviceGeneration() when recorded
+
+	void Clear()
+	{
+		ops.clear();
+		floats.clear();
+		verts.clear();
+		indices.clear();
+		valid = false;
+	}
+	bool References( const void* obj ) const
+	{
+		for( const Op& op : ops )
+		{
+			if( op.p == obj )
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+};
+
+// Bumped whenever a texture, text or display list is released or changed.
+uint32_t ContentEpoch();
+// Called before obj (a tr2c texture, text or display list) is released or changed. Inside a
+// gather callback that is recording, a change to an object it already drew from spoils the
+// recording.
+void NoteChanged( const void* obj );
+}
+
 // The frame a gather callback receives. Lives on the stack of Tr2CSpriteHook::GatherSprites.
 struct tr2c_frame
 {
@@ -48,6 +121,8 @@ struct tr2c_frame
 	float savedAlpha = 1.0f;      // scene's accumulated alpha before the callback, restored after
 	bool capturing = false;       // between capture_begin and capture_end
 	std::vector<uint8_t> pushes;  // LIFO of Push, unwound after the callback if left open
+	tr2c::Recording* rec = nullptr; // set while the callback's calls are being recorded
+	bool recSpoiled = false;        // the recording cannot be replayed
 };
 
 namespace tr2c
@@ -57,6 +132,8 @@ tr2c_status CheckFrame( const char* fn, tr2c_frame* f );
 // Called by Tr2CSpriteHook::GatherSprites around the callback.
 void BeginFrame( tr2c_frame* f );
 void EndFrame( tr2c_frame* f );
+// Issues a recording's calls into f, between BeginFrame and EndFrame.
+void Play( tr2c_frame* f, const Recording& rec );
 }
 
 // Function table entries implemented outside tr2c_api.cpp.

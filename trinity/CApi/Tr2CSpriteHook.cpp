@@ -42,9 +42,33 @@ void Tr2CSpriteHook::GatherSprites( Tr2Sprite2dScene* renderer )
 	frame.scene = renderer;
 	frame.hook = this;
 
+	const bool replay = !m_isDirty && m_recording.valid && m_recording.epoch == tr2c::ContentEpoch() &&
+		m_recording.generation == tr2c::DeviceGeneration();
+
 	// hook_release refuses to run inside this callback, so the hook outlives it.
 	tr2c::BeginFrame( &frame );
-	m_fn( &frame, m_user );
+	if( replay )
+	{
+		tr2c::Play( &frame, m_recording );
+		++m_replays;
+	}
+	else
+	{
+		m_recording.Clear();
+		frame.rec = &m_recording;
+		m_fn( &frame, m_user );
+		frame.rec = nullptr;
+		++m_callbacks;
+		// A callback that left a push or a capture open, or changed something it had drawn
+		// from, is called again next time.
+		m_recording.valid = !frame.recSpoiled && !frame.capturing && frame.pushes.empty();
+		m_recording.epoch = tr2c::ContentEpoch();
+		m_recording.generation = tr2c::DeviceGeneration();
+		if( !m_recording.valid )
+		{
+			m_recording.Clear();
+		}
+	}
 	tr2c::EndFrame( &frame );
 
 	m_isDirty = false;
@@ -61,6 +85,7 @@ void Tr2CSpriteHook::ReleaseResources( TriStorage s )
 	// Display lists recorded through this hook are gone (Tr2Sprite2dDisplayList::ReleaseResources),
 	// and the font manager drops its glyph atlas textures: tell the C side.
 	tr2c::BumpDeviceGeneration();
+	m_recording.Clear();
 	SetDirty();
 }
 

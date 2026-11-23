@@ -166,6 +166,7 @@ tr2c_status TextureRelease( tr2c_texture* t )
 	}
 	if( t )
 	{
+		NoteChanged( t );
 		Tr2AtlasTexturePtr tex;
 		tex.Attach( TexOf( t ) ); // drops the handle's reference
 	}

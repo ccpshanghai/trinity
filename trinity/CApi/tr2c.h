@@ -66,7 +66,11 @@ typedef struct tr2c_font_metrics {
     float line_height;/* ascender - descender, as CarbonUI's Label */
 } tr2c_font_metrics;
 
-/* Called once per scene render while the scene gathers its children.
+/* Called while the scene gathers its children, on the first render and then only on
+ * renders after hook_set_dirty (or a device reset, or the hook being shown again). On other
+ * renders the hook draws again what the last call drew, by repeating its frame calls; so
+ * call hook_set_dirty whenever the output would change. Releasing or changing a texture,
+ * text or display list also makes the next render call back.
  * Return value is ignored; errors are reported through last_error. */
 typedef void (*tr2c_gather_fn)(tr2c_frame* frame, void* user);
 
@@ -90,7 +94,7 @@ typedef struct tr2c_api {
     /* Attach: scene is the IRoot* of a Tr2Sprite2dScene (cb_native_ptr).
      * Creates a Tr2CSpriteHook and appends it to scene.children. */
     tr2c_status (*hook_create)(void* scene, tr2c_gather_fn fn, void* user, tr2c_hook** out_hook);
-    tr2c_status (*hook_set_dirty)(tr2c_hook* hook);   /* scene SetChildDirty */
+    tr2c_status (*hook_set_dirty)(tr2c_hook* hook);   /* next render calls the gather callback */
     tr2c_status (*hook_release)(tr2c_hook* hook);     /* removes from scene.children */
 
     /* Frame (only inside the gather callback). Wraps Tr2Sprite2dScene methods. */
