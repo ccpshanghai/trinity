@@ -153,6 +153,8 @@ protected:
 	// The async management itself is done in TriAsyncLoadedResource.
 	virtual LoadingResult DoLoad();
 	virtual bool DoPrepare();
+	// Applies the .gr2 to .cmf replacement rule (TriGeometryRes.h). Runs on a loader thread.
+	bool DoOpenStream() override;
 
 	bool BakeBlendshape( unsigned int meshIx, const std::vector<float>& weights, Tr2SuballocatedBuffer::Allocation& pVertexData, Tr2RenderContextAL& renderContext, unsigned int vertexDataSize, const NameToWeightMap* nameToWeight, bool deltaOnly );
 
@@ -166,6 +168,11 @@ protected:
 #endif
 	Tr2CmfContents m_cmfContents;
 	bool m_useCMF;
+
+	// The file the last open read when the .gr2 to .cmf rule applied; empty otherwise. m_path
+	// stays the requested name.
+	std::wstring m_actualPath;
+	const std::wstring& OpenedPath() const { return m_actualPath.empty() ? m_path : m_actualPath; }
 };
 
 TYPEDEF_BLUECLASS_WR_SHUTDOWN( TriGrannyRes );

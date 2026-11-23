@@ -15,6 +15,7 @@
 #include "Utilities/BoundingBox.h"
 
 #include <cctype>
+#include <cwctype>
 #include "TbbStub.h"
 
 using namespace Tr2RenderContextEnum;
@@ -58,6 +59,70 @@ void HandleGrannyDeprecation( const std::wstring& path )
 	}
 	break;
 	}
+}
+
+namespace
+{
+
+bool EndsWithIgnoringCase( const std::wstring& path, const wchar_t* lowerSuffix, size_t length )
+{
+	if( path.size() < length )
+	{
+		return false;
+	}
+	const wchar_t* tail = path.c_str() + path.size() - length;
+	for( size_t i = 0; i < length; ++i )
+	{
+		if( towlower( tail[i] ) != lowerSuffix[i] )
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+} // namespace
+
+bool CmfPathForGr2( const std::wstring& path, std::wstring& cmfPath )
+{
+	if( path.find( L'?' ) != std::wstring::npos || !EndsWithIgnoringCase( path, L".gr2", 4 ) )
+	{
+		return false;
+	}
+	cmfPath.assign( path, 0, path.size() - 4 );
+	cmfPath += L".cmf";
+	return true;
+}
+
+bool IsCmfPath( const std::wstring& path )
+{
+	return EndsWithIgnoringCase( path, L".cmf", 4 );
+}
+
+bool OpenCmfInsteadOfGr2( const std::wstring& requested, IBlueStreamPtr& stream, std::wstring& opened )
+{
+	std::wstring cmfPath;
+	if( !CmfPathForGr2( requested, cmfPath ) )
+	{
+		return false;
+	}
+	// GetStreamFromPathW answering no IS the existence check: one filesystem hit rather than a
+	// FileExists followed by an open. A .gr2 with no .cmf beside it falls through on every load.
+	IBlueStreamPtr cmfStream;
+	if( !BePaths->GetStreamFromPathW( cmfPath.c_str(), &cmfStream ) || !cmfStream )
+	{
+		return false;
+	}
+	stream = cmfStream;
+	opened = std::move( cmfPath );
+	return true;
+}
+
+void LogGeometryOpen( const char* resourceType, const std::wstring& requested, const std::wstring& opened )
+{
+	const bool replaced = !opened.empty() && opened != requested && IsCmfPath( opened ) && !IsCmfPath( requested );
+	CCP_LOG( "geometry: %s requested %ls opened %ls%s", resourceType, requested.c_str(),
+			 opened.empty() ? L"(nothing)" : opened.c_str(), replaced ? " (.cmf for .gr2)" : "" );
 }
 
 
@@ -536,6 +601,20 @@ void TriGeometryRes::GetDescription( std::string& desc )
 }
 #endif
 
+// Called on the background loading thread
+bool TriGeometryRes::DoOpenStream()
+{
+	m_actualPath.clear();
+	if( OpenCmfInsteadOfGr2( m_path, m_dataStream, m_actualPath ) )
+	{
+		LogGeometryOpen( "TriGeometryRes", m_path, m_actualPath );
+		return true;
+	}
+	const bool opened = BlueAsyncRes::DoOpenStream();
+	LogGeometryOpen( "TriGeometryRes", m_path, opened ? GetFilePath() : std::wstring() );
+	return opened;
+}
+
 // This gets called on the background loading thread
 BlueAsyncRes::LoadingResult TriGeometryRes::DoLoad()
 {
@@ -564,7 +643,8 @@ BlueAsyncRes::LoadingResult TriGeometryRes::DoLoad()
 		return LR_FAILED;
 	}
 
-	if( m_path.size() >= 4 && m_path.compare( m_path.size() - 4, 4, L".cmf" ) == 0 )
+	// The opened file decides the format: a requested .gr2 may have been answered by its .cmf.
+	if( IsCmfPath( OpenedPath() ) )
 	{
 		if( ReadCMFFile() )
 		{
@@ -1246,7 +1326,7 @@ bool TriGeometryRes::ReadCMFFile()
 	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	m_useCMF = true;
-	m_cmfContents = Tr2CmfContents( *m_dataStream, CW2A( m_path.c_str() ) );
+	m_cmfContents = Tr2CmfContents( *m_dataStream, CW2A( OpenedPath().c_str() ) );
 	if( !m_cmfContents || !m_cmfContents.GetData() )
 	{
 		return false;

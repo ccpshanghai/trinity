@@ -52,6 +52,24 @@ enum class GrannyDeprecationLevel
 
 void HandleGrannyDeprecation( const std::wstring& path );
 
+// The .gr2 to .cmf replacement rule. Content names geometry by its .gr2 path (SOF data, .red
+// files); a .cmf converted from that .gr2 and placed beside it under the same name is opened
+// instead, so the content does not have to be rewritten and a build without Granny can still
+// load it. Same shape as textures' .dds to .ktx2 (TriTextureRes.cpp): the extension match is
+// case-insensitive, a path carrying a query string is left alone, and the existence check is
+// the open itself. The resource keeps the requested path as its name; only the file differs.
+//
+// "....gr2" -> "....cmf"; false when the path is not a .gr2.
+bool CmfPathForGr2( const std::wstring& path, std::wstring& cmfPath );
+// True when the path ends in .cmf, in any case.
+bool IsCmfPath( const std::wstring& path );
+// For a requested .gr2, opens the .cmf beside it when there is one: true, with the stream and
+// the opened path filled in. Otherwise false, and neither is changed.
+bool OpenCmfInsteadOfGr2( const std::wstring& requested, IBlueStreamPtr& stream, std::wstring& opened );
+// One log line per geometry file a resource opens, with the requested path, the opened path
+// (empty when the open failed) and whether the replacement rule applied.
+void LogGeometryOpen( const char* resourceType, const std::wstring& requested, const std::wstring& opened );
+
 struct TriRtGeometryConstants
 {
 	uint32_t indexBufferId;
@@ -407,6 +425,11 @@ private:
 	Tr2CmfContents m_cmfContents;
 	bool m_useCMF;
 
+	// The file the last open read when the .gr2 to .cmf rule applied; empty otherwise. m_path
+	// stays the requested name, which the resource is keyed and logged by.
+	std::wstring m_actualPath;
+	const std::wstring& OpenedPath() const { return m_actualPath.empty() ? m_path : m_actualPath; }
+
 	int32_t m_forcedLodIndex = -1;
 	bool m_forceLod = false;
 
@@ -421,6 +444,8 @@ private:
 	// The async management itself is done in TriAsyncLoadedResource.
 	virtual LoadingResult DoLoad();
 	virtual bool DoPrepare();
+	// Applies the .gr2 to .cmf replacement rule. Runs on a loader thread.
+	bool DoOpenStream() override;
 
 #if WITH_GRANNY
 	// Read granny file, keep data in m_pGrannyFile

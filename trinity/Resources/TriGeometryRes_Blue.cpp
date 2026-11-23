@@ -15,9 +15,9 @@ IBlueResource* CreateStaticGeometryResource( const wchar_t* name )
 	return p.Detach();
 }
 
-#if WITH_GRANNY
+// gr2 is registered without Granny too: a requested .gr2 with a .cmf beside it loads the .cmf
+// (the replacement rule in TriGeometryRes.h); one without fails in DoLoad and says so.
 BLUE_REGISTER_RESOURCE_EXTENSION( L"gr2", CreateStaticGeometryResource );
-#endif
 BLUE_REGISTER_RESOURCE_EXTENSION( L"cmf", CreateStaticGeometryResource );
 
 

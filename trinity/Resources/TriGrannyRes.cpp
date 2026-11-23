@@ -117,9 +117,9 @@ IBlueResource* CreateGrannyResource( const wchar_t* name )
 	return p.Detach();
 }
 
-#if WITH_GRANNY
+// gr2raw is registered without Granny too: a requested .gr2 with a .cmf beside it loads the
+// .cmf (the replacement rule in TriGeometryRes.h); one without fails in DoLoad and says so.
 BLUE_REGISTER_RESOURCE_EXTENSION( L"gr2raw", CreateGrannyResource );
-#endif
 BLUE_REGISTER_RESOURCE_EXTENSION( L"cmfraw", CreateGrannyResource );
 
 
@@ -175,7 +175,12 @@ bool TriGrannyRes::Load( const std::string& path )
 	m_path = CA2W( path.c_str() );
 	m_ext = L"raw";
 	m_dataStream = nullptr;
-	BePaths->GetStreamFromPathW( m_path.c_str(), &m_dataStream );
+	m_actualPath.clear();
+	if( !OpenCmfInsteadOfGr2( m_path, m_dataStream, m_actualPath ) )
+	{
+		BePaths->GetStreamFromPathW( m_path.c_str(), &m_dataStream );
+	}
+	LogGeometryOpen( "TriGrannyRes", m_path, m_dataStream ? OpenedPath() : std::wstring() );
 	if( !m_dataStream )
 	{
 		CCP_LOGERR( "TriGrannyRes::Load: Failed to open stream for path %ls", m_path.c_str() );
@@ -197,15 +202,30 @@ bool TriGrannyRes::Load( const std::string& path )
 	return m_isGood;
 }
 
+// Called on the background loading thread
+bool TriGrannyRes::DoOpenStream()
+{
+	m_actualPath.clear();
+	if( OpenCmfInsteadOfGr2( m_path, m_dataStream, m_actualPath ) )
+	{
+		LogGeometryOpen( "TriGrannyRes", m_path, m_actualPath );
+		return true;
+	}
+	const bool opened = BlueAsyncRes::DoOpenStream();
+	LogGeometryOpen( "TriGrannyRes", m_path, opened ? GetFilePath() : std::wstring() );
+	return opened;
+}
+
 BlueAsyncRes::LoadingResult TriGrannyRes::DoLoad()
 {
 	TRINITY_STATS_ZONE( __FUNCTION__ );
 
-	if( m_path.size() >= 4 && m_path.compare( m_path.size() - 4, 4, L".cmf" ) == 0 )
+	// The opened file decides the format: a requested .gr2 may have been answered by its .cmf.
+	if( IsCmfPath( OpenedPath() ) )
 	{
 		m_useCMF = true;
 
-		m_cmfContents = Tr2CmfContents( *m_dataStream, CW2A( m_path.c_str() ) );
+		m_cmfContents = Tr2CmfContents( *m_dataStream, CW2A( OpenedPath().c_str() ) );
 		if( !m_cmfContents )
 		{
 			return LR_FAILED;
