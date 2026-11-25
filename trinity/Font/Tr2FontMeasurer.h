@@ -40,6 +40,20 @@ public:
 	unsigned int AddText( const std::wstring& text );
 
 	// Commits text previously added with AddText, shifting it by the given x,y coordinates
+	// Added for the tr2c engine C interface (carbon-ui-core). Same loop as AddText, but takes
+	// Unicode codepoints, so characters outside the BMP work where wchar_t is 16 bits. Stops at
+	// count or at the first 0.
+	unsigned int AddCodepoints( const uint32_t* codepoints, uint32_t count );
+	// Advances (xadvance + letter space, in px) of the glyphs in the last uncommitted text run,
+	// in order. Returns the number written (at most cap).
+	uint32_t GetPendingAdvances( float* out, uint32_t cap ) const;
+	// Ascender (positive) and descender (negative) in px of the current font and size, looked up
+	// the same way AddText does (falls back to TR2_FONT_FALLBACK). False if no font is found.
+	bool GetFontMetrics( int& ascender, int& descender ) const;
+	void SetCursorX( int x );
+	void SetLimit( int limit );
+	void SetLetterSpace( int letterSpace );
+
 	void CommitText( int shiftX, int shiftY );
 
 	// Cancels the last added text. Can be called repeatedly to undo
@@ -110,6 +124,8 @@ public:
 	void UnregisterForChangeNotification( ITr2FontMeasurerNotifyTarget* p );
 
 protected:
+	template <typename CharT>
+	unsigned int AddTextImpl( const CharT* text, size_t count );
 	void DrawToBuffer( uint32_t destWidth, uint32_t destHeight, void* pData, uint32_t pitch );
 
 	void NotifyListenersOfChange();
