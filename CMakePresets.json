@@ -310,7 +310,7 @@
       "inherits": "common",
       "cacheVariables": {
         "CMAKE_SYSTEM_NAME": "Android",
-        "CMAKE_SYSTEM_VERSION": "31",
+        "CMAKE_SYSTEM_VERSION": "33",
         "ANDROID_ABI": "arm64-v8a",
         "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/vendor/github.com/carbonengine/vcpkg-registry/toolchains/arm64-android-triplet.cmake"
       },
@@ -352,7 +352,7 @@
       "cacheVariables": {
         "CMAKE_SYSTEM_NAME": "iOS",
         "CMAKE_OSX_ARCHITECTURES": "arm64",
-        "CMAKE_OSX_DEPLOYMENT_TARGET": "26.0",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "17.0",
         "VCPKG_TARGET_ARCHITECTURE": "arm64",
         "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/vendor/github.com/carbonengine/vcpkg-registry/toolchains/arm64-ios-triplet.cmake"
       },
