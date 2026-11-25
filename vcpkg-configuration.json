@@ -9,7 +9,7 @@
       "kind": "git",
       "repository": "https://github.com/ccpshanghai/vcpkg-registry.git",
       "reference": "feat/prototype-host-switch",
-      "baseline": "8302e59402480911d079e7b29a163e59aa08efe7",
+      "baseline": "162221b39bf8cfc752f200ee14b06168377b4af5",
       "packages": [
         "python3",
         "carbon-*",
