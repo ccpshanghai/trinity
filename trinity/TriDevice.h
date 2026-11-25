@@ -9,6 +9,10 @@
 #include "TriViewport.h"
 #include <upscaling/Tr2UpscalingAL.h>
 
+// Invoke canonical names of AL enums in hooked signatures (trinityal cannot include Blue).
+BLUE_INVOKE_CANONICAL_NAME( Tr2UpscalingAL::Technique, "Tr2UpscalingAL::Technique" );
+BLUE_INVOKE_CANONICAL_NAME( Tr2UpscalingAL::Setting, "Tr2UpscalingAL::Setting" );
+
 BLUE_DECLARE_INTERFACE( ITr2Scene );
 BLUE_DECLARE_INTERFACE( ITr2Updateable );
 
@@ -251,6 +255,22 @@ private:
 	// callback (M6 second-half spec §6.1). Elsewhere the handle never changes and this is a
 	// same-handle rebuild -- a resize's cost, and no more.
 	bool SetOutputWindow( Tr2WindowHandle window );
+
+	// Rebuild presentation at a new back buffer size on the same window. A Wayland surface
+	// dictates no extent (currentExtent 0xFFFFFFFF), so the Vulkan AL takes the swapchain's size
+	// from the present parameters (Tr2PrimaryRenderContextVulkan.cpp, ChooseSwapChainExtent) and
+	// only this call makes the back buffer follow the window. Where the surface dictates the
+	// extent (Win32, Android) it keeps width/height and size-derived resources in step. The
+	// sequence is RefreshDeviceResources' (release, SetPresentParameters, prepare); the record
+	// (present parameters, width, height, viewport) changes only on success.
+	bool SetBackBufferSize( int32_t width, int32_t height );
+
+	// The swapchain's present mode as the AL chose it for presentationInterval among the modes the
+	// surface offers: "IMMEDIATE", "MAILBOX", "FIFO" or "FIFO_RELAXED" (Vulkan); "" while there is no
+	// swapchain and on the other backends. presentationInterval is what was asked for, this what was
+	// got (a surface may offer FIFO only). A change of presentationInterval takes effect at the next
+	// rebuild of presentation (RefreshDeviceResources, SetBackBufferSize, SetOutputWindow).
+	std::string GetPresentMode();
 
 	static void LogAllLiveResources( Tr2ALMemoryTypes flags = AL_MEMORY_VIDEO | AL_MEMORY_MANAGED );
 

@@ -174,6 +174,11 @@ void MetalUtils::SetupPixelFormatConversionTable( id<MTLDevice> device )
 	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_6x6_UNORM_SRGB] = MTLPixelFormatASTC_6x6_sRGB;
 	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_8x8_UNORM] = MTLPixelFormatASTC_8x8_LDR;
 	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_8x8_UNORM_SRGB] = MTLPixelFormatASTC_8x8_sRGB;
+	// ASTC HDR carries BC6H content on GPUs without BC. Apple GPUs sample it from A13 on (every
+	// device iOS 26 runs on), and the iOS simulator and Apple silicon Macs create it.
+	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_4x4_SFLOAT] = MTLPixelFormatASTC_4x4_HDR;
+	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_6x6_SFLOAT] = MTLPixelFormatASTC_6x6_HDR;
+	PixelFormatConversionTable[Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_8x8_SFLOAT] = MTLPixelFormatASTC_8x8_HDR;
 }
 
 MTLPixelFormat MetalUtils::GetMTLPixelFormat( Tr2RenderContextEnum::PixelFormat pixelFormat )

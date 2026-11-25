@@ -64,6 +64,10 @@ set(PUBLIC_HEADER_FILES
     include/TriVector.h
 )
 
+# tr2c engine C interface (carbon-ui-core). Listed here so the install rules above pick it up;
+# its sources are added in the separate block at the end of this file.
+list(APPEND PUBLIC_HEADER_FILES CApi/tr2c.h)
+
 if(BUILD_FOR_PYTHON_2)
     # This is only needed for py2 as the file now belongs in blue.
     # Unfortunatly the blue py2 branch cannot be updated at present due to security vulnerability work.
@@ -1849,8 +1853,13 @@ if(WITH_GRANNY)
     list(APPEND _SOURCES ${GRANNY_RELATED_SOURCES})
 endif()
 
-if(IOS OR ANDROID)
+if(IOS OR ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     #[[
+        Native Linux joined this list for the same reason: the shell creates the SDL window and
+        hands the AL a Wayland display and surface, and the platform halves below are _WIN32 /
+        __APPLE__ only, so keeping the shared half left _trinity_vulkan.so importing a
+        Tr2MainWindow typeinfo nothing defined.
+
         On iOS and Android the engine owns no OS window: the app shell creates it and hands the
         AL a CAMetalLayer or an ANativeWindow (M3 spec D5, M6 second-half spec D3), so
         Tr2MainWindow's platform half has no iOS or Android counterpart to write -- an NSWindow,
@@ -2198,6 +2207,36 @@ elseif(ANDROID)
                 SUFFIX ".so"
         )
     endif()
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if(BUILD_VULKAN)
+        # GCC does not compile .mm as empty C++. The Apple window sources are
+        # inside those files; the C++ window sources stay, guarded by _WIN32 / __APPLE__.
+        list(FILTER _SOURCES EXCLUDE REGEX "\\.mm$")
+
+        set(TRINITY_VULKAN_TARGET_NAME trinity_vulkan)
+        ccp_add_library(${TRINITY_VULKAN_TARGET_NAME} SHARED)
+        target_compile_definitions(${TRINITY_VULKAN_TARGET_NAME}
+            PRIVATE
+                TRINITY_PLATFORM=TRINITY_VULKAN
+                TRINITYNAME=_trinity_vulkan
+        )
+        set_shared_trinity_properties(${TRINITY_VULKAN_TARGET_NAME})
+        target_link_libraries(${TRINITY_VULKAN_TARGET_NAME}
+            PRIVATE
+                TrinityAL_vulkan
+        )
+        # _trinity_vulkan.so, no lib prefix — the name app/backend.py imports.
+        # The build rpath is the developer loop: vcpkg's shared libraries live in
+        # lib/, and a Python dlopen does not search that directory on its own.
+        set_target_properties(${TRINITY_VULKAN_TARGET_NAME}
+            PROPERTIES
+                OUTPUT_NAME "_trinity_vulkan"
+                PREFIX ""
+                SUFFIX ".so"
+        )
+        target_link_options(${TRINITY_VULKAN_TARGET_NAME} PRIVATE
+            "-Wl,-rpath,${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/lib")
+    endif()
 else()
     message(FATAL_ERROR "Unsupported trinity platform, only stub would be available!")
 endif()
@@ -2321,3 +2360,32 @@ if(BUILD_TESTING)
         endif()
     endif()
 endif()
+
+# tr2c engine C interface for carbon-ui-core (trinity/CApi). Kept as one separate block at the
+# end of the file, rather than in _SOURCES, so upstream merges of the source list do not
+# conflict. Only tr2c_get_api is exported (TR2C_API); everything else stays hidden.
+set(_TR2C_SOURCES
+    CApi/tr2c.h
+    CApi/tr2c_internal.h
+    CApi/tr2c_api.cpp
+    CApi/tr2c_texture.cpp
+    CApi/tr2c_text.cpp
+    CApi/Tr2CSpriteHook.h
+    CApi/Tr2CSpriteHook.cpp
+    CApi/Tr2CSpriteHook_Blue.cpp
+)
+if(APPLE)
+    # Compile the CApi sources as Objective-C++ so trinity_metal keeps a single
+    # OBJCXX precompiled header (its PCH includes MetalContext.h, which needs
+    # Foundation types such as NSString that a C++ PCH cannot parse).
+    set(_TR2C_CXX_SOURCES ${_TR2C_SOURCES})
+    list(FILTER _TR2C_CXX_SOURCES INCLUDE REGEX "\\.cpp$")
+    set_source_files_properties(${_TR2C_CXX_SOURCES} PROPERTIES LANGUAGE OBJCXX)
+endif()
+foreach(_tr2c_target trinity_stub trinity_dx11 trinity_dx12 trinity_vulkan trinity_metal)
+    if(TARGET ${_tr2c_target})
+        target_sources(${_tr2c_target} PRIVATE ${_TR2C_SOURCES})
+        target_include_directories(${_tr2c_target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/CApi)
+        target_compile_definitions(${_tr2c_target} PRIVATE TR2C_BUILDING)
+    endif()
+endforeach()

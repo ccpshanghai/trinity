@@ -1,0 +1,25 @@
+{
+  "$comment": "This registry's copy of the default registry's directx-dxc, adding an osx target. It shadows the default registry's port because a consumer lists `directx-dxc` under this registry's packages (trinity does, since M6 moved this port here from trinity's overlay-ports/). Upstream's supports expression is (windows & !arm32 & !uwp & !xbox) | (linux & x64), because DXC publishes release binaries for Windows and Linux only -- there is no macOS archive to download. That makes dxc unobtainable as a HOST tool on a Mac, which is where the Android AL test suite is configured from: its test shaders are compiled to SPIR-V at build time by dxc running on the host, resolved against VCPKG_HOST_TRIPLET (arm64-osx-release). This port adds an osx branch that builds the same tag from source inside the port (port-version 3, 2026-10-22; before that it installed a dxc built by hand on the machine, found through DXC_ROOT, which made the package depend on a file vcpkg neither fetched nor hashed). Everything the Windows and Linux branches do is untouched, so those two configurations still install the exact same upstream archives, and the port-version bump above upstream's is what makes vcpkg treat this as a distinct package. Drop `directx-dxc` from the consumers' packages lists, and this port, the day upstream ships macOS binaries. port-version 2 (2026-09-08): the osx branch also installs headers -- dxc's own four plus d3d12shader.h, d3dcommon.h and the five wsl/ MIDL stubs out of the DirectX-Headers submodule -- because ShaderCompiler's Vulkan back end is now built on macOS and links dxcompiler rather than only shelling out to the driver, and it drops Microsoft::DXIL from the compiler target's INTERFACE_LINK_LIBRARIES because a source build has no libdxil.dylib to link.",
+  "name": "directx-dxc",
+  "version-date": "2026-02-20",
+  "port-version": 3,
+  "description": "DirectX Shader Compiler (LLVM/Clang)",
+  "homepage": "https://github.com/microsoft/DirectXShaderCompiler",
+  "documentation": "https://github.com/microsoft/DirectXShaderCompiler/wiki",
+  "license": null,
+  "supports": "(windows & !arm32 & !uwp & !xbox) | (linux & x64) | osx",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    },
+    {
+      "name": "zlib",
+      "platform": "linux & !static"
+    }
+  ]
+}

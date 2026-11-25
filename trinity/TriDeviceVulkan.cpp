@@ -64,6 +64,18 @@ void TriDevice::HandleRenderTick( Be::Time realTime, Be::Time simTime )
 		renderContext.MarkFrameEvent( Tr2RenderContextEnum::FRAME_EVENT_PRESENT_FINISHED );
 	}
 
+	// A minimised Win32 window has a zero-sized surface, so no swapchain exists and Present
+	// began no frame (IsPresentationSuspendedVulkan). Rendering now would record into the
+	// previous, already submitted command buffer against a back buffer that is gone, and
+	// every TriStepClear logged "Clear failed" once per frame. Skip the rendering, as
+	// ShouldSkipFrame does; the update above (render jobs' update, post-update callbacks)
+	// has run, and so has everything else in the device's tick. Present tries again next
+	// frame and the first frame after the restore renders as usual.
+	if( renderContext.IsPresentationSuspendedVulkan() )
+	{
+		return;
+	}
+
 	renderContext.MarkFrameEvent( Tr2RenderContextEnum::FRAME_EVENT_RENDERING_STARTED );
 	if( !Render() )
 	{
