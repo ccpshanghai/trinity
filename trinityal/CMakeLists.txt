@@ -533,6 +533,14 @@ if(WIN32)
 
         ccp_add_library(TrinityAL_vulkan STATIC)
         target_compile_definitions(TrinityAL_vulkan PUBLIC TRINITY_PLATFORM=TRINITY_VULKAN VK_USE_PLATFORM_WIN32_KHR)
+        # The backend reads its debug switches (TRINITY_DRAW_LOG, TRINITY_SERIALIZE,
+        # TRINITY_PIPELINE_CACHE_DIR, ...) with getenv, the same call on Windows and
+        # Android. MSVC flags getenv as C4996 and suggests _dupenv_s, and the presets'
+        # warnings-as-errors turns that advice into a failed build. The reads are
+        # read-only and nothing here modifies the environment, so silence the MSVC-only
+        # advice for this target's own sources. PRIVATE keeps it from widening the
+        # warning set of anything that links the backend.
+        target_compile_definitions(TrinityAL_vulkan PRIVATE _CRT_SECURE_NO_WARNINGS)
         target_link_libraries(TrinityAL_vulkan PUBLIC
                                                     Vulkan::Headers
                                                     GPUOpen::VulkanMemoryAllocator
