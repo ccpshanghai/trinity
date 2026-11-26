@@ -115,6 +115,15 @@ namespace TrinityALImpl
 		case Tr2RenderContextEnum::PIXEL_FORMAT_BC7_TYPELESS: return VK_FORMAT_BC7_UNORM_BLOCK;
 		case Tr2RenderContextEnum::PIXEL_FORMAT_BC7_UNORM: return VK_FORMAT_BC7_UNORM_BLOCK;
 		case Tr2RenderContextEnum::PIXEL_FORMAT_BC7_UNORM_SRGB: return VK_FORMAT_BC7_SRGB_BLOCK;
+		// ASTC LDR. Only usable when the device reports and the device was created with
+		// textureCompressionASTC_LDR; Tr2CapsAL::SupportsAstcTextures says which, and nothing
+		// produces these formats unless it says yes (TriDevice gates the .ktx2 substitution on it).
+		case Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_4x4_UNORM: return VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
+		case Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_4x4_UNORM_SRGB: return VK_FORMAT_ASTC_4x4_SRGB_BLOCK;
+		case Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_6x6_UNORM: return VK_FORMAT_ASTC_6x6_UNORM_BLOCK;
+		case Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_6x6_UNORM_SRGB: return VK_FORMAT_ASTC_6x6_SRGB_BLOCK;
+		case Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_8x8_UNORM: return VK_FORMAT_ASTC_8x8_UNORM_BLOCK;
+		case Tr2RenderContextEnum::PIXEL_FORMAT_ASTC_8x8_UNORM_SRGB: return VK_FORMAT_ASTC_8x8_SRGB_BLOCK;
 		default:
 			return VK_FORMAT_UNDEFINED;
 		}
@@ -149,11 +158,13 @@ namespace TrinityALImpl
 		case VK_FORMAT_BC2_UNORM_BLOCK: return VK_FORMAT_BC2_SRGB_BLOCK;
 		case VK_FORMAT_BC3_UNORM_BLOCK: return VK_FORMAT_BC3_SRGB_BLOCK;
 		case VK_FORMAT_BC7_UNORM_BLOCK: return VK_FORMAT_BC7_SRGB_BLOCK;
+		case VK_FORMAT_ASTC_4x4_UNORM_BLOCK: return VK_FORMAT_ASTC_4x4_SRGB_BLOCK;
+		case VK_FORMAT_ASTC_6x6_UNORM_BLOCK: return VK_FORMAT_ASTC_6x6_SRGB_BLOCK;
+		case VK_FORMAT_ASTC_8x8_UNORM_BLOCK: return VK_FORMAT_ASTC_8x8_SRGB_BLOCK;
 		default:
 			// Exactly the UNORM formats GetVulkanFormat can produce that have a reachable
-			// sRGB sibling. ETC2 and ASTC have the same pairing and belong here as soon as
-			// the AL can name them -- Tr2RenderContextEnum::PixelFormat is DXGI-derived and
-			// currently cannot, so adding them now would be untestable.
+			// sRGB sibling. ETC2 has the same pairing and belongs here as soon as the AL can
+			// name it.
 			return VK_FORMAT_UNDEFINED;
 		}
 	}

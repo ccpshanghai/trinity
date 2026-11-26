@@ -2,6 +2,9 @@
 
 #include "StdAfx.h"
 
+#include <cstdlib>
+#include <cstring>
+
 #include "TriDevice.h"
 #include "Tr2Renderer.h"
 #include "Resources/TriGeometryRes.h"
@@ -97,6 +100,22 @@ HRESULT CreateDeviceInt(
 	// Here rather than in TriTextureRes because this is where a render context first exists and
 	// where the main thread still owns it -- the loader threads that read the flag cannot ask.
 	TriTextureRes::SetSubstituteKtx2ForDds( renderContext.GetCaps().SupportsAstcTextures() );
+
+	// TRINITY_KTX2_SUBSTITUTE=0 turns the substitution off again on a device that samples ASTC,
+	// so one build can show the same scene from the .dds (BC) and from the .ktx2 (ASTC) files.
+	// A comparison and debugging switch: a host decides whether its process ever sees it (the
+	// mobile hosts pass TRINITY_* only in their internal builds). Only "0" does anything; it can
+	// turn the substitution off, never on.
+	if( const char* substitute = getenv( "TRINITY_KTX2_SUBSTITUTE" ) )
+	{
+		if( strcmp( substitute, "0" ) == 0 && TriTextureRes::GetSubstituteKtx2ForDds() )
+		{
+			TriTextureRes::SetSubstituteKtx2ForDds( false );
+		}
+	}
+	CCP_LOG( "Texture loading: .ktx2 for .dds substitution %s (device samples ASTC: %s)",
+		TriTextureRes::GetSubstituteKtx2ForDds() ? "on" : "off",
+		renderContext.GetCaps().SupportsAstcTextures() ? "yes" : "no" );
 
 	return hr;
 }

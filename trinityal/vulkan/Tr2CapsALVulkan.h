@@ -14,7 +14,7 @@
 #define TRINITY_PLATFORM_IS_LOW_PERFORMACE 0
 #define TRINITY_PLATFORM_MAX_CONSTANT_BUFFER_SIZE ( 64 * 1024 )
 #define TRINITY_PLATFORM_SUPPORTS_RAY_TRACING 0
-#define TRINITY_PLATFORM_SUPPORTS_ASTC_TEXTURES 0
+#define TRINITY_PLATFORM_SUPPORTS_ASTC_TEXTURES 1
 
 
 class Tr2CapsAL
@@ -59,20 +59,21 @@ public:
 		return false;
 	}
 	// ASTC sampling, the one M3 asks about. A capability, not a platform (spec D7): the answer
-	// differs between two Metal devices, so a compile-time #if would be wrong even here.
+	// is the device's textureCompressionASTC_LDR, read when the device is created and enabled
+	// there in the same breath (Tr2PrimaryRenderContextAL::Create). A device that does not report
+	// it says no, and the .dds path keeps loading BC exactly as before.
 	bool SupportsAstcTextures() const
 	{
-		// Vulkan does define the ASTC formats and mobile Vulkan devices do sample them; this
-		// backend simply has no rows for them yet -- UtilitiesVulkan.cpp's table stops at BC.
-		// No until that changes, because a yes here would mean uploading blocks the format
-		// table cannot name.
-		return false;
+		return m_supportsAstcTextures;
 	}
 
 private:
 	Tr2CapsAL() {}
 	Tr2CapsAL( const Tr2CapsAL& ) {}
 	Tr2CapsAL& operator=( const Tr2CapsAL& ) { return *this; }
+
+	// Set once, from the enabled features, before anything can ask.
+	bool m_supportsAstcTextures = false;
 
 	friend class Tr2PrimaryRenderContextAL;
 };
