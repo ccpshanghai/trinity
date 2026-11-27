@@ -320,9 +320,14 @@ namespace TrinityALImpl
 			// and because an SEH unwind does not run C++ destructors, every object those tests
 			// had built leaked through to vkDestroyDevice: 40 of the 57 objects reported by
 			// VUID-vkDestroyDevice-device-05137 came from these four tests alone.
+			//
+			// The block extent comes from the format, not a literal 4: every BC format is 4x4,
+			// ASTC 6x6 and 8x8 are not, and a 4 here would tell the copy that a row of 6x6
+			// blocks is two thirds as many texels wide as it is. GetBlockWidth/GetBlockHeight
+			// answer 1 for an uncompressed format, which is the per-texel case below.
 			const bool isCompressed = Tr2RenderContextEnum::IsCompressedFormat( desc.GetFormat() );
-			const uint32_t blockWidth = isCompressed ? 4u : 1u;
-			const uint32_t blockHeight = isCompressed ? 4u : 1u;
+			const uint32_t blockWidth = isCompressed ? Tr2RenderContextEnum::GetBlockWidth( desc.GetFormat() ) : 1u;
+			const uint32_t blockHeight = isCompressed ? Tr2RenderContextEnum::GetBlockHeight( desc.GetFormat() ) : 1u;
 			const uint32_t blockBytes = isCompressed
 				? Tr2RenderContextEnum::GetBlockByteSize( desc.GetFormat() )
 				: Tr2RenderContextEnum::GetBytesPerPixel( desc.GetFormat() );
@@ -681,10 +686,7 @@ namespace TrinityALImpl
 			{
 				// Rows of blocks, not rows of texels -- the same distinction the upload path
 				// in Create has to make.
-				// Through the enum's block extent. Vulkan maps no ASTC format today
-				// (UtilitiesVulkan.cpp:152 says so), so this is not a behaviour change here --
-				// it is the same arithmetic stated once, so that the gap closing later does not
-				// need this line found again.
+				// Through the enum's block extent, which ASTC 6x6 and 8x8 need.
 				pitch = Tr2RenderContextEnum::GetBlockCount(
 							extent.width, Tr2RenderContextEnum::GetBlockWidth( desc.GetFormat() ) )
 					* Tr2RenderContextEnum::GetBlockByteSize( desc.GetFormat() );

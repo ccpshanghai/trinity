@@ -773,6 +773,15 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	// Tr2PipelineStatsQueryAL cannot be implemented at all without this.
 	enabledFeatures.pipelineStatisticsQuery = physicalDevice.features.pipelineStatisticsQuery;
 
+	// ASTC LDR sampling. Sampling an ASTC image without the feature enabled is illegal even on a
+	// device that reports it, so the format table's ASTC rows are only reachable through
+	// Tr2CapsAL::SupportsAstcTextures, which is set from this enabled value below. One line in the
+	// log says what the device reported and what was enabled, so a run shows which path its
+	// textures took (.ktx2/ASTC or .dds/BC).
+	enabledFeatures.textureCompressionASTC_LDR = physicalDevice.features.textureCompressionASTC_LDR;
+	CCP_LOG( "Vulkan texture compression: ASTC_LDR reported=%d enabled=%d",
+		int( physicalDevice.features.textureCompressionASTC_LDR ), int( enabledFeatures.textureCompressionASTC_LDR ) );
+
 	VkDeviceCreateInfo device_create_info = {
 		VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 		&enabledDynamicRendering,
@@ -894,6 +903,7 @@ ALResult Tr2PrimaryRenderContextAL::CreateDevice(
 	m_physicalDevice = physicalDevice.device;
 	m_physicalDeviceProperties = physicalDevice.properties;
 	m_enabledFeatures = enabledFeatures;
+	m_caps.m_supportsAstcTextures = enabledFeatures.textureCompressionASTC_LDR == VK_TRUE;
 	m_vkCmdBeginRendering = beginRendering;
 	m_vkCmdEndRendering = endRendering;
 	m_vkCmdPipelineBarrier2 = pipelineBarrier2;
