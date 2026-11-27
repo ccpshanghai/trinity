@@ -24,9 +24,33 @@
 #include "winuser.h"
 #endif
 
+namespace
+{
+// TRINITY_KTX2_SUBSTITUTE=0, read once where the device sets the substitution (below). MSVC's
+// getenv is C4996 under warnings-as-errors, so Windows reads it with _dupenv_s.
+bool Ktx2SubstitutionSwitchedOff()
+{
+#if defined( _MSC_VER )
+	char* value = nullptr;
+	size_t length = 0;
+	if( _dupenv_s( &value, &length, "TRINITY_KTX2_SUBSTITUTE" ) != 0 || value == nullptr )
+	{
+		return false;
+	}
+	const bool off = strcmp( value, "0" ) == 0;
+	free( value );
+	return off;
+#else
+	const char* value = getenv( "TRINITY_KTX2_SUBSTITUTE" );
+	return value != nullptr && strcmp( value, "0" ) == 0;
+#endif
+}
+}
+
 
 #if TBB_ENABLED
 #include <oneapi/tbb.h>
+
 
 size_t g_currentThreadCount = tbb::info::default_concurrency();
 tbb::global_control* g_threadCountControl = new tbb::global_control( tbb::global_control::max_allowed_parallelism, g_currentThreadCount );
@@ -106,12 +130,9 @@ HRESULT CreateDeviceInt(
 	// A comparison and debugging switch: a host decides whether its process ever sees it (the
 	// mobile hosts pass TRINITY_* only in their internal builds). Only "0" does anything; it can
 	// turn the substitution off, never on.
-	if( const char* substitute = getenv( "TRINITY_KTX2_SUBSTITUTE" ) )
+	if( Ktx2SubstitutionSwitchedOff() && TriTextureRes::GetSubstituteKtx2ForDds() )
 	{
-		if( strcmp( substitute, "0" ) == 0 && TriTextureRes::GetSubstituteKtx2ForDds() )
-		{
-			TriTextureRes::SetSubstituteKtx2ForDds( false );
-		}
+		TriTextureRes::SetSubstituteKtx2ForDds( false );
 	}
 	CCP_LOG( "Texture loading: .ktx2 for .dds substitution %s (device samples ASTC: %s)",
 		TriTextureRes::GetSubstituteKtx2ForDds() ? "on" : "off",
