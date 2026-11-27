@@ -159,8 +159,9 @@ TEST_F( Ktx2Astc, TheCapabilityAnswersForThisDevice )
 {
 	ENSURE_GPU_OR_SKIP
 
-	// Not an assertion about the answer -- it is false on three of the five backends by design, false
-	// on an Intel Mac, and on Vulkan it is whatever the device reports for textureCompressionASTC_LDR. What is asserted is that the query is answerable and consistent
+	// Not an assertion about the answer -- it is false on three of the five backends by design,
+	// false on an Intel Mac, and on Vulkan it is whatever the device reports for
+	// textureCompressionASTC_LDR. What is asserted is that the query is answerable and consistent
 	// between two calls, so the test below skips for a stated reason rather than by accident.
 	const bool supported = renderContext->GetCaps().SupportsAstcTextures();
 	EXPECT_EQ( supported, renderContext->GetCaps().SupportsAstcTextures() );
