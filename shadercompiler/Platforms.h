@@ -13,6 +13,8 @@ enum Platform
 
 	PLATFORM_METAL = 10,
 
+	PLATFORM_VULKAN = 20,
+
 	_PLATFORM_END,
 };
 
@@ -25,6 +27,8 @@ inline bool IsValidPlatform( Platform platform )
 	case PLATFORM_DX12:
 		return true;
 	case PLATFORM_METAL:
+		return true;
+	case PLATFORM_VULKAN:
 		return true;
 	default:
 		return false;
@@ -41,6 +45,8 @@ inline const char* GetPlatformShortName( Platform platform )
 		return "dx12";
 	case PLATFORM_METAL:
 		return "mtl";
+	case PLATFORM_VULKAN:
+		return "vulkan";
 	default:
 		return "INVALID";
 	}
@@ -56,6 +62,8 @@ inline const char* GetPlatformLongName( Platform platform )
 		return "DirectX 12";
 	case PLATFORM_METAL:
 		return "Metal";
+	case PLATFORM_VULKAN:
+		return "Vulkan";
 	default:
 		return "INVALID";
 	}
@@ -71,6 +79,8 @@ inline const char* GetPlatformIdString( Platform platform )
 		return "6";
 	case PLATFORM_METAL:
 		return "10";
+	case PLATFORM_VULKAN:
+		return "20";
 	default:
 		return "INVALID";
 	}

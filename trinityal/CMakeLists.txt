@@ -29,9 +29,9 @@ set(PUBLIC_AL_HEADER_FILES
     include/Tr2OcclusionQueryAL.h
     include/Tr2PipelineStatsQueryAL.h
     include/Tr2PrimaryRenderContextAL.h
+    include/Tr2RegisterMapAL.h
     include/Tr2RenderContextAL.h
     include/Tr2RenderPassAL.h
-    include/Tr2ResourceSetAL.h
     include/Tr2SamplerStateAL.h
     include/Tr2ShaderAL.h
     include/Tr2ShaderProgramAL.h
@@ -90,8 +90,8 @@ set(_SOURCES
     dx11/Tr2RenderContextDx11.h
     dx11/Tr2RenderStateEmulationDx11.cpp
     dx11/Tr2RenderStateEmulationDx11.h
-    dx11/Tr2ResourceSetALDx11.cpp
-    dx11/Tr2ResourceSetALDx11.h
+    dx11/Tr2ResourceBindingsDx11.cpp
+    dx11/Tr2ResourceBindingsDx11.h
     dx11/Tr2SamplerStateALDx11.cpp
     dx11/Tr2SamplerStateALDx11.h
     dx11/Tr2ShaderALDx11.cpp
@@ -129,8 +129,6 @@ set(_SOURCES
     dx12/Tr2RenderContextDx12.h
     dx12/Tr2ResourceHelper.cpp
     dx12/Tr2ResourceHelper.h
-    dx12/Tr2ResourceSetALDx12.cpp
-    dx12/Tr2ResourceSetALDx12.h
     dx12/Tr2RtBottomLevelAccelerationStructureALDx12.cpp
     dx12/Tr2RtBottomLevelAccelerationStructureALDx12.h
     dx12/Tr2RtPipelineStateALDx12.cpp
@@ -181,6 +179,8 @@ set(_SOURCES
     dx12/util/GpuMarkerBuffer.h
     dx12/util/PsoDescription.cpp
     dx12/util/PsoDescription.h
+    dx12/util/ResourceBindingsDx12.cpp
+    dx12/util/ResourceBindingsDx12.h
     include/Tr2BufferAL.h
     include/Tr2CapsAL.h
     include/Tr2ConstantBufferAL.h
@@ -193,13 +193,13 @@ set(_SOURCES
     include/Tr2RtTopLevelAccelerationStructureAL.h
     include/Tr2PipelineStatsQueryAL.h
     include/Tr2PrimaryRenderContextAL.h
+    include/Tr2RegisterMapAL.h
     include/Tr2RenderContextAL.h
     include/Tr2RenderPassAL.h
-    include/Tr2ResourceSetAL.h
     include/Tr2SamplerStateAL.h
     include/Tr2ShaderAL.h
-    include/Tr2ShaderProgramAL.h    
-    include/Tr2StreamlineAL.h    
+    include/Tr2ShaderProgramAL.h
+    include/Tr2StreamlineAL.h
     include/Tr2SwapChainAL.h
     include/Tr2TextureAL.h
     include/Tr2VertexLayoutAL.h
@@ -239,8 +239,8 @@ set(_SOURCES
     metal/Tr2PrimaryRenderContextMetal.mm
     metal/Tr2RenderContextMetal.h
     metal/Tr2RenderContextMetal.mm
-    metal/Tr2ResourceSetALMetal.h
-    metal/Tr2ResourceSetALMetal.mm
+    metal/Tr2ResourceBindingsMetal.h
+    metal/Tr2ResourceBindingsMetal.mm
     metal/Tr2RtBottomLevelAccelerationStructureALMetal.mm
     metal/Tr2RtBottomLevelAccelerationStructureALMetal.h
     metal/Tr2RtPipelineStateALMetal.mm
@@ -273,15 +273,15 @@ set(_SOURCES
     src/Tr2GpuTimerAl.cpp
     src/Tr2OcclusionQueryAL.cpp
     src/Tr2PipelineStatsQueryAL.cpp
-    src/Tr2ResourceSetAL.cpp
+    src/Tr2RegisterMapAL.cpp
     src/Tr2RtBottomLevelAccelerationStructureAL.cpp
     src/Tr2RtPipelineStateAL.cpp
     src/Tr2RtShaderTableAL.cpp
     src/Tr2RtTopLevelAccelerationStructureAL.cpp
     src/Tr2SamplerStateAL.cpp
     src/Tr2ShaderAL.cpp
-    src/Tr2ShaderProgramAL.cpp    
-    src/Tr2StreamlineAL.cpp    
+    src/Tr2ShaderProgramAL.cpp
+    src/Tr2StreamlineAL.cpp
     src/Tr2SwapChainAL.cpp
     src/Tr2TextureAL.cpp
     src/Tr2VertexLayoutAL.cpp
@@ -304,8 +304,6 @@ set(_SOURCES
     stub/Tr2PrimaryRenderContextStub.h
     stub/Tr2RenderContextStub.cpp
     stub/Tr2RenderContextStub.h
-    stub/Tr2ResourceSetALStub.cpp
-    stub/Tr2ResourceSetALStub.h
     stub/Tr2SamplerStateALStub.cpp
     stub/Tr2SamplerStateALStub.h
     stub/Tr2ShaderALStub.cpp
@@ -322,6 +320,40 @@ set(_SOURCES
     stub/Tr2VideoAdapterInfoALStub.h
     stub/upscaling/Tr2UpscalingALStub.cpp
     stub/upscaling/Tr2UpscalingALStub.h
+    vulkan/Tr2BufferALVulkan.cpp
+    vulkan/Tr2BufferALVulkan.h
+    vulkan/Tr2CapsALVulkan.h
+    vulkan/Tr2ConstantBufferALVulkan.cpp
+    vulkan/Tr2ConstantBufferALVulkan.h
+    vulkan/Tr2FenceALVulkan.h
+    vulkan/Tr2GpuTimerALVulkan.h
+    vulkan/Tr2OcclusionQueryALVulkan.h
+    vulkan/Tr2PipelineStatsQueryALVulkan.cpp
+    vulkan/Tr2PipelineStatsQueryALVulkan.h
+    vulkan/Tr2PrimaryRenderContextVulkan.cpp
+    vulkan/Tr2PrimaryRenderContextVulkan.h
+    vulkan/Tr2RenderContextVulkan.cpp
+    vulkan/Tr2RenderContextVulkan.h
+    vulkan/Tr2ResourceBindingsVulkan.cpp
+    vulkan/Tr2ResourceBindingsVulkan.h
+    vulkan/Tr2SamplerStateALVulkan.cpp
+    vulkan/Tr2SamplerStateALVulkan.h
+    vulkan/Tr2ShaderALVulkan.cpp
+    vulkan/Tr2ShaderALVulkan.h
+    vulkan/Tr2ShaderProgramALVulkan.cpp
+    vulkan/Tr2ShaderProgramALVulkan.h
+    vulkan/Tr2SwapChainALVulkan.h
+    vulkan/Tr2TextureALVulkan.cpp
+    vulkan/Tr2TextureALVulkan.h
+    vulkan/Tr2VertexLayoutALVulkan.cpp
+    vulkan/Tr2VertexLayoutALVulkan.h
+    vulkan/Tr2VideoAdapterInfoALVulkan.cpp
+    vulkan/Tr2VideoAdapterInfoALVulkan.h
+    vulkan/upscaling/Tr2UpscalingALVulkan.cpp
+    vulkan/upscaling/Tr2UpscalingALVulkan.h
+    vulkan/UtilitiesVulkan.cpp
+    vulkan/UtilitiesVulkan.h
+    vulkan/VkResult.h
 )
 
 # Ensure that we have a sane file grouping for XCode and VS project files
@@ -481,6 +513,70 @@ if(WIN32)
         set_shared_trinityal_properties(dx12)
     endif()
 
+    if (BUILD_VULKAN)
+
+        #[[
+            Modelled on TrinityAL_stub, NOT on TrinityAL_dx11/dx12. Those targets
+            link the NVIDIA Streamline/Aftermath, AMD FidelityFX and Intel XeSS
+            packages, and their vcpkg features drag in fxc, which fetches from an
+            internal-only host. Keeping this target clear of all of them is what
+            lets a Vulkan configuration build outside the CCP network -- the only
+            Windows configuration that can. Do not "align" it with dx12 later.
+            vulkan-loader is the one addition here: it is a public port (built
+            from the upstream KhronosGroup/Vulkan-Loader release, matched to the
+            vulkan-headers version pinned above), so it does not reopen that
+            property.
+        ]]
+        find_package(VulkanHeaders CONFIG REQUIRED)
+        find_package(VulkanMemoryAllocator CONFIG REQUIRED)
+        find_package(VulkanLoader CONFIG REQUIRED)
+
+        ccp_add_library(TrinityAL_vulkan STATIC)
+        target_compile_definitions(TrinityAL_vulkan PUBLIC TRINITY_PLATFORM=TRINITY_VULKAN VK_USE_PLATFORM_WIN32_KHR)
+        # The backend reads its debug switches (TRINITY_DRAW_LOG, TRINITY_SERIALIZE,
+        # TRINITY_PIPELINE_CACHE_DIR, ...) with getenv, the same call on Windows and
+        # Android. MSVC flags getenv as C4996 and suggests _dupenv_s, and the presets'
+        # warnings-as-errors turns that advice into a failed build. The reads are
+        # read-only and nothing here modifies the environment, so silence the MSVC-only
+        # advice for this target's own sources. PRIVATE keeps it from widening the
+        # warning set of anything that links the backend.
+        target_compile_definitions(TrinityAL_vulkan PRIVATE _CRT_SECURE_NO_WARNINGS)
+        target_link_libraries(TrinityAL_vulkan PUBLIC
+                                                    Vulkan::Headers
+                                                    GPUOpen::VulkanMemoryAllocator
+                                                    Vulkan::Loader
+                                                    dxgi)
+        set_shared_trinityal_properties(vulkan)
+    endif()
+
+elseif(ANDROID)
+
+    if(BUILD_VULKAN)
+
+        # The same backend as the Windows Vulkan target with the Windows-only pieces
+        # gone: no vulkan-loader port (Android's libvulkan IS the loader -- the NDK link
+        # library), no dxgi (adapter enumeration is the Vulkan physical-device list, see
+        # Tr2VideoAdapterInfoALVulkan.cpp), and VK_USE_PLATFORM_ANDROID_KHR selects the
+        # ANativeWindow surface path.
+        find_package(VulkanHeaders CONFIG REQUIRED)
+        find_package(VulkanMemoryAllocator CONFIG REQUIRED)
+
+        # The metal .mm files are in _SOURCES for every target; MSVC compiles them as
+        # C++ where their TRINITY_PLATFORM guards make them empty, but NDK clang treats
+        # .mm as Objective-C++, which conflicts with the C++ precompiled header before
+        # any guard is seen.
+        list(FILTER _SOURCES EXCLUDE REGEX "\.mm$")
+
+        ccp_add_library(TrinityAL_vulkan STATIC)
+        target_compile_definitions(TrinityAL_vulkan PUBLIC TRINITY_PLATFORM=TRINITY_VULKAN VK_USE_PLATFORM_ANDROID_KHR)
+        target_link_libraries(TrinityAL_vulkan PUBLIC
+                                                    Vulkan::Headers
+                                                    GPUOpen::VulkanMemoryAllocator
+                                                    vulkan
+                                                    android)
+        set_shared_trinityal_properties(vulkan)
+    endif()
+
 elseif(APPLE)
     
     if(BUILD_METAL)
@@ -496,7 +592,21 @@ elseif(APPLE)
         ccp_add_library(TrinityAL_metal STATIC)
         target_compile_definitions(TrinityAL_metal PUBLIC TRINITY_PLATFORM=TRINITY_METAL)
         set_shared_trinityal_properties(metal)
-        target_link_libraries(TrinityAL_metal PUBLIC "-framework Metal" "-framework MetalFX" "-framework IOKit" "-framework QuartzCore" AMD::FidelityFX::fsr)
+        target_link_libraries(TrinityAL_metal PUBLIC "-framework Metal" "-framework IOKit" "-framework QuartzCore" AMD::FidelityFX::fsr)
+        # MetalFX.framework ships for macOS and real iOS devices, but not for any
+        # iPhoneSimulator SDK (Tr2MetalFxUpscaling.h/.mm already compile it out
+        # there under TARGET_OS_SIMULATOR) -- linking it unconditionally makes the
+        # simulator triplet fail at link, not compile.
+        if(NOT (IOS AND CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator"))
+            target_link_libraries(TrinityAL_metal PUBLIC "-framework MetalFX")
+        endif()
+        # UIKit for iOS: Tr2VideoAdapterInfoALMetal.mm reads UIScreen for the
+        # one screen's pixel extent (the CGDisplay role), and UIScreen lives in
+        # UIKit. Window-less by design, but reading the screen descriptor is not
+        # building a UI (spec D6).
+        if(IOS)
+            target_link_libraries(TrinityAL_metal PUBLIC "-framework UIKit")
+        endif()
         #[[
             FIXME because we're mixing objective-c++ and c++ headers in our precompiled headers then we need to force
             one specific language for macOS. This can be fixed once we revisit our usage of precompiled headers, which is
@@ -511,8 +621,6 @@ else()
     message(FATAL_ERROR "Unsupported trinity platform, only stub would be available!")
 endif()
 
-option(BUILD_TESTING "Build and run tests. Enabled by default." ON)
-message(STATUS " BUILD_TESTING VALUE IS ${BUILD_TESTING}")
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()

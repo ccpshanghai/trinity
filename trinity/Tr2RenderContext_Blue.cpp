@@ -337,6 +337,128 @@ const Be::ClassInfo* Tr2PrimaryRenderContext::ExposeToBlue()
 			GetBackBufferFormat,
 			"Returns the PixelFormat of the default back buffer" )
 
+		MAP_METHOD_AND_WRAP(
+			"GetNativeCommandList",
+			GetNativeCommandList,
+			"Returns this context's native command list as an integer.\n"
+			"\n"
+			"For hosting an immediate-mode UI (ImGui) inside Trinity's frame from\n"
+			"Python: the renderer ships as a CPython extension module with no C++\n"
+			"exports, so a C++ UI layer cannot link against it and the handle has to\n"
+			"cross through Python.\n"
+			"\n"
+			"This is NOT a liveness check. The DX12 backend allocates its command list\n"
+			"once and reuses it, so the value is non-zero outside the frame too —\n"
+			"measured identical before, during and after a pump. Record into it only\n"
+			"from inside a TriStepPythonCB callback, and gate on being there rather\n"
+			"than on this value.\n"
+			"\n"
+			"0 on every backend other than DX12, which is the one thing zero does mean." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeDevice",
+			GetNativeDevice,
+			"Returns the ID3D12Device as an integer, or 0 off DX12.\n"
+			"\n"
+			"Needed by ImGui's DX12 backend at init, and by the same route as the command\n"
+			"list: there is no C++ path off this engine." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeSrvHeap",
+			GetNativeSrvHeap,
+			"Returns the shader-visible SRV/UAV descriptor heap as an integer, 0 off DX12.\n"
+			"\n"
+			"This is the heap Trinity binds, exposed so a hosted UI can put that binding\n"
+			"back after it has drawn — not a heap to draw out of. The host brings its own\n"
+			"SRV heap for ImGui's font descriptor and binds it before drawing, and\n"
+			"SetDescriptorHeaps replaces the whole binding rather than adding to it, so\n"
+			"Trinity's heaps have to be restored afterwards. See GetNativeSamplerHeap." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeCommandQueue",
+			GetNativeCommandQueue,
+			"Returns the direct ID3D12CommandQueue as an integer, or 0 off DX12.\n"
+			"\n"
+			"ImGui's DX12 backend uploads its font texture through a command queue at\n"
+			"init; without one that upload has nowhere to go." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeSamplerHeap",
+			GetNativeSamplerHeap,
+			"Returns the shader-visible sampler descriptor heap as an integer, 0 off DX12.\n"
+			"\n"
+			"Needed to put the binding back after a hosted UI has drawn:\n"
+			"SetDescriptorHeaps replaces the whole binding rather than adding to it, so\n"
+			"restoring only the SRV heap leaves later draws without samplers." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeInstance",
+			GetNativeInstance,
+			"Returns the VkInstance as an integer, or 0 off Vulkan.\n"
+			"\n"
+			"One of the three ImGui's Vulkan backend needs and no other API has a name\n"
+			"for; the other two are GetNativePhysicalDevice and GetNativeQueueFamily.\n"
+			"Process-wide and independent of any device." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativePhysicalDevice",
+			GetNativePhysicalDevice,
+			"Returns the VkPhysicalDevice as an integer, or 0 off Vulkan." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeQueueFamily",
+			GetNativeQueueFamily,
+			"Returns the graphics queue's family index, or 0 off Vulkan.\n"
+			"\n"
+			"0 is a legal family index as well as the no-device answer, so read it\n"
+			"beside GetNativeDevice rather than on its own. It belongs to the queue\n"
+			"GetNativeCommandQueue returns, which is the one a hosted UI must submit its\n"
+			"font upload on." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeCommandBuffer",
+			GetNativeCommandBuffer,
+			"Returns the recording command buffer as an integer: an MTLCommandBuffer on\n"
+			"Metal, a VkCommandBuffer on Vulkan, 0 elsewhere.\n"
+			"\n"
+			"Metal's half of the pair GetNativeCommandList is on DX12: ImGui's Metal\n"
+			"backend renders with a command buffer plus the pass's open encoder, so a\n"
+			"hosted UI needs both. On Vulkan it is the whole answer -- ImGui records into\n"
+			"the buffer and there is no encoder.\n"
+			"\n"
+			"On Vulkan this is NOT a read-only getter (spec 7.4). Reading it opens a\n"
+			"rendering scope if none is open, so the caller's draws are legal, and marks\n"
+			"the AL's pipeline and dynamic state dirty, so the AL's next draw rebinds\n"
+			"rather than inheriting the UI's pipeline and scissor. Both are necessary and\n"
+			"the second one is invisible when it is missing: the frame renders wrongly\n"
+			"with no validation error at all.\n"
+			"\n"
+			"Like the command list, this is NOT a liveness check. Read it only from inside\n"
+			"a TriStepPythonCB callback, where the frame is what guarantees the buffer, and\n"
+			"gate on being there rather than on this value." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeRenderEncoder",
+			GetNativeRenderEncoder,
+			"Returns the pass's open MTLRenderCommandEncoder as an integer, 0 off Metal.\n"
+			"\n"
+			"The other half of GetNativeCommandBuffer, and the one with a real lifetime:\n"
+			"an encoder exists only between the pass beginning and ending, which is exactly\n"
+			"the TriStepPythonCB callback and nowhere else." )
+
+		MAP_METHOD_AND_WRAP(
+			"GetNativeBackBufferFormat",
+			GetNativeBackBufferFormat,
+			"Returns the back buffer's format as the GPU API spells it: an MTLPixelFormat\n"
+			"on Metal, a DXGI_FORMAT on the DX backends, 0 where there is no device.\n"
+			"\n"
+			"NOT GetBackBufferFormat, which returns Trinity's own PixelFormat enum. On the\n"
+			"DX backends those enums hold DXGI's values and the difference is invisible; on\n"
+			"Metal they are different numbers, and passing Trinity's to a Metal call aborts\n"
+			"the process in the validation layer rather than failing. Use this one for\n"
+			"anything that crosses into a graphics API -- a hosted UI's pipeline state --\n"
+			"and GetBackBufferFormat for anything comparing against Trinity's own formats." )
+
 	EXPOSURE_END()
 }
 

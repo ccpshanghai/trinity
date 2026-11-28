@@ -18,7 +18,6 @@ CompileMessageQueue::~CompileMessageQueue()
 	m_thread.join();
 }
 
-#if _WIN32
 void CompileMessageQueue::AddMessages( ID3DBlob* buffer )
 {
 	m_messagesMutex.lock();
@@ -38,7 +37,6 @@ void CompileMessageQueue::AddMessages( IDxcBlobEncoding* blob )
 		m_queueEvent.notify_one();
 	}
 }
-#endif
 
 void CompileMessageQueue::AddMessage( const char* format, ... )
 {
@@ -67,17 +65,18 @@ void CompileMessageQueue::AddMessage( const char* format, ... )
 // --------------------------------------------------------------------------------------
 void CompileMessageQueue::Flush()
 {
-	while( true )
+	// m_printing, not just the queue, because Run() pops a message BEFORE it prints it:
+	// testing emptiness alone returns while the output thread is still inside printf.
+	// Measured 2026-09-08 on macOS by VulkanCompilerTest.ASecondResourceArrayIsRefusedRatherThanMisbound,
+	// which flushes and then reads gtest's captured stdout: the compiler's diagnostic was
+	// correct and complete, and arrived after the capture had been restored. The tool
+	// itself never lost a message to this -- the destructor joins the output thread -- so
+	// what was broken was this function's contract, which its own comment states.
+	std::unique_lock lock( m_messagesMutex );
+	while( !m_messages.empty() || m_printing )
 	{
 		m_queueEvent.notify_one();
-		m_messagesMutex.lock();
-		bool empty = m_messages.empty();
-		m_messagesMutex.unlock();
-		if( empty )
-		{
-			break;
-		}
-		std::this_thread::sleep_for( std::chrono::milliseconds( 500 ) );
+		m_idleEvent.wait_for( lock, std::chrono::milliseconds( 50 ) );
 	}
 }
 
@@ -110,9 +109,15 @@ void CompileMessageQueue::Run()
 			{
 				std::string buffer = m_messages.front();
 				m_messages.pop();
+				m_printing = true;
 				m_messagesMutex.unlock();
 
 				OutputMessages( buffer.c_str(), buffer.size() );
+
+				m_messagesMutex.lock();
+				m_printing = false;
+				m_messagesMutex.unlock();
+				m_idleEvent.notify_all();
 			}
 			else
 			{

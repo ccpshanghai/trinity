@@ -84,12 +84,14 @@ void TriTextureParameter::UsedWithScreenSize( float screenSize, float worldRadiu
 				if( resolutionChange > 0 )
 				{
 					// quickly calculate log2 of resolutionChange, which gives us the required LOD
-#if __APPLE__
-					requestedLod = 31 - (uint32_t)__builtin_clz( resolutionChange );
-#else
+#ifdef _MSC_VER
 					unsigned long reverse;
 					_BitScanReverse( &reverse, resolutionChange );
 					requestedLod = reverse;
+#else
+					// Every non-MSVC compiler here (Apple clang, NDK clang) has the GCC builtin;
+					// the guard used to say __APPLE__ and left Android on the MSVC intrinsic.
+					requestedLod = 31 - (uint32_t)__builtin_clz( resolutionChange );
 #endif
 				}
 			}
@@ -174,24 +176,24 @@ void TriTextureParameter::AddUsedTexture( Tr2BindlessResourcesAL& usedTextures )
 }
 
 // --------------------------------------------------------------------------------------
-bool TriTextureParameter::CopyToResourceSet(
-	Tr2ResourceSetDescriptionAL& resourceDesc,
+void TriTextureParameter::SetSrv(
 	Tr2RenderContextEnum::ShaderType stage,
 	uint32_t registerIndex,
-	ResourceFlags flags ) const
+	ResourceFlags flags,
+	Tr2RenderContext& renderContext ) const
 {
 	bool isSrgb = ( flags & RESOURCE_FLAG_SRGB ) != 0;
 	auto colorSpace = isSrgb ? Tr2RenderContextEnum::COLOR_SPACE_SRGB : Tr2RenderContextEnum::COLOR_SPACE_LINEAR;
-	return resourceDesc.SetSrv( stage, registerIndex, m_cachedTexture, colorSpace );
+	renderContext.SetSrv( stage, registerIndex, m_cachedTexture, colorSpace );
 }
 
 // --------------------------------------------------------------------------------------
-bool TriTextureParameter::ApplyUav(
-	Tr2ResourceSetDescriptionAL& resourceDesc,
+void TriTextureParameter::SetUav(
 	Tr2RenderContextEnum::ShaderType stage,
-	uint32_t registerIndex ) const
+	uint32_t registerIndex,
+	Tr2RenderContext& renderContext ) const
 {
-	return resourceDesc.SetUav( stage, registerIndex, m_cachedTexture, m_uavMipLevel );
+	renderContext.SetUav( stage, registerIndex, m_cachedTexture, m_uavMipLevel );
 }
 
 // ---------------------------------------------------------------

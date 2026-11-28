@@ -1,33 +1,39 @@
 {
   "default-registry": {
     "kind": "git",
-    "baseline": "242ac6932a9cd2607332969129e9572516f28d65",
+    "baseline": "afa249f12f52ed8a3b919f195495ba8b330288d1",
     "repository": "https://github.com/microsoft/vcpkg.git"
   },
   "registries": [
     {
       "kind": "git",
-      "repository": "git@github.com:carbonengine/vcpkg-registry.git",
-      "baseline": "a83134805f3fa07da6a6add87c4b250d9778bfd1",
-      "packages": ["python3", 
-                   "carbon-*", 
-                   "tracy",
-                   "greenlet",
-                   "ccp-debug-info",
-                   "crashpad",
-                   "zlib",
-                   "re2c",
-                   "amd-fidelityfx",
-                   "amd-fidelityfx-cacao",
-                   "amd-fidelityfx-cas",
-                   "amd-fidelityfx-fsr",
-                   "fxc",
-                   "granny",
-                   "intel-xess",
-                   "nvidia-aftermath",
-                   "nvidia-streamline",
-                   "openvdb"
-          ]
+      "repository": "https://github.com/ccpshanghai/vcpkg-registry.git",
+      "reference": "mobile-exp",
+      "baseline": "61a52cda48d0718b342e9d5b824d36d7a8720e3e",
+      "packages": [
+        "python3",
+        "carbon-*",
+        "tracy",
+        "greenlet",
+        "ccp-debug-info",
+        "crashpad",
+        "directx-dxc",
+        "zlib",
+        "re2c",
+        "amd-fidelityfx",
+        "amd-fidelityfx-cacao",
+        "amd-fidelityfx-cas",
+        "amd-fidelityfx-fsr",
+        "fxc",
+        "granny",
+        "intel-xess",
+        "nvidia-aftermath",
+        "nvidia-streamline",
+        "openvdb",
+        "imgui",
+        "mpdecimal",
+        "tbb"
+      ]
     }
   ]
 }

@@ -113,7 +113,17 @@ bool Tr2SuballocatedBuffer::OnPrepareResources()
 
 	Tr2BufferAL buffer;
 	Tr2BufferDescriptionAL desc( 4, bufferSize / 4, m_gpuUsage, Tr2CpuUsage::READ | Tr2CpuUsage::WRITE );
-	buffer.Create( desc, nullptr, renderContext );
+	// Logged rather than swallowed. Allocate() turns an invalid m_buffer into a bare E_FAIL,
+	// which says nothing about why -- and this buffer backs every TriGeometryRes vertex and
+	// index allocation, so a failure here is a scene that loads its meshes and draws none of
+	// them. Naming the create's own result is the difference between one confusing line about
+	// six quads and knowing which backend refused the description.
+	ALResult hr = buffer.Create( desc, nullptr, renderContext );
+	if( FAILED( hr ) )
+	{
+		CCP_LOGERR( "Tr2SuballocatedBuffer '%s': could not create a %u byte buffer, HRESULT=0x%X. "
+					"Every allocation out of it will fail.", m_name.c_str(), bufferSize, hr.GetResult() );
+	}
 
 	m_buffer = buffer;
 

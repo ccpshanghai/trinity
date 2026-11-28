@@ -143,7 +143,7 @@ AxisAlignedBoundingBox Tr2ShadowMap::CalculateAABB( Matrix projection, Matrix in
 // --------------------------------------------------------------------------------
 ShadowMap::SplitSetup Tr2ShadowMap::SetupShadowSplit( int splitIndex, Matrix invViewTransform, const Vector3 lightDirection, float zNear, float leftDivNear, float rightDivNear, float topDivNear, float bottomDivNear )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	ShadowMap::SplitSetup splitSetup;
 
@@ -197,7 +197,7 @@ ShadowMap::SplitSetup Tr2ShadowMap::SetupShadowSplit( int splitIndex, Matrix inv
 		Vector3 shipPos = Vector3( 0.0, 0.0, 0.0 );
 		Vector3 center = aabb.Center();
 		// rounding up
-		float texelSize = ( radius * 2.0f ) / m_size;
+		float texelSize = ( radius * 2.0f ) / ElementSize();
 		center.x = std::floor( center.x / texelSize + 0.5f ) * texelSize;
 		center.y = std::floor( center.y / texelSize + 0.5f ) * texelSize;
 
@@ -223,11 +223,49 @@ ShadowMap::SplitSetup Tr2ShadowMap::SetupShadowSplit( int splitIndex, Matrix inv
 	return splitSetup;
 }
 
+unsigned int Tr2ShadowMap::ElementSize()
+{
+	if( m_sizeClampedToDevice )
+	{
+		return m_size;
+	}
+	m_sizeClampedToDevice = true;
+
+	// Adapter 0: every backend's implementation of this ignores the index and answers for the
+	// device, and three of the four say so in the signature. If that ever stops being true this
+	// wants the render context's adapter instead.
+	unsigned int maxWidth = 0;
+	if( FAILED( Tr2VideoAdapterInfo::GetAdapterMaxTextureWidth( 0, maxWidth ) ) || maxWidth == 0 )
+	{
+		return m_size;
+	}
+
+	const unsigned int across = std::max( m_width, m_height );
+	const unsigned int allowed = maxWidth / std::max( across, 1u );
+	if( m_size <= allowed )
+	{
+		return m_size;
+	}
+
+	// Halved, not set to `allowed`: a shadow split wants a power of two, and the split viewports
+	// below index by whole multiples of it.
+	unsigned int clamped = m_size;
+	while( clamped > allowed && clamped > 1 )
+	{
+		clamped /= 2;
+	}
+	CCP_LOGWARN( "Cascaded shadow atlas would be %u wide and this device allows %u; "
+				 "shadow split size %u -> %u",
+		m_size * m_width, maxWidth, m_size, clamped );
+	m_size = clamped;
+	return m_size;
+}
+
 Tr2GpuResourcePool::Texture Tr2ShadowMap::PrepareShadowRendering( Tr2GpuResourcePool& gpuResourcePool, Tr2RenderContext& renderContext )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
-	auto cascadedShadowDepth = gpuResourcePool.GetTempTexture( "cascadedShadowDepth", m_size * m_width, m_size * m_height, PixelFormat::PIXEL_FORMAT_D32_FLOAT, Tr2GpuUsage::DEPTH_STENCIL | Tr2GpuUsage::SHADER_RESOURCE );
+	auto cascadedShadowDepth = gpuResourcePool.GetTempTexture( "cascadedShadowDepth", ElementSize() * m_width, ElementSize() * m_height, PixelFormat::PIXEL_FORMAT_D32_FLOAT, Tr2GpuUsage::DEPTH_STENCIL | Tr2GpuUsage::SHADER_RESOURCE );
 
 	if( !cascadedShadowDepth.IsValid() )
 	{
@@ -252,21 +290,21 @@ Tr2GpuResourcePool::Texture Tr2ShadowMap::PrepareShadowRendering( Tr2GpuResource
 
 void Tr2ShadowMap::BeginShadowRendering( Tr2RenderContext& renderContext, int splitIndex )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	if( splitIndex < 8 )
 	{
-		renderContext.m_esm.SetViewport( m_size, m_size, splitIndex * m_size, 0, 0.f, 1.f );
+		renderContext.m_esm.SetViewport( ElementSize(), ElementSize(), splitIndex * ElementSize(), 0, 0.f, 1.f );
 	}
 	else
 	{
-		renderContext.m_esm.SetViewport( m_size, m_size, ( splitIndex % 8 ) * m_size, m_size, 0.f, 1.f );
+		renderContext.m_esm.SetViewport( ElementSize(), ElementSize(), ( splitIndex % 8 ) * ElementSize(), ElementSize(), 0.f, 1.f );
 	}
 }
 
 void Tr2ShadowMap::EndShadowRendering( Tr2RenderContext& renderContext )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 	renderContext.SetReadOnlyDepth( false );
 
 	//***** End shadow rendering *****//
@@ -277,7 +315,7 @@ void Tr2ShadowMap::EndShadowRendering( Tr2RenderContext& renderContext )
 
 Tr2GpuResourcePool::Texture Tr2ShadowMap::DrawToShadowMapResult( Tr2RenderContext& renderContext, Tr2GpuResourcePool& gpuResourcePool, const Tr2TextureAL& depthMap, const Tr2TextureAL& cascadedShadowDepth, float upscaling )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	auto shadowMapResult = gpuResourcePool.GetTempTexture( "shadowMapResult", depthMap.GetWidth(), depthMap.GetHeight(), PixelFormat::PIXEL_FORMAT_R8_UNORM, Tr2GpuUsage::RENDER_TARGET | Tr2GpuUsage::SHADER_RESOURCE );
 
@@ -292,7 +330,7 @@ Tr2GpuResourcePool::Texture Tr2ShadowMap::DrawToShadowMapResult( Tr2RenderContex
 	m_shadowEffect->SetParameter( BlueSharedString( "DepthMap" ), Tr2TextureAL{} );
 
 	{
-		CCP_STATS_ZONE( "DO_DENOISER" );
+		TRINITY_STATS_ZONE( "DO_DENOISER" );
 		if( m_denoiser && m_useDenoiser && depthMap.IsValid() )
 		{
 			shadowMapResult = m_denoiser->Apply( std::move( shadowMapResult ), depthMap, {}, Tr2Renderer::GetReversedDepthProjectionTransform(), upscaling, gpuResourcePool, renderContext );
@@ -310,9 +348,9 @@ const unsigned int Tr2ShadowMap::GetShadowSplitCount() const
 	return m_splitCount;
 }
 
-const unsigned int Tr2ShadowMap::GetShadowMapSize() const
+unsigned int Tr2ShadowMap::GetShadowMapSize()
 {
-	return m_size;
+	return ElementSize();
 }
 
 Tr2EffectPtr Tr2ShadowMap::GetShadowEffect() const

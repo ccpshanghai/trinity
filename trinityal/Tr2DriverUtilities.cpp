@@ -2,6 +2,9 @@
 
 #include "StdAfx.h"
 #include "Tr2DriverUtilities.h"
+#include "Tr2VideoAdapterInfoAL.h"
+
+#include <cstdio>
 
 namespace
 {
@@ -126,6 +129,52 @@ ALResult DoGetDriverVersion( uint32_t deviceId, Tr2VideoDriverInfo& info )
 	info.isAmdDynamicSwitchable = false;
 
 	return S_OK;
+}
+
+#elif ( TRINITY_PLATFORM == TRINITY_VULKAN )
+
+// Tr2VideoAdapterInfo::GetAdapterInfo already threads VkPhysicalDeviceProperties::
+// driverVersion up to Tr2AdapterInfo (Tr2VideoAdapterInfoALVulkan.cpp) -- that is
+// the "right source" R7 asks for, and reaching it through the generic AL header is
+// the existing seam every platform's adapter info goes through, not a new one.
+// Getting from here to a VkPhysicalDevice directly would have meant inventing
+// exactly that seam, which is the thing to avoid.
+//
+// driverDate and driverVendor have no Vulkan query to answer them (unlike the
+// Windows registry, which hands both over for free), so they stay empty rather
+// than inventing a value; isOptimus/isAmdDynamicSwitchable are Windows-only
+// concepts and are simply false here.
+ALResult DoGetDriverVersion( uint32_t deviceId, Tr2VideoDriverInfo& info )
+{
+	uint32_t count = 0;
+	FORWARD_HR( Tr2VideoAdapterInfo::GetAdapterCount( count ) );
+
+	for( uint32_t i = 0; i < count; ++i )
+	{
+		Tr2AdapterInfo adapter;
+		if( FAILED( Tr2VideoAdapterInfo::GetAdapterInfo( i, adapter ) ) || adapter.deviceID != deviceId )
+		{
+			continue;
+		}
+
+		info.driverVersion = adapter.driverVersion;
+
+		// The standard Vulkan encoding (VK_VERSION_MAJOR/MINOR/PATCH: a 10/10/12-bit
+		// major.minor.patch packing) is what every target of this backend today
+		// (Adreno) reports. NVIDIA packs driverVersion in its own four-part scheme
+		// instead, which this would decode wrong -- not a concern for Android.
+		const uint32_t raw = static_cast<uint32_t>( adapter.driverVersion );
+		char buffer[32];
+		snprintf( buffer, sizeof( buffer ), "%u.%u.%u", VK_VERSION_MAJOR( raw ), VK_VERSION_MINOR( raw ), VK_VERSION_PATCH( raw ) );
+		info.driverVersionString = buffer;
+
+		info.driverDate = "";
+		info.driverVendor = "";
+		info.isOptimus = false;
+		info.isAmdDynamicSwitchable = false;
+		return S_OK;
+	}
+	return E_FAIL;
 }
 
 #else

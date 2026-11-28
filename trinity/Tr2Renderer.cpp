@@ -1,6 +1,7 @@
 // Copyright © 2023 CCP ehf.
 
 #include "StdAfx.h"
+#include <set>
 #include "Tr2Renderer.h"
 #include "Shader/Tr2Effect.h"
 #include "Shader/Tr2Shader.h"
@@ -100,6 +101,7 @@ TriLineSet* s_debugLineSet = NULL;
 // shared vertex/index buffers
 Tr2BufferAL s_quadVertexBuffer;
 Tr2SuballocatedBuffer::Allocation s_quadListIndexBuffer;
+Tr2SuballocatedBuffer::Allocation s_reversedQuadListIndexBuffer;
 uint32_t s_quadListSize = 0;
 
 Tr2TextureAL s_fallbackTextures[2][3];
@@ -291,21 +293,23 @@ void AdjustTextureCoordsToViewport( Tr2RenderContext& renderContext, Vector2& to
 
 
 template <typename T>
-bool CreateIndexBuffer( T count, Tr2SuballocatedBuffer::Allocation& buffer )
+bool CreateIndexBuffer( T count, Tr2SuballocatedBuffer::Allocation& buffer, bool reversedWinding = false )
 {
 	USE_MAIN_THREAD_RENDER_CONTEXT();
 	// Re-create the index buffer with the correct type
+
+	const T forwardPattern[6] = { 0, 2, 1, 0, 3, 2 };
+	const T reversedPattern[6] = { 0, 1, 2, 0, 2, 3 };
+	const T* pattern = reversedWinding ? reversedPattern : forwardPattern;
 
 	std::vector<T> indices( count * 6 );
 	T* pInds = indices.data();
 	for( T i = 0; i < count; ++i )
 	{
-		pInds[0] = 0 + 4 * i;
-		pInds[1] = 2 + 4 * i;
-		pInds[2] = 1 + 4 * i;
-		pInds[3] = 0 + 4 * i;
-		pInds[4] = 3 + 4 * i;
-		pInds[5] = 2 + 4 * i;
+		for( int k = 0; k < 6; ++k )
+		{
+			pInds[k] = pattern[k] + 4 * i;
+		}
 		pInds += 6;
 	}
 	if( buffer.IsValid() )
@@ -858,6 +862,17 @@ bool Tr2Renderer::RunComputeShader( Tr2Material* effect,
 	auto shader = effect->GetShaderStateInterface();
 	if( !shader )
 	{
+		// Once per material, as Tr2Blitter does: a compute pass that is skipped here leaves
+		// its output texture holding whatever the pool last put there, and the pass that
+		// samples it next has no way of knowing.
+		static std::set<const Tr2Material*> logged;
+		if( logged.insert( effect ).second )
+		{
+			const Tr2Effect* asEffect = dynamic_cast<const Tr2Effect*>( effect );
+			CCP_LOGERR( "Tr2Renderer::RunComputeShader: dispatch skipped, the material has no shader state: %s (%s)",
+						asEffect && asEffect->GetEffectPathName() ? asEffect->GetEffectPathName() : "(not a Tr2Effect)",
+						asEffect ? asEffect->DescribeShaderResolution() : "-" );
+		}
 		return false;
 	}
 	bool result = false;
@@ -876,6 +891,23 @@ bool Tr2Renderer::RunComputeShader( Tr2Material* effect,
 			effect->ApplyMaterialDataForPass( 0, i, renderContext );
 			CR_RETURN_VAL( renderContext.RunComputeShader( groupDimX, groupDimY, groupDimZ ), false );
 			result = true;
+		}
+	}
+	if( !result )
+	{
+		// The effect resolved, and to a technique with no compute pass in it. That is what a
+		// compute effect compiles to on a platform Compile.fxh does not list under
+		// PLATFORM_SUPPORTS_COMPUTE -- cas.fx, exposuretotexture.fx and the histogram passes
+		// all fall back to a Clear or a `_no_effect_ps` technique -- and the output texture
+		// the caller hands on is then never written. Silent until 2026-09-11, when it was the
+		// EVE scene's whole frame on Vulkan: the tonemapper read an unwritten sharpening
+		// output and painted black. Once per material.
+		static std::set<const Tr2Material*> logged;
+		if( logged.insert( effect ).second )
+		{
+			const Tr2Effect* asEffect = dynamic_cast<const Tr2Effect*>( effect );
+			CCP_LOGERR( "Tr2Renderer::RunComputeShader: nothing dispatched, technique 0 has no compute pass: %s",
+						asEffect && asEffect->GetEffectPathName() ? asEffect->GetEffectPathName() : "(not a Tr2Effect)" );
 		}
 	}
 	return result;
@@ -1237,7 +1269,7 @@ void Tr2Renderer::ReserveQuadListIndexBuffer( uint32_t numOfQuads )
 
 	std::scoped_lock lock( s_mutex );
 
-	if( numOfQuads <= s_quadListSize && s_quadListIndexBuffer.IsValid() )
+	if( numOfQuads <= s_quadListSize && s_quadListIndexBuffer.IsValid() && s_reversedQuadListIndexBuffer.IsValid() )
 	{
 		return;
 	}
@@ -1251,14 +1283,16 @@ void Tr2Renderer::ReserveQuadListIndexBuffer( uint32_t numOfQuads )
 	// we just need the 16 bit buffer
 	if( numOfQuads <= static_cast<uint32_t>( std::numeric_limits<uint16_t>::max() / 6 ) )
 	{
-		if( CreateIndexBuffer<uint16_t>( static_cast<uint16_t>( numOfQuads ), s_quadListIndexBuffer ) )
+		if( CreateIndexBuffer<uint16_t>( static_cast<uint16_t>( numOfQuads ), s_quadListIndexBuffer ) &&
+			CreateIndexBuffer<uint16_t>( static_cast<uint16_t>( numOfQuads ), s_reversedQuadListIndexBuffer, true ) )
 		{
 			s_quadListSize = numOfQuads;
 		}
 	}
 	else
 	{
-		if( CreateIndexBuffer<uint32_t>( numOfQuads, s_quadListIndexBuffer ) )
+		if( CreateIndexBuffer<uint32_t>( numOfQuads, s_quadListIndexBuffer ) &&
+			CreateIndexBuffer<uint32_t>( numOfQuads, s_reversedQuadListIndexBuffer, true ) )
 		{
 			s_quadListSize = numOfQuads;
 		}
@@ -1268,6 +1302,11 @@ void Tr2Renderer::ReserveQuadListIndexBuffer( uint32_t numOfQuads )
 Tr2SuballocatedBuffer::Allocation& Tr2Renderer::GetQuadListIndexBuffer()
 {
 	return s_quadListIndexBuffer;
+}
+
+Tr2SuballocatedBuffer::Allocation& Tr2Renderer::GetReversedQuadListIndexBuffer()
+{
+	return s_reversedQuadListIndexBuffer;
 }
 
 void Tr2Renderer::PrepareDeviceResources()
@@ -1312,6 +1351,7 @@ void Tr2Renderer::ReleaseDeviceResources( TriStorage s )
 	if( ( s & TRISTORAGE_MANAGEDMEMORY ) )
 	{
 		g_sharedBuffer.Free( s_quadListIndexBuffer );
+		g_sharedBuffer.Free( s_reversedQuadListIndexBuffer );
 	}
 }
 
@@ -1502,7 +1542,7 @@ bool Tr2Renderer::GetGeometryShaderSupport()
 
 	Tr2ShaderAL shader;
 	return SUCCEEDED( shader.Create( GEOMETRY_SHADER, bytecode, Tr2ShaderSignatureAL(), "", renderContext ) );
-#elif TRINITY_PLATFORM == TRINITY_DIRECTX12
+#elif TRINITY_PLATFORM == TRINITY_DIRECTX12 || TRINITY_PLATFORM == TRINITY_VULKAN
 	return true;
 #else
 	return false;

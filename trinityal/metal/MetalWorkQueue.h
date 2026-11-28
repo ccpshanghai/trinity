@@ -4,7 +4,10 @@
 #if TRINITY_PLATFORM == TRINITY_METAL
 
 #include <Metal/Metal.h>
-#import <Cocoa/Cocoa.h>
+// Foundation, not Cocoa/AppKit: this header only reaches NSString/NSRange/NSUInteger
+// (Foundation types), and Cocoa.h doesn't exist outside the macOS SDK. Nothing here
+// touches AppKit.
+#import <Foundation/Foundation.h>
 #import <QuartzCore/CAMetalLayer.h>
 
 #include "MetalUtils.h"
@@ -179,7 +182,7 @@ public:
 	void SetCommandQueue( id<MTLCommandQueue> commandQueue );
 
 	void CommitCommandBuffer( MetalCBCommitFlags flags );
-	bool BlitToDrawableAndPresent( id<MTLTexture> srcTexture, NSView* view, uint64_t* renderedFrameNumber );
+	bool BlitToDrawableAndPresent( id<MTLTexture> srcTexture, CAMetalLayer* layer, uint64_t* renderedFrameNumber );
 	void BeginFrame();
 	void EndFrame();
 	void EndCurrentRenderPass();
@@ -312,7 +315,7 @@ public:
 	void ResetTextures( Tr2RenderContextEnum::ShaderType shaderType );
 	void ResetSamplers( Tr2RenderContextEnum::ShaderType shaderType );
 
-	void SetVertexStream( uint32 stream, id<MTLBuffer> buffer, uint32 stride, uint32 offset );
+	void SetVertexStream( uint32_t stream, id<MTLBuffer> buffer, uint32_t stride, uint32_t offset );
 	void SetCurrentVertexDescriptor( MTLVertexDescriptor* vertexDescriptor, uint8_t vertexStreamMask, size_t baseHash );
 
 	void ClearAttachment( MTLClearColor* clearColor,
@@ -389,6 +392,14 @@ public:
 	id<MTLCommandBuffer> GetCommandBuffer()
 	{
 		return m_commandBuffer;
+	}
+
+	// The encoder currently recording, or nil when no render pass is open. For
+	// the render context's GetNativeRenderEncoder only — observation, never a
+	// second way to drive the frame (M3 spec §5).
+	id<MTLRenderCommandEncoder> GetCurrentRenderEncoder() const
+	{
+		return m_currentEncoderType == MTLENCODERTYPE_RENDER ? m_currentRenderEncoder : nil;
 	}
 
 	bool EmitRenderEncoderState();

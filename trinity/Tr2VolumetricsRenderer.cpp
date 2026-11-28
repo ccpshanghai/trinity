@@ -100,7 +100,6 @@ Tr2VolumetricsRenderer::Tr2VolumetricsRenderer( IRoot* ) :
 	}
 
 	{
-		m_testValue = 0.0f;
 		Matrix4dFromMatrix( m_godRayNoiseMatrix, IdentityMatrix() );
 	}
 
@@ -191,7 +190,7 @@ Tr2GpuResourcePool::Texture Tr2VolumetricsRenderer::RenderVolumetrics(
 		return GetEmptyVolumetricTexture( gpuResourcePool );
 	}
 
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	renderContext.AddGpuMarker( __FUNCTION__ );
 	GPU_REGION( renderContext, "Volumetrics" );
@@ -357,10 +356,6 @@ void Tr2VolumetricsRenderer::UpdateFogSettings( const EveComponentRegistry& regi
 		return a->priority > b->priority;
 	} );
 
-	//m_froxelFogSettings = OldPriorityBlend( overrides );
-
-	//std::vector<ITr2FroxelFogSettings::FroxelFogSettings*> test;
-
 #define FROXEL_ACCUMULATE( setting ) m_froxelFogSettings.setting = PriorityBlend::Accumulate( &ITr2FroxelFogSettings::FroxelFogSettings::setting, overrides )
 
 	FROXEL_ACCUMULATE( thickness );
@@ -380,6 +375,8 @@ void Tr2VolumetricsRenderer::UpdateFogSettings( const EveComponentRegistry& regi
 	FROXEL_ACCUMULATE( fogNoiseIntensity );
 	FROXEL_ACCUMULATE( fogNoiseFrequency );
 	FROXEL_ACCUMULATE( fogNoiseMovementSpeed );
+
+	FROXEL_ACCUMULATE( reflectionIntensity );
 
 	if( m_logBlending )
 	{
@@ -506,9 +503,10 @@ Tr2GpuResourcePool::Texture Tr2VolumetricsRenderer::RenderFog(
 	const Matrix& view,
 	const Matrix& projection,
 	const Matrix& viewLast,
-	const Matrix& projectionLast )
+	const Matrix& projectionLast,
+	const Tr2LightManager::View* lightView )
 {
-	auto fog = RenderFog( m_fogResources, renderContext, gpuResourcePool, width, height, cascadedShadowMap, raytracingGeometry, shadowQuality, sunDirection, sunColor, origin, originShift, view, projection, viewLast, projectionLast );
+	auto fog = RenderFog( m_fogResources, renderContext, gpuResourcePool, width, height, cascadedShadowMap, raytracingGeometry, shadowQuality, sunDirection, sunColor, origin, originShift, view, projection, viewLast, projectionLast, lightView );
 	if( !fog.IsValid() )
 	{
 		return GetEmptyFogTexture( gpuResourcePool );
@@ -525,9 +523,10 @@ Tr2GpuResourcePool::Texture Tr2VolumetricsRenderer::RenderFogIntoReflectionMap(
 	const Color& sunColor,
 	const Vector3d origin,
 	const Matrix& view,
-	const Matrix& projection )
+	const Matrix& projection,
+	const Tr2LightManager::View* lightView )
 {
-	auto fog = RenderFog( m_fogReflectionResources, renderContext, gpuResourcePool, width, height, nullptr, nullptr, ShadowQuality::SHADOW_DISABLED, sunDirection, sunColor, origin, Vector3d( 0, 0, 0 ), view, projection, view, projection );
+	auto fog = RenderFog( m_fogReflectionResources, renderContext, gpuResourcePool, width, height, nullptr, nullptr, ShadowQuality::SHADOW_DISABLED, sunDirection, sunColor, origin, Vector3d( 0, 0, 0 ), view, projection, view, projection, lightView );
 	if( !fog.IsValid() )
 	{
 		return GetEmptyFogTexture( gpuResourcePool );
@@ -568,7 +567,8 @@ Tr2GpuResourcePool::Texture Tr2VolumetricsRenderer::RenderFog(
 	const Matrix& view,
 	const Matrix& projection,
 	const Matrix& viewLast,
-	const Matrix& projectionLast )
+	const Matrix& projectionLast,
+	const Tr2LightManager::View* lightView )
 {
 
 	// Figure out the resolution we need.
@@ -669,7 +669,7 @@ Tr2GpuResourcePool::Texture Tr2VolumetricsRenderer::RenderFog(
 	FogPerObjectData* data;
 	m_fogConstantBuffer.Lock( (void**)&data, renderContext );
 
-	UpdatePerObjectData( data, view, projection, viewLast, projectionLast, origin, originShift, sunDirection, sunColor, width, height, depth, resources.froxelJitter, shadowType == SHADOWS_CASCADED ? cascadedShadowMap : nullptr );
+	UpdatePerObjectData( data, view, projection, viewLast, projectionLast, origin, originShift, sunDirection, sunColor, width, height, depth, resources.froxelJitter, shadowType == SHADOWS_CASCADED ? cascadedShadowMap : nullptr, lightView );
 
 	m_fogConstantBuffer.Unlock( renderContext );
 
@@ -716,7 +716,7 @@ Tr2GpuResourcePool::Texture Tr2VolumetricsRenderer::RenderFog(
 				Tr2RtLocalMaterialDescriptionAL material;
 				material.SetConstants( Tr2Renderer::GetPerObjectVSStartRegister(), m_fogConstantBuffer );
 
-				CCP_STATS_ZONE( "Create shader table" );
+				TRINITY_STATS_ZONE( "Create shader table" );
 				m_shaderTableDesc.AddRayGenShader( rayGenName.c_str(), material );
 				m_shaderTableDesc.AddMissShader( missName.c_str(), material );
 
@@ -730,11 +730,12 @@ Tr2GpuResourcePool::Texture Tr2VolumetricsRenderer::RenderFog(
 				resources.rtCalculateFroxels->SetParameter( BlueSharedString( "RtFroxelOutputTexture" ), fogFroxels );
 
 				resources.rtCalculateFroxels->SetParameter( BlueSharedString( "RtShadowScene" ), raytracingGeometry );
-				resources.rtCalculateFroxels->ApplyMaterialDataForRtState( techniqueIndex, pipelineState, renderContext );
+				renderContext.SetRtPipelineState( pipelineState, rayGenName.c_str() );
+				resources.rtCalculateFroxels->ApplyMaterialDataForRtState( techniqueIndex, renderContext );
 				renderContext.UseAccelerationStructure( raytracingGeometry->GetTLAS() );
 
 				{
-					CCP_STATS_ZONE( "renderContext.UseResources" );
+					TRINITY_STATS_ZONE( "renderContext.UseResources" );
 					renderContext.UseResources( Tr2UseResourceDestination::COMPUTE, Tr2GpuUsage::SHADER_RESOURCE, raytracingGeometry->GetBindlessResources() );
 				}
 
@@ -808,7 +809,7 @@ Tr2GpuResourcePool::Texture Tr2VolumetricsRenderer::RenderFog(
 	return fogFroxels;
 }
 
-void Tr2VolumetricsRenderer::UpdatePerObjectData( FogPerObjectData* data, const Matrix& view, const Matrix& projection, const Matrix& viewLast, const Matrix& projectionLast, const Vector3d& origin, const Vector3d& originShift, const Vector3& sunDirection, const Color& sunColor, uint32_t width, uint32_t height, uint32_t depth, const Vector3& jitter, const Tr2ShadowMap* cascadedShadowMap )
+void Tr2VolumetricsRenderer::UpdatePerObjectData( FogPerObjectData* data, const Matrix& view, const Matrix& projection, const Matrix& viewLast, const Matrix& projectionLast, const Vector3d& origin, const Vector3d& originShift, const Vector3& sunDirection, const Color& sunColor, uint32_t width, uint32_t height, uint32_t depth, const Vector3& jitter, const Tr2ShadowMap* cascadedShadowMap, const Tr2LightManager::View* lightView )
 {
 	float maxDistance = m_gameBackClip;
 	float maxDistanceVisibility = exp( -m_froxelFogSettings.thickness.value );
@@ -1017,23 +1018,25 @@ void Tr2VolumetricsRenderer::UpdatePerObjectData( FogPerObjectData* data, const 
 			data->SplitInfo = cascadedShadowMap->m_perSplitData.SplitInfo;
 		}
 
-		if( auto lightManager = Tr2LightManager::GetInstance() )
+		auto lightManager = Tr2LightManager::GetInstance();
+		if( lightManager && lightView )
 		{
-			CCP_ASSERT_M( lightManager->GetVolumetricLights().size() <= 16, "LightManager does not meet expectation of VolumetricsRenderer!" );
+			const auto& volumetricLights = lightView->GetVolumetricLights();
+			CCP_ASSERT_M( volumetricLights.size() <= 16, "LightManager does not meet expectation of VolumetricsRenderer!" );
 
-			data->NumDynamicLights = (uint32_t)lightManager->GetVolumetricLights().size();
-			data->InverseShadowMapAtlasSize = lightManager->GetShadowMapAtlasSettings().actualTextureSize > 0 ?
-				1.f / lightManager->GetShadowMapAtlasSettings().actualTextureSize :
+			float lightShadowMapAtlasSize = (float)lightManager->GetShadowMapAtlasSettings().actualTextureSize;
+			data->NumDynamicLights = (uint32_t)volumetricLights.size();
+			data->InverseShadowMapAtlasSize = lightShadowMapAtlasSize > 0 ?
+				1.f / lightShadowMapAtlasSize :
 				0.f;
 			data->ShadowMapAtlasEntryMinSizeLog2 = lightManager->GetShadowMapAtlasSettings().entryMinSizeLog2;
 
-			for( uint32_t i = 0; i < lightManager->GetVolumetricLights().size(); i++ )
+			for( uint32_t i = 0; i < volumetricLights.size(); i++ )
 			{
-				uint32_t lightIndex = lightManager->GetVolumetricLights()[i];
-				data->DynamicLights[i] = lightManager->GetLightData( lightIndex );
+				data->DynamicLights[i] = lightView->GetLightData( volumetricLights[i] );
 			}
 
-			data->LightProfileTextureWidth = (float)lightManager->GetLightProfileArray().GetWidth();
+			data->LightProfileTextureWidth = (float)Tr2LightManager::GetLightProfileArray().GetWidth();
 		}
 		else
 		{
@@ -1063,6 +1066,7 @@ void Tr2VolumetricsRenderer::PopulatePerFrameData( FroxelPerFrameData& data )
 	data.EnvironmentIntensity = m_froxelFogSettings.environmentIntensity.value;
 
 	data.EnvironmentG = environmentG;
+	data.FogMultiplier = m_isReflectionProbe ? std::clamp( m_froxelFogSettings.reflectionIntensity.value, 0.0f, 1.0f ) : 1.0f;
 
 	for( int32_t i = 0; i < m_planets.size(); i++ )
 	{

@@ -7,7 +7,9 @@
 #include "../Tr2RenderContextEnum.h"
 #include "../Tr2DrawUPHelper.h"
 #include "../include/Tr2ConstantBufferAL.h"
-#include "../include/Tr2ResourceSetAL.h"
+#include "../include/Tr2BufferAL.h"
+#include "../include/Tr2RegisterMapAL.h"
+#include "../include/Tr2SamplerStateAL.h"
 #include "../include/Tr2TextureAL.h"
 #include "../include/Tr2ShaderProgramAL.h"
 #include "../include/Tr2VertexLayoutAL.h"
@@ -17,15 +19,15 @@
 
 #include "./util/DescriptorStateCacheDx12.h"
 #include "./util/PsoDescription.h"
+#include "./util/ResourceBindingsDx12.h"
 #include "../Tr2HalHelperStructures.h"
 
 class Tr2ConstantBufferAL;
 struct ITr2RenderContextEvents;
 
 class Tr2ShaderAL;
-class Tr2SamplerStateAL;
-class Tr2BufferAL;
 class Tr2RtShaderTableAL;
+class Tr2RtPipelineStateAL;
 struct Tr2Viewport;
 
 
@@ -91,7 +93,16 @@ public:
 	ALResult SetVertexLayout( const Tr2VertexLayoutAL& layout ) throw();
 	ALResult SetShaderProgram( const Tr2ShaderProgramAL& shader ) throw();
 
-	ALResult SetResourceSet( const Tr2ResourceSetAL& resourceSet ) throw();
+	ALResult SetSrv( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2BufferAL& buffer ) throw();
+	ALResult SetSrv( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2TextureAL& texture, Tr2RenderContextEnum::ColorSpace colorSpace = Tr2RenderContextEnum::COLOR_SPACE_LINEAR ) throw();
+	ALResult SetUav( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2BufferAL& buffer ) throw();
+	ALResult SetUav( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2TextureAL& texture, uint32_t mip = 0 ) throw();
+	ALResult SetSrvHeapView( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex ) throw();
+	ALResult SetUavHeapView( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex ) throw();
+	ALResult SetSamplerHeapView( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex ) throw();
+	ALResult SetSampler( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex, const Tr2SamplerStateAL& sampler ) throw();
+
+	ALResult ResetResourceBindings() throw();
 
 	ALResult DrawIndexedPrimitive(
 		uint32_t numVertices,
@@ -142,6 +153,9 @@ public:
 	ALResult RunComputeShaderIndirect( Tr2BufferAL& indirectParams, unsigned offset ) throw();
 
 	ALResult DispatchRays( Tr2RtPipelineStateAL& pipeline, Tr2RtShaderTableAL& shaderTable, const wchar_t* rayGenShader, uint32_t width, uint32_t height, uint32_t depth );
+
+	/** Select the raytracing pipeline the following resource bindings are for, as SetShaderProgram does for draws and compute */
+	ALResult SetRtPipelineState( Tr2RtPipelineStateAL& pipeline, const wchar_t* rayGenShader );
 
 	ALResult SetRenderState( Tr2RenderContextEnum::RenderState state, uint32_t value ) throw();
 	ALResult SetRenderStates( const uint32_t* stateValuePairs, uint32_t count ) throw();
@@ -235,6 +249,9 @@ public:
 	ALResult SetAllState();
 
 protected:
+	ALResult UseResourceBindings() throw();
+	const TrinityALImpl::Tr2RootSignatureAL* GetProgramRootSignatureDx12() const;
+
 	ID3D12PipelineState* GetPipelineState();
 
 	/** Forcibly reset and dirty all descriptor caches (used for explicit synchronization) */
@@ -261,8 +278,10 @@ protected:
 
 	std::pair<uint32_t, uint32_t> m_primitiveToVertexCount;
 
-	Tr2ResourceSetAL m_resourceSet;
+private:
+	ResourceBindings m_bindings;
 
+protected:
 	bool GetRenderTargetHandles( D3D12_CPU_DESCRIPTOR_HANDLE* handles, uint32_t& count );
 
 public:
@@ -274,6 +293,91 @@ public:
 	CComPtr<ID3D12GraphicsCommandList2> m_commandList2;
 	// extends the interface to support ray tracing and render passes
 	CComPtr<ID3D12GraphicsCommandList4> m_commandList4;
+
+	// Returns this context's native command list as an integer.
+	//
+	// NOT a liveness check. m_commandList is allocated once and reused across frames, so
+	// this is non-zero outside the frame as well — measured identical before, during and
+	// after a pump. Callers must gate on *where* they are (inside a render step) and never
+	// on this value. Zero means only "not a DX12 backend".
+	//
+	// Exists so an immediate-mode UI (ImGui) can record into Trinity's frame from
+	// Python. Trinity ships as a CPython extension module whose only export is
+	// PyInit__trinity_dx12, so a C++ UI layer cannot link against it at all; the
+	// handle has to travel out through Python and back in.
+	//
+	// uint64_t rather than void*, because Blue marshals only the sized integer
+	// types (BlueExposureTypeSignature.h). Declared here on Tr2RenderContextAL
+	// rather than on a Blue class so that both Tr2RenderContext and
+	// Tr2PrimaryRenderContext inherit it, in every backend configuration, with no
+	// per-configuration shim.
+	//
+	// Only meaningful to *record into* while a frame is open, which in practice means from
+	// inside a TriStepPythonCB callback. Nothing here can enforce that.
+	//
+	// Not virtual: backend selection here is by file, not by dispatch — each
+	// backend header declares its own Tr2RenderContextAL and exactly one compiles.
+	uint64_t GetNativeCommandList() const
+	{
+		return static_cast<uint64_t>( reinterpret_cast<uintptr_t>( m_commandList.p ) );
+	}
+
+	// Metal opens a render pass here; every other backend has an always-recording command
+	// list and there is nothing to do. Present on all of them so the shared TriStep that
+	// calls it compiles everywhere (spec 5: the frame graph asks, getters never drive).
+	ALResult BeginRenderPass()
+	{
+		return S_OK;
+	}
+
+	// The back buffer's format as the GPU API spells it. On the DX backends
+	// Tr2RenderContextEnum::PixelFormat already holds DXGI's values, so this is
+	// GetBackBufferFormat() widened -- and the getter exists precisely so a caller does not
+	// have to know that, because on Metal the two are different numbers and passing the wrong
+	// one aborts the process inside Metal's validation layer.
+	//
+	// Out-of-line, unlike dx11 and stub: there GetPrimaryRenderContext() is static and an
+	// inline body can call it, but here it is an accessor over m_ownerDevice, which the
+	// note below explains cannot be dereferenced at this point in the header.
+	uint64_t GetNativeBackBufferFormat() const;
+
+	// Metal's two, so the Python-side handle table is the same shape on every backend
+	// (spec D3): a getter is named for what it returns, and returns 0 where the concept
+	// does not exist. ImGui's Metal backend renders with a command buffer plus the pass's
+	// open encoder; neither has a DX12 counterpart.
+	uint64_t GetNativeCommandBuffer() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeRenderEncoder() const
+	{
+		return 0;
+	}
+
+	// Vulkan's three, and the contract every accessor here shares (spec D3): named for what
+	// they return, 0 where the concept does not exist. None of these three exists on this
+	// backend.
+	uint64_t GetNativeInstance() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativePhysicalDevice() const
+	{
+		return 0;
+	}
+
+	uint64_t GetNativeQueueFamily() const
+	{
+		return 0;
+	}
+
+	// The other four — device, command queue, SRV heap, sampler heap — live on
+	// Tr2PrimaryRenderContextAL rather than here: that is where m_device, m_commandQueue and
+	// the two GetGlobal*Heap accessors are, and at this point in the header
+	// Tr2PrimaryRenderContextAL is only forward-declared, so an inline body could not
+	// dereference m_ownerDevice.
 
 	Tr2PrimaryRenderContextAL* m_ownerDevice;
 	bool m_dirtyPso;

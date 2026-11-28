@@ -180,7 +180,7 @@ unsigned TriTextureRes::ComputeMipSkipCount()
 
 void TriTextureRes::RasterizeProceduralTexture( const wchar_t* data, void ( *Rastrization )( const std::string_view&, ImageIO::HostBitmap& ) )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	m_isGood = false;
 	m_isPrepared = false;
@@ -568,10 +568,84 @@ static bool IsTga( const wchar_t* filename )
 	return false;
 }
 
+namespace
+{
+
+std::atomic<bool> s_substituteKtx2ForDds( false );
+
+// "….dds" -> "….ktx2", or false when the path is not a .dds at all.
+//
+// Case-insensitive on the extension, because the .red files are EVE's content and the shipped
+// closure is lowercase by convention rather than by rule -- the staging tool had to match
+// case-insensitively for the same reason.
+bool SubstituteKtx2ForDdsInPath( const std::wstring& path, std::wstring& substituted )
+{
+	if( path.size() < 4 )
+	{
+		return false;
+	}
+	const wchar_t* ext = path.c_str() + path.size() - 4;
+	const bool isDds = ext[0] == L'.' && ( ext[1] == L'd' || ext[1] == L'D' ) &&
+		( ext[2] == L'd' || ext[2] == L'D' ) && ( ext[3] == L's' || ext[3] == L'S' );
+	if( !isDds )
+	{
+		return false;
+	}
+	substituted.assign( path, 0, path.size() - 4 );
+	substituted += L".ktx2";
+	return true;
+}
+
+} // namespace
+
+void TriTextureRes::SetSubstituteKtx2ForDds( bool substitute )
+{
+	s_substituteKtx2ForDds = substitute;
+}
+
+bool TriTextureRes::GetSubstituteKtx2ForDds()
+{
+	return s_substituteKtx2ForDds;
+}
+
+bool TriTextureRes::OpenKtx2Sibling( const std::wstring& path, IBlueStreamPtr& stream, std::wstring& actualPath )
+{
+	actualPath.clear();
+
+	// No substitution for a path carrying a query string. The base class splits those on '?'
+	// before opening, and duplicating that here to save one filesystem miss would put the same
+	// rule in two places.
+	if( GetSubstituteKtx2ForDds() && path.find( L'?' ) == std::wstring::npos )
+	{
+		std::wstring substituted;
+		if( SubstituteKtx2ForDdsInPath( path, substituted ) &&
+			BePaths->GetStreamFromPathW( substituted.c_str(), &stream ) )
+		{
+			actualPath = std::move( substituted );
+			return true;
+		}
+		// GetStreamFromPathW answering no IS the existence check -- one filesystem hit rather
+		// than a FileExists followed by an open, and it is the only answer that matters. Most
+		// textures have no .ktx2 sibling and fall through here on every load.
+		stream = nullptr;
+	}
+	return false;
+}
+
+// Called on background thread
+bool TriTextureRes::DoOpenStream()
+{
+	if( OpenKtx2Sibling( m_path, m_dataStream, m_actualPath ) )
+	{
+		return true;
+	}
+	return BlueAsyncRes::DoOpenStream();
+}
+
 // Called on background thread
 BlueAsyncRes::LoadingResult TriTextureRes::DoLoad()
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	BeTimer t;
 
@@ -608,7 +682,9 @@ BlueAsyncRes::LoadingResult TriTextureRes::DoLoad()
 
 	ImageIO::Result result;
 	auto mipSkip = m_requestedLoadMip + ComputeMipSkipCount();
-	ImageIO::LoadParameters params( m_path.c_str(), mipSkip, m_mipLevelMaxCount );
+	// The opened path, not the requested one: imageio dispatches on the extension.
+	const std::wstring& loadedPath = m_actualPath.empty() ? m_path : m_actualPath;
+	ImageIO::LoadParameters params( loadedPath.c_str(), mipSkip, m_mipLevelMaxCount );
 	result = ImageIO::ReadImage( *m_dataStream, params, *m_loadedBitmap, &m_metadata );
 
 	if( !result )
@@ -661,7 +737,7 @@ BlueAsyncRes::LoadingResult TriTextureRes::DoLoad()
 // Called on main thread
 bool TriTextureRes::DoPrepare()
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	if( m_lodEnabled )
 	{
@@ -776,7 +852,7 @@ void TriTextureRes::ProcessLodRequest( const Tr2TextureLodUpdateRequest& request
 {
 	if( request.cachedInRam )
 	{
-		CCP_STATS_ZONE( "CreateTexture" );
+		TRINITY_STATS_ZONE( "CreateTexture" );
 
 		USE_MAIN_THREAD_RENDER_CONTEXT();
 

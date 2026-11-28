@@ -202,6 +202,38 @@ protected:
 	virtual bool DoPrepare();
 	virtual void CleanupLoadData();
 
+	// A .dds path opens its .ktx2 sibling first, when one exists and the backend samples ASTC
+	// (spec O3, D7). The .red files name every texture as .dds and are EVE's own committed
+	// content, so the path cannot be rewritten at its source; DDS also cannot carry ASTC, which
+	// is why there is a second container to prefer at all.
+	//
+	// The shape is Blue's, not invented here: BlueFileUtil's SubstituteBlackForRedInFilename is
+	// driven by BeResMan->GetSubstituteBlackForRed() and IBluePaths documents FileExists honouring
+	// it. Same layer, same kind of preference, one extension instead of another.
+	virtual bool DoOpenStream();
+
+public:
+	// Set once, from the render context's capability, when the device comes up -- not queried per
+	// load. DoOpenStream runs on a loader thread and GetCaps() is main-thread-only, so a live
+	// query here would be a thread violation dressed as a capability check.
+	static void SetSubstituteKtx2ForDds( bool substitute );
+	static bool GetSubstituteKtx2ForDds();
+
+	// The substitution itself, for every resource that loads a texture from a .dds path: opens
+	// the .ktx2 sibling of `path` into `stream` and names it in `actualPath` when the
+	// substitution is on, the path is a .dds without a query string, and the sibling exists.
+	// False otherwise, with `stream` cleared; the caller then opens `path` as it always did.
+	// Tr2LightProfileRes (the IES lookups, R16F) loads through ImageIO without being a
+	// TriTextureRes, so it calls this rather than repeating the rule.
+	static bool OpenKtx2Sibling( const std::wstring& path, IBlueStreamPtr& stream, std::wstring& actualPath );
+
+private:
+	// The path actually opened. Empty unless the substitution above found a .ktx2, in which case
+	// it is what LoadParameters must carry: imageio picks its handler by extension, so loading a
+	// .ktx2 stream under a .dds name would hand ASTC blocks to the DDS parser. m_path stays the
+	// requested name, which is what the resource is keyed and logged by.
+	std::wstring m_actualPath;
+
 private:
 	// These member variables and functions exist to support async texture saving;
 	// from Tr2AsyncSave

@@ -4,6 +4,7 @@
 #include "Tr2LightProfileRes.h"
 #include "../Tr2LightManager.h"
 #include "../Tr2HostBitmap.h"
+#include "TriTextureRes.h"
 #include <regex>
 #include <sstream>
 
@@ -65,6 +66,16 @@ uint16_t Tr2LightProfileRes::GetTextureIndex() const
 	return m_element.GetElementIndex();
 }
 
+// Called on background thread
+bool Tr2LightProfileRes::DoOpenStream()
+{
+	if( TriTextureRes::OpenKtx2Sibling( m_path, m_dataStream, m_actualPath ) )
+	{
+		return true;
+	}
+	return BlueAsyncRes::DoOpenStream();
+}
+
 Tr2LightProfileRes::LoadingResult Tr2LightProfileRes::DoLoad()
 {
 	if( !m_dataStream )
@@ -76,10 +87,11 @@ Tr2LightProfileRes::LoadingResult Tr2LightProfileRes::DoLoad()
 		return ParseIes() ? LR_SUCCESS : LR_FAILED;
 	}
 
-	auto result = ImageIO::ReadImage( *m_dataStream, ImageIO::LoadParameters( m_path.c_str() ), m_bitmap );
+	const std::wstring& loadedPath = m_actualPath.empty() ? m_path : m_actualPath;
+	auto result = ImageIO::ReadImage( *m_dataStream, ImageIO::LoadParameters( loadedPath.c_str() ), m_bitmap );
 	if( !result )
 	{
-		CCP_LOGWARN( "Tr2LightProfileRes: error reading '%S' - %s", GetPath(), result.GetErrorMessage().c_str() );
+		CCP_LOGWARN( "Tr2LightProfileRes: error reading '%S' - %s", loadedPath.c_str(), result.GetErrorMessage().c_str() );
 		return LR_FAILED;
 	}
 	if( !IsCompatibleBitmap( m_bitmap ) )

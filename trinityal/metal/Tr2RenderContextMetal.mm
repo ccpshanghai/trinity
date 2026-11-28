@@ -3,6 +3,7 @@
 #include "StdAfx.h"
 
 #if ( TRINITY_PLATFORM == TRINITY_METAL )
+#include <TargetConditionals.h>
 
 #include "Tr2RenderContextMetal.h"
 #include "ITr2RenderContextEvents.h"
@@ -12,9 +13,9 @@
 #include "Tr2ConstantBufferALMetal.h"
 #include "Tr2RenderContextMetal.h"
 #include "Tr2VertexLayoutALMetal.h"
-#include "Tr2ResourceSetALMetal.h"
 #include "Tr2ShaderProgramALMetal.h"
 #include "Tr2TextureALMetal.h"
+#include "Tr2SamplerStateALMetal.h"
 #include "Tr2SwapChainALMetal.h"
 #include "Tr2RtPipelineStateALMetal.h"
 #include "Tr2RtShaderTableALMetal.h"
@@ -93,7 +94,6 @@ Tr2RenderContextAL::~Tr2RenderContextAL()
 	}
 
 	m_vertexLayout = Tr2VertexLayoutAL();
-	m_resourceSet = Tr2ResourceSetAL();
 	m_shaderProgram = Tr2ShaderProgramAL();
 
 	std::fill( std::begin( m_boundRenderTargets ), std::end( m_boundRenderTargets ), BoundRT{} );
@@ -121,7 +121,6 @@ void Tr2RenderContextAL::SetAsPrimary()
 	m_caMetalLayer = nil;
 	m_defaultBackBuffer.m_texture = std::make_shared<TrinityALImpl::Tr2TextureAL>();
 	m_boundDepthStencil.m_texture = nullptr;
-	m_needsDrawResourceCheck = true;
 
 	m_swapChain.m_swapChain = std::make_shared<TrinityALImpl::Tr2SwapChainAL>();
 }
@@ -153,6 +152,7 @@ void Tr2RenderContextAL::Destroy()
 		m_boundRenderTargets[i] = {};
 	}
 	m_boundDepthStencil = Tr2TextureAL();
+	m_bindings.Discard();
 	m_isValid = false;
 }
 
@@ -405,8 +405,17 @@ ALResult Tr2RenderContextAL::DrawIndexedPrimitive( uint32_t numVertices,
 
 	CheckDrawResources();
 
-	m_workQueue->DrawIndexedPrimitives(
-		m_metalPrimitiveInfo.metalPrimitiveType, vc, m_metalIndexType, m_metalIndexBuffer, startIndex, 1 );
+	// minimumIndex is the base vertex, despite the name it inherited from D3D9 -- dx11 calls the
+	// same parameter baseVertexLocation and dx12 passes it as one. Defaulting it to 0 here drew
+	// every indexed primitive against vertex 0 of the bound stream, which is only visible once a
+	// caller binds a whole shared buffer and expresses its allocation's place as a base vertex.
+	m_workQueue->DrawIndexedPrimitives( m_metalPrimitiveInfo.metalPrimitiveType,
+										vc,
+										m_metalIndexType,
+										m_metalIndexBuffer,
+										startIndex,
+										1,
+										int32_t( minimumIndex ) );
 
 	return S_OK;
 }
@@ -523,12 +532,7 @@ ALResult Tr2RenderContextAL::DrawInstancedIndirect( Tr2BufferAL& params, uint32_
 
 void Tr2RenderContextAL::CheckDrawResources()
 {
-	// Only need to check resources if we don't have a resource set and the shader has changed since the last draw.
-	if( m_needsDrawResourceCheck && !m_resourceSet.IsValid() )
-	{
-		m_shaderProgram.m_program->SetDummyResources( *m_workQueue );
-		m_needsDrawResourceCheck = false;
-	}
+	UseResourceBindings();
 
 	if( m_vertexLayout.IsValid() )
 	{
@@ -617,6 +621,8 @@ ALResult Tr2RenderContextAL::DrawIndexedPrimitiveUP( uint32_t numVertices,
 
 ALResult Tr2RenderContextAL::RunComputeShader( unsigned groupDimX, unsigned groupDimY, unsigned groupDimZ )
 {
+	UseResourceBindings();
+
 	m_workQueue->Dispatch( groupDimX, groupDimY, groupDimZ );
 
 	return S_OK;
@@ -628,6 +634,8 @@ ALResult Tr2RenderContextAL::RunComputeShaderIndirect( Tr2BufferAL& indirectPara
 	{
 		return E_FAIL;
 	}
+
+	UseResourceBindings();
 
 	m_workQueue->Dispatch( indirectParams.m_buffer->GetMetalBuffer(), offset );
 
@@ -654,11 +662,26 @@ ALResult Tr2RenderContextAL::DispatchRays( Tr2RtPipelineStateAL& pipeline,
 	{
 		// pass on shaderTable to bind it to the RayGen shader
 		SetShaderProgram( pipeline.TrinityALImpl_GetObject()->GetShaderProgram( *rayGen ) );
+		UseResourceBindings();
 		m_workQueue->DispatchRays(
 			pipeline.TrinityALImpl_GetObject(), shaderTable.TrinityALImpl_GetObject(), *rayGen, width, height, depth );
 	}
 
 	return S_OK;
+}
+
+ALResult Tr2RenderContextAL::SetRtPipelineState( Tr2RtPipelineStateAL& pipeline, const wchar_t* rayGenShader )
+{
+	if( !pipeline.IsValid() )
+	{
+		return E_INVALIDARG;
+	}
+	auto rayGen = pipeline.TrinityALImpl_GetObject()->GetRayGenIndex( rayGenShader );
+	if( !rayGen )
+	{
+		return E_INVALIDARG;
+	}
+	return SetShaderProgram( pipeline.TrinityALImpl_GetObject()->GetShaderProgram( *rayGen ) );
 }
 
 ALResult Tr2RenderContextAL::SetConstants( const Tr2ConstantBufferAL& buffer,
@@ -774,14 +797,16 @@ ALResult Tr2RenderContextAL::CreateDevice( uint32_t Adapter,
 {
 	m_isValid = true;
 	m_workQueue = m_metalContext->GetPrimaryWorkQueue();
-#if 0
-	NSView *view = (NSView *)hFocusWindow;
-#else
-	NSView* view = (NSView*)presentationParameters.outputWindow;
-#endif
-	m_caMetalLayer = (CAMetalLayer*)view.layer;
+	m_caMetalLayer = (CAMetalLayer*)presentationParameters.outputWindow;
 	METAL_LOG( @"Creating device" );
-	SetPresentParameters( Adapter, presentationParameters );
+
+	// Checked, which it was not. A failure here leaves a context with no back buffer, and the
+	// only thing that showed downstream was GetBackBufferFormat() returning UNKNOWN -- which
+	// Python saw as ui_init refusing an invalid colour format, with nothing anywhere naming the
+	// swap chain. Three results were discarded in a row (here, in SetPresentParameters, and
+	// Tr2SwapChainAL::Create's own early-outs) and that is most of what made a 0 x 0 back buffer
+	// expensive to find.
+	CR_RETURN_HR( SetPresentParameters( Adapter, presentationParameters ) );
 
 	if( m_events )
 	{
@@ -791,9 +816,20 @@ ALResult Tr2RenderContextAL::CreateDevice( uint32_t Adapter,
 	if( @available( macOS 11.0, * ) )
 	{
 		auto device = m_metalContext->GetDevice();
-		bool isAppleSilicon = [device supportsFamily:MTLGPUFamilyMac2] && [device supportsFamily:MTLGPUFamilyApple7];
+		// Apple7 alone: an M1 reports it and so does an iPhone 12. The old
+		// Mac2 && Apple7 conjunction was false on every iPhone (spec D7).
+		bool isAppleSilicon = [device supportsFamily:MTLGPUFamilyApple7];
 		bool raytracingAvailable = device.supportsRaytracing && isAppleSilicon;
 		m_caps.m_supportsRaytracing = raytracingAvailable;
+
+		// ASTC: Apple2, not Apple7. Every Apple GPU family from 2 upward samples LDR ASTC --
+		// including the Simulator's software renderer, which reports Apple1/2 and nothing above.
+		// Asking for Apple7 here would have made the capability track raytracing's answer and
+		// turned the whole ASTC path off on the one device M3 has to demonstrate it on. Intel
+		// Macs (MTLGPUFamilyMac2, no Apple family) correctly answer no.
+		m_caps.m_supportsAstcTextures = [device supportsFamily:MTLGPUFamilyApple2];
+		CCP_LOGNOTICE( m_caps.m_supportsAstcTextures ? "Device samples ASTC textures"
+													: "Device does not sample ASTC textures" );
 		if( m_caps.m_supportsRaytracing )
 		{
 			CCP_LOGNOTICE( "Device supports raytracing" );
@@ -809,6 +845,29 @@ ALResult Tr2RenderContextAL::CreateDevice( uint32_t Adapter,
 PixelFormat Tr2RenderContextAL::GetBackBufferFormat() const
 {
 	return m_defaultBackBuffer.GetFormat();
+}
+
+ALResult Tr2RenderContextAL::BeginRenderPass()
+{
+	if( !IsValid() )
+	{
+		return E_FAIL;
+	}
+	// GetRenderEncoder, not GetCurrentRenderEncoder: this one opens the pass (and applies any
+	// pending clear) when none is open, and returns the existing encoder when one is. It is the
+	// same call the four DrawPrimitives overloads make for the same reason.
+	m_workQueue->GetRenderEncoder( @"TriStepBeginRenderPass" );
+	return S_OK;
+}
+
+uint64_t Tr2RenderContextAL::GetNativeBackBufferFormat() const
+{
+	// Through the AL's own table, so the HUD's pipeline state is built for exactly the format
+	// every other texture in this context was created with. MTLPixelFormatInvalid is 0, which
+	// is also what the other backends' version of this getter returns where it has no meaning
+	// (spec D3), so a caller checking for 0 is right on all of them.
+	return static_cast<uint64_t>(
+		m_metalContext->m_utils->GetMTLPixelFormat( m_defaultBackBuffer.GetFormat() ) );
 }
 
 ALResult Tr2RenderContextAL::SetPresentParameters( unsigned adapter,
@@ -832,14 +891,22 @@ ALResult Tr2RenderContextAL::SetPresentParameters( unsigned adapter,
 	{
 		m_presentParameters.mode.format = PIXEL_FORMAT_B8G8R8A8_UNORM;
 	}
-	m_swapChain.m_swapChain->Create( presentationParameters.outputWindow, *this );
+	// Checked. Create refuses a handle that is not a CAMetalLayer, an invalid context and a
+	// layer with no geometry, and every one of those used to be silent.
+	CR_RETURN_HR( m_swapChain.m_swapChain->Create( presentationParameters.outputWindow, *this ) );
 
-	NSView* view = (NSView*)presentationParameters.outputWindow;
-	if( view.layer && [view.layer isKindOfClass:CAMetalLayer.class] )
+	CAMetalLayer* layer = (CAMetalLayer*)presentationParameters.outputWindow;
+#if TARGET_OS_OSX
+	// displaySyncEnabled is macOS-only CAMetalLayer surface -- iOS layers have no
+	// equivalent toggle for disabling display sync, so PRESENT_INTERVAL_IMMEDIATE
+	// has no layer-level lever to pull there (unchanged from today: iOS never
+	// reaches this line either way).
+	if( layer && [layer isKindOfClass:CAMetalLayer.class] )
 	{
-		( (CAMetalLayer*)view.layer ).displaySyncEnabled =
+		layer.displaySyncEnabled =
 			presentationParameters.presentInterval == Tr2RenderContextEnum::PRESENT_INTERVAL_IMMEDIATE ? NO : YES;
 	}
+#endif
 	m_defaultBackBuffer = m_swapChain.GetBackBuffer();
 
 	// Set a default viewport based around this
@@ -869,9 +936,8 @@ ALResult Tr2RenderContextAL::EndScene()
 	m_workQueue->EndFrame();
 
 	m_vertexLayout = Tr2VertexLayoutAL();
-	m_resourceSet = Tr2ResourceSetAL();
 	m_shaderProgram = Tr2ShaderProgramAL();
-	m_needsDrawResourceCheck = true;
+	m_bindings.Discard();
 
 	return S_OK;
 }
@@ -914,7 +980,7 @@ ALResult Tr2RenderContextAL::SetShaderProgram( const Tr2ShaderProgramAL& shaderP
 							 shaderProgram.m_program->GetThreadGroupSize(),
 							 shaderProgram.m_program->GetResourceMasks() );
 
-	m_needsDrawResourceCheck = true;
+	m_bindings.SetProgram( shaderProgram.IsValid() ? shaderProgram.TrinityALImpl_GetObject() : nullptr );
 
 	return S_OK;
 }
@@ -1134,47 +1200,72 @@ ALResult Tr2RenderContextAL::SetRenderStates( const uint32_t* stateValuePairs, u
 	return S_OK;
 }
 
-ALResult Tr2RenderContextAL::SetResourceSet( const Tr2ResourceSetAL& resourceSet )
+ALResult Tr2RenderContextAL::SetSrv( Tr2RenderContextEnum::ShaderType stage,
+									 uint32_t registerIndex,
+									 const Tr2BufferAL& buffer ) throw()
 {
-#if 0
-	if( m_resourceSet.m_resourceSet == resourceSet.m_resourceSet )
+	return m_bindings.SetSrv( stage, registerIndex, buffer );
+}
+
+ALResult Tr2RenderContextAL::SetSrv( Tr2RenderContextEnum::ShaderType stage,
+									 uint32_t registerIndex,
+									 const Tr2TextureAL& texture,
+									 Tr2RenderContextEnum::ColorSpace colorSpace ) throw()
+{
+	return m_bindings.SetSrv( stage, registerIndex, texture, colorSpace );
+}
+
+ALResult Tr2RenderContextAL::SetUav( Tr2RenderContextEnum::ShaderType stage,
+									 uint32_t registerIndex,
+									 const Tr2BufferAL& buffer ) throw()
+{
+	return m_bindings.SetUav( stage, registerIndex, buffer );
+}
+
+ALResult Tr2RenderContextAL::SetUav( Tr2RenderContextEnum::ShaderType stage,
+									 uint32_t registerIndex,
+									 const Tr2TextureAL& texture,
+									 uint32_t mip ) throw()
+{
+	return m_bindings.SetUav( stage, registerIndex, texture, mip );
+}
+
+ALResult Tr2RenderContextAL::SetSrvHeapView( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex ) throw()
+{
+	return m_bindings.SetSrvHeapView( stage, registerIndex );
+}
+
+ALResult Tr2RenderContextAL::SetUavHeapView( Tr2RenderContextEnum::ShaderType stage, uint32_t registerIndex ) throw()
+{
+	return m_bindings.SetUavHeapView( stage, registerIndex );
+}
+
+ALResult Tr2RenderContextAL::SetSamplerHeapView( Tr2RenderContextEnum::ShaderType stage,
+												 uint32_t registerIndex ) throw()
+{
+	return m_bindings.SetSamplerHeapView( stage, registerIndex );
+}
+
+ALResult Tr2RenderContextAL::SetSampler( Tr2RenderContextEnum::ShaderType stage,
+										 uint32_t registerIndex,
+										 const Tr2SamplerStateAL& sampler ) throw()
+{
+	return m_bindings.SetSampler( stage, registerIndex, sampler );
+}
+
+ALResult Tr2RenderContextAL::ResetResourceBindings() throw()
+{
+	return m_bindings.Reset();
+}
+
+ALResult Tr2RenderContextAL::UseResourceBindings() throw()
+{
+	if( !m_bindings.GetProgram() )
 	{
-        return S_OK;
-    }
-#endif
-
-	TrinityALImpl::MetalContext* metalContext = GetMetalContext();
-
-	m_resourceSet = resourceSet;
-	auto& rs = *resourceSet.m_resourceSet;
-
-	if( rs.IsValid() )
-	{
-		const ShaderType stages[] = { VERTEX_SHADER, PIXEL_SHADER, COMPUTE_SHADER };
-		for( auto stage : stages )
-		{
-			m_workQueue->SetBuffers( stage,
-									 rs.m_buffers[stage],
-									 rs.m_buffersMask[stage],
-									 GetMetalContext()->GetHeapViewBuffer(),
-									 rs.m_heapViewMask[stage] );
-			m_workQueue->SetTextures( stage, rs.m_textures[stage], rs.m_texturesRange[stage] );
-			m_workQueue->SetSamplers( stage, rs.m_samplers[stage], rs.m_samplersRange[stage] );
-		}
+		return S_OK;
 	}
-	else
-	{
-		const ShaderType stages[] = { VERTEX_SHADER, PIXEL_SHADER, COMPUTE_SHADER };
-		for( auto stage : stages )
-		{
-			m_workQueue->ResetBuffers( stage );
-			m_workQueue->ResetTextures( stage );
-			m_workQueue->ResetSamplers( stage );
-		}
-	}
 
-	m_needsDrawResourceCheck = true;
-	return S_OK;
+	return m_bindings.Commit( *this );
 }
 
 ALResult Tr2RenderContextAL::SetViewport( const Tr2Viewport& viewport )
@@ -1399,9 +1490,7 @@ ALResult Tr2RenderContextAL::ForkContext( Tr2RenderContextAL* context, uint32_t 
 	context->m_depthCompareFunction = m_depthCompareFunction;
 
 	context->m_vertexLayout = Tr2VertexLayoutAL();
-	context->m_resourceSet = Tr2ResourceSetAL();
 	context->m_shaderProgram = Tr2ShaderProgramAL();
-	context->m_needsDrawResourceCheck = true;
 
 	return S_OK;
 }

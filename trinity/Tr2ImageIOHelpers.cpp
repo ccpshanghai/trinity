@@ -11,7 +11,7 @@ namespace
 
 bool CreateCubeTexture( ImageIO::HostBitmap& bitmap, Tr2TextureAL& out, uint32_t& memoryUse, Tr2PrimaryRenderContext& renderContext )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	if( !bitmap.IsValid() )
 	{
@@ -47,7 +47,7 @@ bool CreateCubeTexture( ImageIO::HostBitmap& bitmap, Tr2TextureAL& out, uint32_t
 
 bool CreateVolumeTexture( ImageIO::HostBitmap& bitmap, Tr2TextureAL& out, uint32_t& memoryUse, Tr2PrimaryRenderContext& renderContext )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	if( !bitmap.IsValid() )
 	{
@@ -93,7 +93,7 @@ namespace Tr2ImageIOHelpers
 {
 bool Create2DTexture( ImageIO::HostBitmap& bitmap, Tr2TextureAL& out, uint32_t& memoryUse, Tr2PrimaryRenderContext& renderContext, Tr2RenderContextEnum::BufferUsage usage )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	if( !bitmap.IsValid() )
 	{
@@ -147,7 +147,7 @@ bool CreateTexture( ImageIO::HostBitmap& bitmap, Tr2TextureAL& out, uint32_t& me
 
 bool CopyToTexture( ImageIO::HostBitmap& bitmap, Tr2TextureAL& texture, unsigned int x, unsigned int y, unsigned int margin, Tr2RenderContext& renderContext )
 {
-	CCP_STATS_ZONE( __FUNCTION__ );
+	TRINITY_STATS_ZONE( __FUNCTION__ );
 
 	if( !bitmap.IsValid() )
 	{
@@ -211,11 +211,15 @@ void AddMargin( const Tr2RenderContextEnum::PixelFormat format,
 	if( IsCompressedFormat( format ) )
 	{
 		const unsigned blockByteSize = Tr2RenderContextEnum::GetBlockByteSize( format );
-		const unsigned blockPixelSize = 4;
-		CCP_ASSERT( blockByteSize != 0 && margin % blockPixelSize == 0 );
-		const unsigned blockMargin = margin / blockPixelSize;
-		const unsigned blocksX = width / blockPixelSize;
-		const unsigned blocksY = height / blockPixelSize;
+		// From the format, not a literal 4. Square for every format we carry, but asked for on
+		// both axes because ASTC does not have to be (8x5 and 10x6 exist), and a margin that is
+		// a whole number of blocks on one axis need not be on the other.
+		const unsigned blockWidth = Tr2RenderContextEnum::GetBlockWidth( format );
+		const unsigned blockHeight = Tr2RenderContextEnum::GetBlockHeight( format );
+		CCP_ASSERT( blockByteSize != 0 && margin % blockWidth == 0 && margin % blockHeight == 0 );
+		const unsigned blockMargin = margin / blockWidth;
+		const unsigned blocksX = Tr2RenderContextEnum::GetBlockCount( width, blockWidth );
+		const unsigned blocksY = Tr2RenderContextEnum::GetBlockCount( height, blockHeight );
 
 		//technically the block contents need to be mirrored in the margin to get nice filtering,
 		// but that's somewhat fiddly.
@@ -236,7 +240,19 @@ void AddMargin( const Tr2RenderContextEnum::PixelFormat format,
 
 		// Have to copy one line at a time since the target area is not linearly laid out.
 
-		for( unsigned line = 0; line < height; line += blockPixelSize )
+		// Iterating blocksY rather than stepping a texel counter by the block height. Those are
+		// the same count -- both are ceil( height / blockHeight ) -- but only one of them is
+		// provably the number of rows the buffer above was sized for. They used to disagree:
+		// this loop rounded up while blocksY truncated, so a compressed image whose height was
+		// not a whole number of blocks wrote one row more than was allocated.
+		//
+		// NOTE (not fixed here, and pre-existing): this loop never advances `dst`, so every
+		// block row is written over the first, and the CCP_ASSERT at the end of the branch
+		// cannot hold for any blocksY above 0. That is a missing `dst += outputPitch;` -- but the
+		// branch is unreachable today (its only caller, Tr2TextureAtlas.cpp:1073, packs
+		// uncompressed formats, which take the else branch), so it has never fired and there is
+		// nothing to verify a fix against. Left alone deliberately rather than guessed at.
+		for( unsigned row = 0; row < blocksY; ++row )
 		{
 			//left margin
 			for( unsigned i = 0; i != blockMargin; ++i )
@@ -252,7 +268,7 @@ void AddMargin( const Tr2RenderContextEnum::PixelFormat format,
 				memcpy( dst + ( blocksX + blockMargin + i ) * blockByteSize, src + ( blocksX - 1 ) * blockByteSize, blockByteSize );
 			}
 
-			if( line < height - 1 )
+			if( row + 1 < blocksY )
 			{
 				src += blocksX * blockByteSize;
 			}

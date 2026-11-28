@@ -2,16 +2,19 @@
   "dependencies": [
     {
       "name": "gtest",
-      "version>=": "1.16.0",
-      "host": true
+      "version>=": "1.16.0"
     },
     {
       "name": "carbon-core",
       "version>=": "3.0.0"
     },
     {
+      "name": "carbon-destiny",
+      "version>=": "3.1.1#1"
+    },
+    {
       "name": "carbon-imageio",
-      "version>=": "2.0.6#1"
+      "version>=": "2.0.6#4"
     },
     {
       "name": "libsquish",
@@ -27,7 +30,7 @@
     },
     {
       "name": "tbb",
-      "version>=": "2021.5.0#1"
+      "version>=": "2022.1.0#1"
     },
     {
       "name": "vulkan-headers",
@@ -39,7 +42,7 @@
     },
     {
       "name": "carbon-trinityaudioapi",
-      "version>=": "2.0.3"
+      "version>=": "3.2.0"
     },
     {
       "name": "freetype",
@@ -47,11 +50,17 @@
     },
     {
       "name": "carbon-pdmprotowrapper",
-      "version>=": "2.0.4"
+      "version>=": "3.0.0#1"
     },
     {
       "name": "carbon-blue",
-      "version>=": "6.0.0"
+      "version>=": "6.3.1"
+    },
+    {
+      "$comment": "Windows only: 2.2.0#2 is the fork's blueexposure with the Android interface anchors made to build and link with MSVC (ccpshanghai/blueexposure e32445e; C2375 and LNK2005 without it). The registry's baseline stays at 2.2.0#1, whose Clang builds compile the same code, so macOS, Android and iOS keep resolving #1. carbon-blue already brings blueexposure in; this row only raises the floor on Windows.",
+      "name": "carbon-blueexposure",
+      "version>=": "2.2.0#2",
+      "platform": "windows"
     },
     {
       "name": "carbon-math",
@@ -76,6 +85,11 @@
     {
       "name": "carbon-mesh",
       "version>=": "1.0.1"
+    },
+    {
+      "name": "carbon-exefile",
+      "version>=": "4.1.1",
+      "host": true
     }
   ],
   "features": {
@@ -95,18 +109,24 @@
         },
         {
           "name": "directx-dxc",
-          "version>=": "2023-03-01#2",
+          "version>=": "2026-05-27",
           "platform": "windows & x64"
+        },
+        {
+          "$comment": "Not a host dependency: the shader compiler IS a host tool, so it is built for the target triplet and needs dxc's headers and dylib in that same triplet. On osx it links dxcompiler for the Vulkan back end (dxc -spirv + IDxcUtils::CreateReflection) -- see shadercompiler/stdafx.h and EffectCompilerDX11.cpp. macOS has no d3d11.h or d3d12shader.h of its own either, so the overlay port's headers are what the whole compiler's Windows types come from, whatever back end is selected; WITH_DXC=OFF is not a macOS configuration. This row cannot reach an Android or iOS tree: those never set BUILD_SHADER_COMPILER, which is what asks for this feature.",
+          "name": "directx-dxc",
+          "version>=": "2026-02-20#2",
+          "platform": "osx"
         }
       ]
     },
     "dx11": {
       "description": "Create DirectX 11 targets",
-       "supports": "windows & x64",
+      "supports": "windows & x64",
       "dependencies": [
         {
           "name": "directx-dxc",
-          "version>=": "2023-03-01#2"
+          "version>=": "2026-05-27"
         },
         {
           "name": "fxc",
@@ -123,7 +143,11 @@
         {
           "name": "nvidia-streamline",
           "version>=": "2.8.0",
-          "features":["dlss-fg","dlss-sr","nis" ]
+          "features": [
+            "dlss-fg",
+            "dlss-sr",
+            "nis"
+          ]
         }
       ]
     },
@@ -133,7 +157,7 @@
       "dependencies": [
         {
           "name": "directx-dxc",
-          "version>=": "2023-03-01#2"
+          "version>=": "2026-05-27"
         },
         {
           "name": "fxc",
@@ -154,7 +178,12 @@
         {
           "name": "nvidia-streamline",
           "version>=": "2.8.0",
-          "features":["dlss-fg","dlss-sr","nis","reflex" ]
+          "features": [
+            "dlss-fg",
+            "dlss-sr",
+            "nis",
+            "reflex"
+          ]
         },
         {
           "name": "intel-xess",
@@ -164,11 +193,33 @@
     },
     "metal": {
       "description": "Create Metal targets",
-      "supports": "osx",
+      "supports": "osx | ios",
       "dependencies": [
         {
           "name": "amd-fidelityfx-fsr",
           "version>=": "1.0.2"
+        }
+      ]
+    },
+    "vulkan": {
+      "description": "Create Vulkan targets",
+      "$comment": "On Android vulkan-loader is not built: the loader is the OS's libvulkan (NDK link library, never a built port). This feature is the engine library's Vulkan closure and carries no host tool, because the engine library builds no shaders -- every shader that needs dxc belongs to the AL test suite. So dxc sits in the separate vulkan-tests feature, which the root CMakeLists requests only when BUILD_VULKAN and BUILD_TESTING are both on. It cannot instead stay here behind a platform expression: vcpkg evaluates a dependency's platform against the TARGET triplet, so \"the host is not osx\" is inexpressible -- an Android target would keep the host tool in its closure and resolve it against VCPKG_HOST_TRIPLET, which on the Mac is arm64-osx-release, and directx-dxc's supports excludes osx.",
+      "supports": "(windows & x64) | android",
+      "dependencies": [
+        {
+          "name": "vulkan-loader",
+          "platform": "windows",
+          "version>=": "1.4.304.1"
+        }
+      ]
+    },
+    "vulkan-tests": {
+      "description": "The Vulkan AL test suite's host tool: dxc compiles the test shaders to SPIR-V at build time",
+      "dependencies": [
+        {
+          "name": "directx-dxc",
+          "host": true,
+          "version>=": "2026-02-20#2"
         }
       ]
     },
@@ -184,12 +235,8 @@
   },
   "overrides": [
     {
-      "name": "protobuf",
-      "version": "3.6.0.1"
-    },
-    {
-      "name": "openssl",
-      "version": "1.1.1k#8"
+      "name": "imgui",
+      "version": "1.92.7"
     },
     {
       "name": "libpng",
@@ -202,6 +249,20 @@
     {
       "name": "libsquish",
       "version": "1.15#14"
+    },
+    {
+      "$comment": "vulkan-headers, vulkan-loader and vulkan-memory-allocator are pinned together so a baseline move cannot shift one without the others. They are not all the same version, and need not be: the loader's own CMakeLists asks for find_package(VulkanHeaders ${PROJECT_VERSION} CONFIG) and Vulkan-Headers ships a SameMajorVersion version file, so headers OLDER than the loader are not found and the loader port fails its own configure (loader_specific_options has no Vulkan::Headers -- seen once, headers pinned / loader floating, docs/spikes/M4-phase2a-test-harness.md section 4b), while headers NEWER than the loader only warn. Since M4 of carbon-mobile-exp-v8-upgrade (2026-11-17) these are what upstream trinity v8.2.0 resolves from microsoft/vcpkg afa249f1, which carries no vulkan-loader past 1.4.357.0: headers 1.4.363.0, loader 1.4.357.0, VMA 3.5.0 (checked with a minimal install and link on arm64-osx). vulkan-loader is built on Windows only (the vulkan feature asks for it there; Android uses the OS loader, iOS does not use the feature), so only the headers and VMA reach the mobile trees; carbon-trinity-mobile pins the same headers.",
+      "name": "vulkan-headers",
+      "version": "1.4.363.0"
+    },
+    {
+      "name": "vulkan-loader",
+      "version": "1.4.357.0"
+    },
+    {
+      "name": "vulkan-memory-allocator",
+      "version": "3.5.0"
     }
-  ]
+  ],
+  "$comment-android": "The Android tree is configured only on POSIX hosts. carbon-blue depends on python3, and CPython cannot be cross-built from Windows (its pybuilddir step runs a POSIX-only sysconfig on the build python); a POSIX-built cache entry cannot be restored on Windows either, because vcpkg's ABI hash embeds the host (docs/spikes/artifacts/m6-python3-abi-probe-20260901.txt, four causes). So there are no android platform gates here: the engine's whole dependency set is in the Android closure, and Windows is not an Android build host (M6 second-half spec D3). amd-fidelityfx-cas and -cacao are header-only copies and the engine cannot compile without them (Tr2SSAO.cpp includes ffx_cacao.cpp) -- the first-half note that they never lift was mistaken about what they are."
 }
