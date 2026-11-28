@@ -132,6 +132,7 @@ PyObject* Tr2SpriteObjectBase::GetAssociatedObject() const
 {
 	if( m_associatedObject )
 	{
+#if PY_VERSION_HEX >= 0x030D0000
 		// PyWeakref_GetObject is deprecated in 3.13 and removed in 3.15. trinity builds
 		// with CMAKE_COMPILE_WARNING_AS_ERROR (CMakePresets.json:14), so its C4996 is a
 		// hard error here rather than a warning.
@@ -156,6 +157,10 @@ PyObject* Tr2SpriteObjectBase::GetAssociatedObject() const
 		// through to None, which is what PyWeakref_GetObject yielded for a dead
 		// referent; clear any error so it is not left set for an unrelated caller.
 		PyErr_Clear();
+#else
+		// CPython 3.12 (upstream and mobile-exp): the borrowed-reference getter is current API.
+		return PyWeakref_GetObject( m_associatedObject );
+#endif
 	}
 
 	Py_RETURN_NONE;
