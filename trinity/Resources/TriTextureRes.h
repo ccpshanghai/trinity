@@ -219,6 +219,14 @@ public:
 	static void SetSubstituteKtx2ForDds( bool substitute );
 	static bool GetSubstituteKtx2ForDds();
 
+	// The substitution itself, for every resource that loads a texture from a .dds path: opens
+	// the .ktx2 sibling of `path` into `stream` and names it in `actualPath` when the
+	// substitution is on, the path is a .dds without a query string, and the sibling exists.
+	// False otherwise, with `stream` cleared; the caller then opens `path` as it always did.
+	// Tr2LightProfileRes (the IES lookups, R16F) loads through ImageIO without being a
+	// TriTextureRes, so it calls this rather than repeating the rule.
+	static bool OpenKtx2Sibling( const std::wstring& path, IBlueStreamPtr& stream, std::wstring& actualPath );
+
 private:
 	// The path actually opened. Empty unless the substitution above found a .ktx2, in which case
 	// it is what LoadParameters must carry: imageio picks its handler by extension, so loading a

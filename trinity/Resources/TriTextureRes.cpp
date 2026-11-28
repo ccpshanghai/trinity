@@ -608,29 +608,37 @@ bool TriTextureRes::GetSubstituteKtx2ForDds()
 	return s_substituteKtx2ForDds;
 }
 
-// Called on background thread
-bool TriTextureRes::DoOpenStream()
+bool TriTextureRes::OpenKtx2Sibling( const std::wstring& path, IBlueStreamPtr& stream, std::wstring& actualPath )
 {
-	m_actualPath.clear();
+	actualPath.clear();
 
 	// No substitution for a path carrying a query string. The base class splits those on '?'
 	// before opening, and duplicating that here to save one filesystem miss would put the same
 	// rule in two places.
-	if( GetSubstituteKtx2ForDds() && m_path.find( L'?' ) == std::wstring::npos )
+	if( GetSubstituteKtx2ForDds() && path.find( L'?' ) == std::wstring::npos )
 	{
 		std::wstring substituted;
-		if( SubstituteKtx2ForDdsInPath( m_path, substituted ) &&
-			BePaths->GetStreamFromPathW( substituted.c_str(), &m_dataStream ) )
+		if( SubstituteKtx2ForDdsInPath( path, substituted ) &&
+			BePaths->GetStreamFromPathW( substituted.c_str(), &stream ) )
 		{
-			m_actualPath = std::move( substituted );
+			actualPath = std::move( substituted );
 			return true;
 		}
 		// GetStreamFromPathW answering no IS the existence check -- one filesystem hit rather
 		// than a FileExists followed by an open, and it is the only answer that matters. Most
 		// textures have no .ktx2 sibling and fall through here on every load.
-		m_dataStream = nullptr;
+		stream = nullptr;
 	}
+	return false;
+}
 
+// Called on background thread
+bool TriTextureRes::DoOpenStream()
+{
+	if( OpenKtx2Sibling( m_path, m_dataStream, m_actualPath ) )
+	{
+		return true;
+	}
 	return BlueAsyncRes::DoOpenStream();
 }
 
