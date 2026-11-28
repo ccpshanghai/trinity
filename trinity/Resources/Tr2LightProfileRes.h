@@ -27,12 +27,17 @@ public:
 protected:
 	LoadingResult DoLoad() override;
 	bool DoPrepare() override;
+	// A .dds profile opens its .ktx2 sibling first, as TriTextureRes does (OpenKtx2Sibling).
+	bool DoOpenStream() override;
 
 private:
 	bool ParseIes();
 	static bool ParseIes( const std::string& contents, ImageIO::HostBitmap& bitmap );
 
 	ImageIO::HostBitmap m_bitmap;
+	// The path actually opened: empty unless the .ktx2 sibling was. ImageIO picks its handler
+	// by extension, so this, not m_path, is what LoadParameters carries.
+	std::wstring m_actualPath;
 	Tr2TextureArrayElement m_element;
 };
 
