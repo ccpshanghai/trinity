@@ -8,8 +8,8 @@
     {
       "kind": "git",
       "repository": "https://github.com/ccpshanghai/vcpkg-registry.git",
-      "reference": "feat/prototype-python-runtime",
-      "baseline": "00c078fd10ddddc3c65b49baa49f6fc056923aa2",
+      "reference": "mobile-exp",
+      "baseline": "4306d6150af3a3de07a7e8048fcbe7d1008d6b87",
       "packages": [
         "python3",
         "carbon-*",
