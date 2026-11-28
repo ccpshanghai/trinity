@@ -9,7 +9,7 @@
       "kind": "git",
       "repository": "https://github.com/ccpshanghai/vcpkg-registry.git",
       "reference": "feat/prototype-python-runtime",
-      "baseline": "e4c12e80019d57fef541b006fef8df655f55c68c",
+      "baseline": "00c078fd10ddddc3c65b49baa49f6fc056923aa2",
       "packages": [
         "python3",
         "carbon-*",
